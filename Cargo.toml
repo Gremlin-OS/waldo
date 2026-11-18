@@ -1,0 +1,27 @@
+[package]
+name = "waldo"
+version = "0.1.0"
+edition = "2021"
+description = "Operate interactive terminal programs through messages"
+publish = false
+
+[lib]
+name = "waldo"
+path = "src/lib.rs"
+
+[[bin]]
+name = "waldo-wrap"
+path = "src/bin/waldo-wrap/main.rs"
+
+[[bin]]
+name = "waldo-term"
+path = "src/bin/waldo-term/main.rs"
+
+[dependencies]
+libc = "0.2"
+regex-lite = "0.1"
+serde_json = "1"
+httparse = "1"
+
+[profile.release]
+panic = "abort"
