@@ -106,7 +106,8 @@ examples:
 pub const WAIT: &str = "\
 Commands that print the screen wait first. --until says for what:
 
-  settle   (default for send and wait) the screen has been still for 200 ms
+  settle   (default for send and wait) the program has drawn something, the
+           screen has then been still for 200 ms,
            and all input has been written. It means nothing is being drawn. It
            does not mean a command finished: a compiler that is silent for a
            second looks settled.

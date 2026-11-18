@@ -851,3 +851,21 @@ fn usage_errors() {
     assert_eq!(r.code, 2);
     assert_eq!(t.wrap(&["--help"]).code, 0);
 }
+
+#[test]
+fn settle_waits_for_the_first_output() {
+    let t = T::new();
+    // A program that is slow to draw: a blank screen is not a settled one.
+    t.start("fo", &["sh", "-c", "sleep 1; echo up; sleep 30"]);
+    let began = Instant::now();
+    let r = t.term(&["screen", "-s", "fo", "--until", "settle"]);
+    assert_eq!(r.code, 0, "{}\n{}", r.out, r.err);
+    assert!(began.elapsed() >= Duration::from_millis(900), "returned after {:?}", began.elapsed());
+    assert_eq!(r.out.lines().nth(1), Some("up"), "{}", r.out);
+
+    // A program that never prints runs to the deadline, and says why.
+    t.start("fs", &["sleep", "30"]);
+    let r = t.term(&["wait", "-s", "fs", "--until", "settle", "--timeout", "500"]);
+    assert_eq!(r.code, 124, "{}", r.out);
+    assert!(r.out.contains("hint: the program has not drawn anything yet"), "{}", r.out);
+}

@@ -1103,6 +1103,12 @@ code is what was tested:
 - **The status line adds `fg=NAME`**, the foreground process, after `running`.
 - **`until: done`** is a wait condition (section 2.2 does not list it), and
   `until: change` without `since_gen` means "differs from now".
+- **Settle waits for the first text on screen** (added after trying `top`):
+  a blank screen that stays blank is a program that has not drawn yet. Output
+  alone is not enough, because `top` sets the terminal up well before its
+  first frame. Once input has been sent the rule no longer applies, so a
+  program that echoes nothing can still settle. A program that never draws
+  runs the wait to its deadline, with a hint.
 - `gen` is a hash of the visible cells, cursor, title and size, recomputed
   after each batch of output.
 

@@ -186,6 +186,11 @@ pub struct Host {
     last_change: Instant,
     hold_since: Option<Instant>,
     prompt_seen: bool,
+    /// The screen has shown text, or input has been sent. Before either, a
+    /// still screen is a program that has not started drawing, not a
+    /// settled one. Output alone does not count: programs set the terminal
+    /// up before they draw.
+    seen_output: bool,
 
     outbuf: OutBuf,
     watermark: Option<Tracked>,
@@ -261,6 +266,7 @@ impl Host {
             last_change: now,
             hold_since: None,
             prompt_seen: false,
+            seen_output: false,
             outbuf,
             watermark,
             rows_committed: 0,
@@ -516,6 +522,9 @@ impl Host {
             self.gen += 1;
             self.last_change = Instant::now();
         }
+        if !self.seen_output && rows.iter().any(|r| !r.text.trim().is_empty()) {
+            self.seen_output = true;
+        }
         self.rows = rows;
     }
 
@@ -683,6 +692,7 @@ impl Host {
                         front.off += n;
                         let owner = front.owner;
                         self.last_input = Instant::now();
+                        self.seen_output = true;
                         self.prompt_seen = false;
                         for w in self.waits.iter_mut() {
                             if w.req_id != owner {
@@ -735,7 +745,7 @@ impl Host {
 
     fn settled(&self, now: Instant) -> bool {
         let held = self.hold_since.map(|h| now.duration_since(h) < HOLD_CAP).unwrap_or(false);
-        self.input_idle() && !held && now >= self.settle_at()
+        self.seen_output && self.input_idle() && !held && now >= self.settle_at()
     }
 
     /// Matches of a pattern on the visible screen.
@@ -891,6 +901,9 @@ impl Host {
             Reason::Timeout => {
                 if hint.is_none() {
                     hint = match w.until {
+                        Until::Settle if !self.seen_output => {
+                            Some("the program has not drawn anything yet; settle waits for the first text on screen.".into())
+                        }
                         Until::Settle if self.last_change.elapsed() < Duration::from_secs(2) => {
                             Some("the screen never went quiet; wait for specific text with --until match.".into())
                         }
