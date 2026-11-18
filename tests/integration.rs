@@ -869,3 +869,220 @@ fn settle_waits_for_the_first_output() {
     assert_eq!(r.code, 124, "{}", r.out);
     assert!(r.out.contains("hint: the program has not drawn anything yet"), "{}", r.out);
 }
+
+// ---- styled screens ------------------------------------------------------------------------------------
+
+#[test]
+fn styled_screen_keeps_colour_codes() {
+    let t = T::new();
+    t.bash("sy");
+    let r = t.term(&["run", "-s", "sy", r"printf '\033[7mSELECTED\033[0m plain \033[1;32mgreen\033[0m\n'"]);
+    assert_eq!(r.code, 0, "{}", r.out);
+    // Plain by default: no escape characters at all.
+    let plain = t.term(&["screen", "-s", "sy"]);
+    assert!(plain.out.contains("SELECTED plain green"), "{}", plain.out);
+    assert!(!plain.out.contains('\x1b'), "{:?}", plain.out);
+    // On request, SGR codes mark what is highlighted.
+    let styled = t.term(&["screen", "-s", "sy", "--style", "ansi"]);
+    assert_eq!(styled.code, 0, "{}", styled.err);
+    assert!(styled.out.contains("\x1b[0;7mSELECTED\x1b[0m plain \x1b[0;1;32mgreen\x1b[0m"), "{:?}", styled.out);
+    // The same through JSON, and with a wait.
+    let (_, v) = t.json(&["send", "-s", "sy", "--text", r"printf '\033[44mbar\033[0m\n'", "--keys", "<Enter>", "--style", "ansi", "--until", "match", "--pattern", "^bar$"]);
+    assert!(v["screen"]["text"].as_str().unwrap().contains("\u{1b}[0;44mbar\u{1b}[0m"), "{}", v["screen"]["text"]);
+    let r = t.term(&["screen", "-s", "sy", "--style", "html"]);
+    assert_eq!(r.code, 2);
+    assert!(r.err.contains("unknown_style"), "{}", r.err);
+}
+
+// ---- attach ----------------------------------------------------------------------------------------------
+
+impl T {
+    /// Run `waldo-term attach` to session `target` inside another session
+    /// named `viewer`, so it has a terminal to draw on.
+    fn attach(&self, viewer: &str, size: &str, target: &str, extra: &[&str]) {
+        let mut args = vec!["--detach", "--name", viewer, "--size", size, "--", TERM, "attach", "-s", target];
+        args.extend_from_slice(extra);
+        let r = self.wrap(&args);
+        assert_eq!(r.code, 0, "{}", r.err);
+        let r = self.term(&["wait", "-s", viewer, "--until", "match", "--pattern", &format!("waldo {target} ")]);
+        assert_eq!(r.code, 0, "the viewer never drew its status bar:\n{}\n{}", r.out, r.err);
+    }
+}
+
+#[test]
+fn attach_shows_the_session_and_is_view_only() {
+    let t = T::new();
+    let r = t.wrap(&["--detach", "--name", "a", "--size", "60x10", "--", "bash", "--norc", "--noprofile"]);
+    assert_eq!(r.code, 0, "{}", r.err);
+    assert_eq!(t.term(&["wait", "-s", "a", "--until", "match", "--pattern", r"^\$ $"]).code, 0);
+
+    t.attach("v", "100x20", "a", &[]);
+    let v = t.term(&["screen", "-s", "v"]);
+    assert!(v.out.lines().nth(1) == Some("$"), "{}", v.out);
+    assert!(v.out.contains("waldo a  60x10") && v.out.contains("view only") && v.out.contains("Ctrl-] detach"), "{}", v.out);
+
+    // What happens in the session shows up in the viewer.
+    assert_eq!(t.term(&["run", "-s", "a", "echo seen-by-viewer"]).code, 0);
+    let v = t.term(&["wait", "-s", "v", "--until", "match", "--pattern", "^seen-by-viewer$"]);
+    assert_eq!(v.code, 0, "{}", v.out);
+
+    // View only: typing in the viewer does not reach the session.
+    let before = t.term(&["screen", "-s", "a"]).out;
+    t.term(&["send", "-s", "v", "--text", "echo nope", "--keys", "<Enter>"]);
+    std::thread::sleep(Duration::from_millis(300));
+    assert_eq!(before, t.term(&["screen", "-s", "a"]).out);
+
+    // Ctrl-\ switches to typing.
+    let v = t.term(&["send", "-s", "v", "--keys", r"<C-\>", "--until", "match", "--pattern", "TYPING"]);
+    assert_eq!(v.code, 0, "{}", v.out);
+    t.term(&["send", "-s", "v", "--text", "echo typed-in-viewer", "--keys", "<Enter>"]);
+    let a = t.term(&["wait", "-s", "a", "--until", "match", "--pattern", "^typed-in-viewer$"]);
+    assert_eq!(a.code, 0, "{}", a.out);
+
+    // Ctrl-] detaches; the session carries on.
+    let v = t.term(&["send", "-s", "v", "--keys", "<C-]>", "--until", "exit"]);
+    assert_eq!(v.code, 0, "{}\n{}", v.out, v.err);
+    let will = t.will("v");
+    assert_eq!(will["exit_code"], 0);
+    assert!(will["output"]["text"].as_str().unwrap().contains("detached from 'a'; it is still running"), "{}", will["output"]["text"]);
+    assert!(t.term(&["list"]).out.lines().any(|l| l.starts_with("a ") && l.contains("live")));
+}
+
+#[test]
+fn attach_shows_colour_and_reports_agent_requests() {
+    let t = T::new();
+    let r = t.wrap(&["--detach", "--name", "a", "--size", "60x10", "--", "bash", "--norc", "--noprofile"]);
+    assert_eq!(r.code, 0, "{}", r.err);
+    assert_eq!(t.term(&["wait", "-s", "a", "--until", "match", "--pattern", r"^\$ $"]).code, 0);
+    t.attach("v", "100x20", "a", &[]);
+    assert_eq!(t.term(&["run", "-s", "a", r"printf '\033[1;31mRED\033[0m\n'"]).code, 0);
+    assert_eq!(t.term(&["wait", "-s", "v", "--until", "match", "--pattern", "^RED$"]).code, 0);
+    // The viewer's terminal received the colour, not just the letters.
+    let v = t.term(&["screen", "-s", "v", "--style", "ansi"]);
+    assert!(v.out.contains("\x1b[0;1;31mRED\x1b[0m"), "{:?}", v.out);
+
+    // While an agent's request is waiting, the status bar says so.
+    let mut waiting = t.command(TERM).args(["wait", "-s", "a", "--until", "match", "--pattern", "never-shown", "--timeout", "3000"]).stdout(Stdio::null()).spawn().unwrap();
+    let v = t.term(&["wait", "-s", "v", "--until", "match", "--pattern", "agent request in flight", "--timeout", "2500"]);
+    assert_eq!(v.code, 0, "{}", v.out);
+    let _ = waiting.wait();
+}
+
+#[test]
+fn attach_to_a_larger_session_is_cropped_and_never_resizes_it() {
+    let t = T::new();
+    t.bash("a"); // 120x30
+    t.attach("v", "40x10", "a", &[]);
+    let v = t.term(&["screen", "-s", "v"]);
+    assert!(v.out.contains("(showing 40x9)"), "{}", v.out);
+    assert!(status_line(&t.term(&["screen", "-s", "a"]).out).contains("120x30"));
+    // The cropped view follows the cursor: fill the session's screen and the
+    // newest line is still visible to the viewer.
+    assert_eq!(t.term(&["run", "-s", "a", "seq 1 40; echo bottom-line"]).code, 0);
+    let v = t.term(&["wait", "-s", "v", "--until", "match", "--pattern", "^bottom-line$"]);
+    assert_eq!(v.code, 0, "{}", v.out);
+}
+
+#[test]
+fn attach_resize_takes_the_viewers_size_and_gives_it_back() {
+    let t = T::new();
+    let r = t.wrap(&["--detach", "--name", "a", "--size", "60x10", "--", "bash", "--norc", "--noprofile"]);
+    assert_eq!(r.code, 0, "{}", r.err);
+    assert_eq!(t.term(&["wait", "-s", "a", "--until", "match", "--pattern", r"^\$ $"]).code, 0);
+    t.attach("v", "100x20", "a", &["--resize"]);
+    let v = t.term(&["wait", "-s", "v", "--until", "match", "--pattern", "waldo a  100x19"]);
+    assert_eq!(v.code, 0, "{}", v.out);
+    assert_eq!(t.term(&["run", "-s", "a", "stty size"]).out.lines().nth(1), Some("19 100"));
+    assert_eq!(t.term(&["send", "-s", "v", "--keys", "<C-]>", "--until", "exit"]).code, 0);
+    let end = Instant::now() + Duration::from_secs(5);
+    while !status_line(&t.term(&["screen", "-s", "a"]).out).contains("60x10") {
+        assert!(Instant::now() < end, "the session kept the viewer's size");
+        std::thread::sleep(Duration::from_millis(50));
+    }
+}
+
+#[test]
+fn attach_ends_with_the_session() {
+    let t = T::new();
+    t.start("a", &["sh", "-c", "echo started; sleep 1.5; echo last-words; exit 3"]);
+    t.attach("v", "100x20", "a", &[]);
+    let v = t.term(&["wait", "-s", "v", "--until", "exit", "--timeout", "8000"]);
+    assert_eq!(v.code, 0, "{}\n{}", v.out, v.err);
+    let will = t.will("v");
+    // The viewer exits the way any command does when the program has ended.
+    assert_eq!(will["exit_code"], 3);
+    let text = will["output"]["text"].as_str().unwrap();
+    assert!(text.contains("[a exit code=3 ") && text.contains("last-words"), "{text}");
+}
+
+#[test]
+fn attach_needs_a_terminal_and_an_upgrade() {
+    let t = T::new();
+    t.bash("a");
+    let r = t.term(&["attach", "-s", "a"]);
+    assert_eq!(r.code, 2);
+    assert!(r.err.contains("waldo-term screen"), "{}", r.err);
+    let socket = t.session_dir("a").join("sock");
+    let resp = raw_http(socket.to_str().unwrap(), "GET /v1/attach HTTP/1.1\r\nHost: waldo\r\nConnection: close\r\n\r\n");
+    assert!(resp.starts_with("HTTP/1.1 400 ") && resp.contains("upgrade_required"), "{resp}");
+
+    // The stream itself: one JSON object per line.
+    let mut s = UnixStream::connect(&socket).unwrap();
+    s.set_read_timeout(Some(Duration::from_secs(5))).unwrap();
+    s.write_all(b"GET /v1/attach?cols=20&rows=5 HTTP/1.1\r\nHost: waldo\r\nUpgrade: waldo-attach\r\nConnection: Upgrade\r\n\r\n").unwrap();
+    let mut got = String::new();
+    let mut buf = [0u8; 4096];
+    while !got.contains("\"lines\"") || !got.ends_with('\n') {
+        let n = s.read(&mut buf).unwrap();
+        assert!(n > 0, "{got}");
+        got.push_str(&String::from_utf8_lossy(&buf[..n]));
+    }
+    assert!(got.starts_with("HTTP/1.1 101 "), "{got}");
+    let frame: Value = serde_json::from_str(got.split("\r\n\r\n").nth(1).unwrap().lines().next().unwrap()).unwrap();
+    assert_eq!(frame["session"], "a");
+    assert_eq!(frame["view"]["cols"], 20);
+    assert_eq!(frame["view"]["rows"], 5);
+    assert_eq!(frame["lines"][0], serde_json::json!([0, "$"]));
+    assert_eq!(frame["cursor"], serde_json::json!({"row": 0, "col": 2, "visible": true}));
+}
+
+#[test]
+fn a_key_after_text_arrives_separately() {
+    let t = T::new();
+    // A program that reads its input one burst at a time, as programs that
+    // detect pastes by timing do. Each `dd` is one read.
+    t.start("kt", &["sh", "-c", "stty raw -echo; printf 'ready\\r\\n'; for i in 1 2; do dd bs=100 count=1 2>/dev/null | od -An -c; printf '\\r'; done; stty sane"]);
+    assert_eq!(t.term(&["wait", "-s", "kt", "--until", "match", "--pattern", "^ready$"]).code, 0);
+    let r = t.term(&["send", "-s", "kt", "--text", "hello", "--keys", "<Enter>", "--until", "exit"]);
+    assert_eq!(r.code, 0, "{}\n{}", r.out, r.err);
+    let will = t.will("kt");
+    let out: Vec<String> = will["output"]["text"].as_str().unwrap().lines().map(|l| l.split_whitespace().collect::<Vec<_>>().join(" ")).collect();
+    // The text was one read and the Enter another.
+    assert_eq!(out, vec!["ready", "h e l l o", "\\r"], "{out:?}");
+}
+
+#[test]
+fn kill_ends_a_session_and_waits() {
+    let t = T::new();
+    t.start("kl", &["sleep", "60"]);
+    let r = t.term(&["kill", "kl"]);
+    assert_eq!(r.code, 0, "{}", r.err);
+    assert!(r.out.starts_with("[kl exit signal=SIGHUP killed_by_waldo "), "{}", r.out);
+    assert_eq!(r.out.lines().count(), 1);
+    // It has ended by the time kill returns.
+    assert!(t.term(&["list"]).out.lines().any(|l| l.starts_with("kl") && l.contains("exited")));
+    // Killing it again is not an error.
+    let r = t.term(&["kill", "-s", "kl"]);
+    assert_eq!(r.code, 0);
+    assert!(r.out.contains("had already ended"), "{}", r.out);
+    assert_eq!(t.term(&["kill", "nope"]).code, 4);
+
+    // A program that ignores the hangup is terminated, then killed.
+    t.start("st", &["sh", "-c", "trap '' HUP TERM; echo armed; while true; do sleep 1; done"]);
+    assert_eq!(t.term(&["wait", "-s", "st", "--until", "match", "--pattern", "^armed$"]).code, 0);
+    let began = Instant::now();
+    let r = t.term(&["kill", "st"]);
+    assert_eq!(r.code, 0, "{}", r.err);
+    assert!(r.out.contains("signal=SIGKILL killed_by_waldo"), "{}", r.out);
+    assert!(began.elapsed() >= Duration::from_secs(3) && began.elapsed() < Duration::from_secs(9), "{:?}", began.elapsed());
+}

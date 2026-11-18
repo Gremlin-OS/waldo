@@ -49,7 +49,13 @@ mod ffi {
     pub const UNKNOWN_SEQUENCE_OSC: c_int = 1;
     pub const SEMANTIC_PROMPT_PROMPT_START: c_int = 1;
 
+    pub const CELL_DATA_CONTENT_TAG: c_int = 2;
     pub const CELL_DATA_WIDE: c_int = 3;
+    pub const CELL_DATA_HAS_STYLING: c_int = 5;
+    pub const CELL_DATA_COLOR_PALETTE: c_int = 10;
+    pub const CELL_DATA_COLOR_RGB: c_int = 11;
+    pub const CELL_CONTENT_BG_COLOR_PALETTE: c_int = 2;
+    pub const CELL_CONTENT_BG_COLOR_RGB: c_int = 3;
     pub const CELL_DATA_HAS_TEXT: c_int = 4;
     pub const CELL_WIDE_SPACER_TAIL: c_int = 2;
     pub const CELL_WIDE_SPACER_HEAD: c_int = 3;
@@ -84,6 +90,23 @@ mod ffi {
     pub struct Point {
         pub tag: c_int,
         pub value: PointValue,
+    }
+
+    #[repr(C)]
+    #[derive(Clone, Copy)]
+    pub struct StyleColor {
+        pub tag: u8,
+        pub value: [u8; 3],
+    }
+
+    #[repr(C)]
+    #[derive(Clone, Copy)]
+    pub struct Style {
+        pub fg_color: StyleColor,
+        pub bg_color: StyleColor,
+        pub underline_color: StyleColor,
+        pub flags: u16,
+        pub reserved: u16,
     }
 
     #[repr(C)]
@@ -197,6 +220,7 @@ mod ffi {
             -> c_int;
 
         pub fn ghostty_grid_ref_cell(r: *const GridRef, out_cell: *mut u64) -> c_int;
+        pub fn ghostty_grid_ref_style(r: *const GridRef, out_style: *mut Style) -> c_int;
         pub fn ghostty_grid_ref_row(r: *const GridRef, out_row: *mut u64) -> c_int;
         pub fn ghostty_grid_ref_graphemes(
             r: *const GridRef,
@@ -293,6 +317,83 @@ pub mod key {
     pub const ARROW_UP: i32 = 78;
     pub const ESCAPE: i32 = 120;
     pub const F1: i32 = 121;
+}
+
+#[derive(Clone, Copy, PartialEq, Eq, Debug, Default)]
+pub enum Color {
+    #[default]
+    None,
+    Palette(u8),
+    Rgb(u8, u8, u8),
+}
+
+/// How a cell is drawn: colours and attributes.
+#[derive(Clone, Copy, PartialEq, Eq, Debug, Default)]
+pub struct Style {
+    pub fg: Color,
+    pub bg: Color,
+    pub bold: bool,
+    pub faint: bool,
+    pub italic: bool,
+    pub underline: bool,
+    pub blink: bool,
+    pub inverse: bool,
+    pub invisible: bool,
+    pub strikethrough: bool,
+}
+
+impl Style {
+    fn from_raw(raw: &ffi::Style) -> Style {
+        let color = |c: &ffi::StyleColor| match c.tag {
+            1 => Color::Palette(c.value[0]),
+            2 => Color::Rgb(c.value[0], c.value[1], c.value[2]),
+            _ => Color::None,
+        };
+        let f = raw.flags;
+        Style {
+            fg: color(&raw.fg_color),
+            bg: color(&raw.bg_color),
+            bold: f & 1 != 0,
+            italic: f & (1 << 1) != 0,
+            faint: f & (1 << 2) != 0,
+            blink: f & (1 << 3) != 0,
+            inverse: f & (1 << 4) != 0,
+            invisible: f & (1 << 5) != 0,
+            strikethrough: f & (1 << 6) != 0,
+            underline: (f >> 8) & 7 != 0,
+        }
+    }
+
+    /// The SGR sequence that sets exactly this style, starting from a reset.
+    pub fn sgr(&self) -> String {
+        let mut p: Vec<String> = vec!["0".into()];
+        for (on, code) in [
+            (self.bold, "1"),
+            (self.faint, "2"),
+            (self.italic, "3"),
+            (self.underline, "4"),
+            (self.blink, "5"),
+            (self.inverse, "7"),
+            (self.invisible, "8"),
+            (self.strikethrough, "9"),
+        ] {
+            if on {
+                p.push(code.into());
+            }
+        }
+        let color = |c: Color, base: u8| -> Option<String> {
+            match c {
+                Color::None => None,
+                Color::Palette(i) if i < 8 => Some(format!("{}", base + i)),
+                Color::Palette(i) if i < 16 => Some(format!("{}", base + 60 + i - 8)),
+                Color::Palette(i) => Some(format!("{};5;{}", base + 8, i)),
+                Color::Rgb(r, g, b) => Some(format!("{};2;{};{};{}", base + 8, r, g, b)),
+            }
+        };
+        p.extend(color(self.fg, 30));
+        p.extend(color(self.bg, 40));
+        format!("\x1b[{}m", p.join(";"))
+    }
 }
 
 /// One row of the grid as text.
@@ -611,6 +712,103 @@ impl Emu {
         Some(Row { text, wrap })
     }
 
+    /// Read one row as text with SGR colour and attribute sequences where
+    /// the style changes, and a reset at the end if any style was set. No
+    /// other escape sequences are produced. `x0` and `max_cols` select a
+    /// horizontal slice in cells. Trailing cells that are blank and unstyled
+    /// are dropped.
+    pub fn row_ansi(&self, space: Space, y: u32, x0: u16, max_cols: u16) -> Option<String> {
+        let mut out = String::new();
+        let mut end = 0usize;
+        let mut current = Style::default();
+        let last = self.cols.min(x0.saturating_add(max_cols));
+        for x in x0..last {
+            let mut gref = ffi::GridRef { node: ptr::null_mut(), x: 0, y: 0 };
+            let r = unsafe { ffi::ghostty_terminal_grid_ref(self.t, Self::point(space, x, y), &mut gref) };
+            if r != ffi::SUCCESS || gref.node.is_null() {
+                if x == x0 {
+                    return None;
+                }
+                break;
+            }
+            unsafe {
+                let mut cell: u64 = 0;
+                if ffi::ghostty_grid_ref_cell(&gref, &mut cell) != ffi::SUCCESS {
+                    continue;
+                }
+                let mut wide: c_int = 0;
+                ffi::ghostty_cell_get(cell, ffi::CELL_DATA_WIDE, &mut wide as *mut c_int as *mut c_void);
+                if wide == ffi::CELL_WIDE_SPACER_TAIL || wide == ffi::CELL_WIDE_SPACER_HEAD {
+                    continue;
+                }
+                let mut style = Style::default();
+                let mut styled = false;
+                ffi::ghostty_cell_get(cell, ffi::CELL_DATA_HAS_STYLING, &mut styled as *mut bool as *mut c_void);
+                if styled {
+                    let mut raw: ffi::Style = std::mem::zeroed();
+                    if ffi::ghostty_grid_ref_style(&gref, &mut raw) == ffi::SUCCESS {
+                        style = Style::from_raw(&raw);
+                    }
+                }
+                // A cell can also be nothing but a background colour.
+                let mut tag: c_int = 0;
+                ffi::ghostty_cell_get(cell, ffi::CELL_DATA_CONTENT_TAG, &mut tag as *mut c_int as *mut c_void);
+                if tag == ffi::CELL_CONTENT_BG_COLOR_PALETTE {
+                    let mut idx: u8 = 0;
+                    ffi::ghostty_cell_get(cell, ffi::CELL_DATA_COLOR_PALETTE, &mut idx as *mut u8 as *mut c_void);
+                    style.bg = Color::Palette(idx);
+                } else if tag == ffi::CELL_CONTENT_BG_COLOR_RGB {
+                    let mut rgb = [0u8; 3];
+                    ffi::ghostty_cell_get(cell, ffi::CELL_DATA_COLOR_RGB, rgb.as_mut_ptr() as *mut c_void);
+                    style.bg = Color::Rgb(rgb[0], rgb[1], rgb[2]);
+                }
+                if style != current {
+                    out.push_str(&style.sgr());
+                    current = style;
+                }
+                let mut has_text = false;
+                ffi::ghostty_cell_get(cell, ffi::CELL_DATA_HAS_TEXT, &mut has_text as *mut bool as *mut c_void);
+                if !has_text {
+                    out.push(' ');
+                    if style != Style::default() {
+                        end = out.len();
+                    }
+                    continue;
+                }
+                let mut stack = [0u32; 8];
+                let mut n: usize = 0;
+                let r = ffi::ghostty_grid_ref_graphemes(&gref, stack.as_mut_ptr(), stack.len(), &mut n);
+                let mut heap: Vec<u32> = Vec::new();
+                let cps: &[u32] = if r == ffi::SUCCESS {
+                    &stack[..n.min(stack.len())]
+                } else if r == ffi::OUT_OF_SPACE {
+                    heap.resize(n, 0);
+                    let mut m: usize = 0;
+                    if ffi::ghostty_grid_ref_graphemes(&gref, heap.as_mut_ptr(), heap.len(), &mut m) == ffi::SUCCESS {
+                        &heap[..m.min(heap.len())]
+                    } else {
+                        &[]
+                    }
+                } else {
+                    &[]
+                };
+                for &cp in cps {
+                    out.push(char::from_u32(cp).filter(|c| !c.is_control()).unwrap_or('\u{fffd}'));
+                }
+                // A written space in the default style is still trailing
+                // blank; anything else is content.
+                if style != Style::default() || cps.iter().any(|&cp| cp != b' ' as u32) {
+                    end = out.len();
+                }
+            }
+        }
+        out.truncate(end);
+        if out.contains('\x1b') && !out.ends_with("\x1b[0m") {
+            out.push_str("\x1b[0m");
+        }
+        Some(out)
+    }
+
     /// Start tracking a row.
     pub fn track(&self, space: Space, y: u32) -> Option<Tracked> {
         let mut r: ffi::TrackedRef = ptr::null_mut();
@@ -848,6 +1046,30 @@ mod tests {
         let evil = e.encode_paste(b"x\x1b[201~rm -rf");
         let inner = &evil[6..evil.len() - 6];
         assert!(!inner.windows(6).any(|w| w == b"\x1b[201~"), "{:?}", String::from_utf8_lossy(&evil));
+    }
+
+    #[test]
+    fn styled_rows() {
+        let mut e = emu();
+        // Plain text has no escapes at all.
+        e.feed(b"plain\r\n");
+        assert_eq!(e.row_ansi(Space::Active, 0, 0, 80).unwrap(), "plain");
+        // Colour and attributes, each run introduced by a full SGR.
+        e.feed(b"a \x1b[1;31mred\x1b[0m b \x1b[7msel\x1b[0m\r\n");
+        assert_eq!(e.row_ansi(Space::Active, 1, 0, 80).unwrap(), "a \x1b[0;1;31mred\x1b[0m b \x1b[0;7msel\x1b[0m");
+        // 256-colour and true colour.
+        e.feed(b"\x1b[38;5;208;48;2;1;2;3mx\x1b[0m\r\n");
+        assert_eq!(e.row_ansi(Space::Active, 2, 0, 80).unwrap(), "\x1b[0;38;5;208;48;2;1;2;3mx\x1b[0m");
+        // A highlighted bar: erased cells that carry only a background.
+        e.feed(b"\x1b[44mbar\x1b[K\x1b[0m\r\n");
+        let bar = e.row_ansi(Space::Active, 3, 0, 80).unwrap();
+        assert!(bar.starts_with("\x1b[0;44mbar") && bar.ends_with("\x1b[0m"), "{bar:?}");
+        assert_eq!(bar.matches(' ').count(), 77, "{bar:?}");
+        // A slice of the row.
+        assert_eq!(e.row_ansi(Space::Active, 1, 2, 3).unwrap(), "\x1b[0;1;31mred\x1b[0m");
+        assert_eq!(e.row_ansi(Space::Active, 0, 2, 2).unwrap(), "ai");
+        // The plain reader is unchanged by styles.
+        assert_eq!(e.row(Space::Active, 1, None).unwrap().text, "a red b sel");
     }
 
     #[test]

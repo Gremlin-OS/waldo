@@ -37,6 +37,16 @@ const RUN_TIMEOUT_MS: u64 = 120_000;
 const MAX_TIMEOUT_MS: u64 = 600_000;
 const PROMPT_QUIET_MS: u64 = 40;
 const ESC_PAUSE: Duration = Duration::from_millis(30);
+/// A key that follows text in one request is held back until the program has
+/// shown that it took the text: the screen changed and went still again. A
+/// person types, sees the text appear, then presses Enter. Programs that take
+/// a burst of characters for a paste would otherwise read the key as part of
+/// it, and an Enter becomes a line break instead of a submit. The wait is at
+/// least KEY_MIN and, if the screen never reacts (echo off), at most KEY_MAX.
+const KEY_MIN: Duration = Duration::from_millis(40);
+const KEY_MAX: Duration = Duration::from_millis(300);
+const KEY_STILL: Duration = Duration::from_millis(30);
+const KEY_POLL: Duration = Duration::from_millis(10);
 const HOLD_CAP: Duration = Duration::from_secs(1);
 const DRAIN_QUIET: Duration = Duration::from_millis(100);
 const DRAIN_CAP: Duration = Duration::from_secs(2);
@@ -76,6 +86,8 @@ struct QItem {
     kind: QKind,
     off: usize,
     pause_after: bool,
+    /// Wait a moment after the previous input before sending this.
+    pause_before: bool,
 }
 
 #[derive(Clone, Copy, PartialEq, Debug)]
@@ -134,6 +146,8 @@ struct Wait {
     /// satisfy it.
     known: Vec<(u64, String)>,
     hint: Option<String>,
+    /// Return the screen with SGR colour codes left in.
+    ansi: bool,
 }
 
 struct RunResult {
@@ -159,6 +173,7 @@ struct Conn {
     busy: bool,
     close_after: bool,
     wants_out: bool,
+    attach: Option<Attach>,
 }
 
 struct Logical {
@@ -202,6 +217,8 @@ pub struct Host {
     queue: VecDeque<QItem>,
     pause_until: Option<Instant>,
     last_input: Instant,
+    /// `gen` when input was last written, to see the program react to it.
+    gen_at_input: u64,
     master_out: bool,
     next_req: u64,
 
@@ -216,6 +233,8 @@ pub struct Host {
     drain_until: Option<Instant>,
     stopping: Option<(Instant, u8)>,
     kill_reason: Option<&'static str>,
+    /// The size to go back to when the last client that resized detaches.
+    restore_size: Option<(u16, u16)>,
 }
 
 fn ms_since(t: Instant) -> u64 {
@@ -276,6 +295,7 @@ impl Host {
             queue: VecDeque::new(),
             pause_until: None,
             last_input: now,
+            gen_at_input: 0,
             master_out: false,
             next_req: 1,
             conns: HashMap::new(),
@@ -288,6 +308,7 @@ impl Host {
             drain_until: None,
             stopping: None,
             kill_reason: None,
+            restore_size: None,
         };
         host.refresh();
         Ok(host)
@@ -322,6 +343,7 @@ impl Host {
             self.pump_input();
             self.tick();
             self.evaluate_waits();
+            self.service_attach();
             if self.ready_to_finish() {
                 return self.finish();
             }
@@ -348,12 +370,15 @@ impl Host {
             consider(p);
         }
         if let Some(h) = self.hold_since {
-            if !self.waits.is_empty() {
+            if !self.waits.is_empty() || self.has_attach() {
                 consider(h + HOLD_CAP);
             }
         }
         if let Some(d) = self.drain_until {
             consider(d);
+        }
+        if let Some(t) = self.attach_due() {
+            consider(t);
         }
         if let Some((since, stage)) = self.stopping {
             if stage < 2 {
@@ -530,8 +555,18 @@ impl Host {
 
     // ---- reading the screen ----------------------------------------------
 
-    fn screen_json(&self) -> Value {
-        let mut lines: Vec<&str> = self.rows.iter().map(|r| trimmed(&r.text)).collect();
+    /// The screen object. With `ansi`, rows keep their SGR colour and
+    /// attribute codes (section 6.2).
+    fn screen_json(&self, ansi: bool) -> Value {
+        let styled: Vec<String> = if ansi {
+            (0..self.emu.rows() as u32)
+                .map(|y| self.emu.row_ansi(Space::Active, y, 0, self.emu.cols()).unwrap_or_default())
+                .collect()
+        } else {
+            Vec::new()
+        };
+        let mut lines: Vec<&str> =
+            if ansi { styled.iter().map(|s| s.as_str()).collect() } else { self.rows.iter().map(|r| trimmed(&r.text)).collect() };
         while lines.last().map(|l| l.is_empty()).unwrap_or(false) {
             lines.pop();
         }
@@ -667,6 +702,15 @@ impl Host {
                 self.pause_until = None;
             }
             let Some(front) = self.queue.front_mut() else { break };
+            if front.pause_before {
+                let since = self.last_input.elapsed();
+                let reacted = self.gen != self.gen_at_input && self.last_change.elapsed() >= KEY_STILL;
+                if since < KEY_MAX && !(since >= KEY_MIN && reacted) {
+                    self.pause_until = Some(Instant::now() + KEY_POLL);
+                    break;
+                }
+                front.pause_before = false;
+            }
             // Keys and pastes are encoded when they reach the front, so they
             // follow the modes the program has set by then.
             match &front.kind {
@@ -692,6 +736,7 @@ impl Host {
                         front.off += n;
                         let owner = front.owner;
                         self.last_input = Instant::now();
+                        self.gen_at_input = self.gen;
                         self.seen_output = true;
                         self.prompt_seen = false;
                         for w in self.waits.iter_mut() {
@@ -863,7 +908,7 @@ impl Host {
         resp.insert("waited_ms".into(), ms_since(w.started).into());
         resp.insert("interleaved".into(), w.interleaved.into());
         resp.insert("child".into(), self.child_json());
-        resp.insert("screen".into(), self.screen_json());
+        resp.insert("screen".into(), self.screen_json(w.ansi));
 
         let mut hint = w.hint.clone();
         match &reason {
@@ -1002,7 +1047,7 @@ impl Host {
             will.insert("dropped".into(), dropped.into());
         }
         will.extend(self.exit_fields(output));
-        will.insert("screen".into(), self.screen_json());
+        will.insert("screen".into(), self.screen_json(false));
         let will_line = serde_json::to_string(&Value::Object(will)).unwrap_or_default();
 
         // The will goes out first, so a client that sees `exit` can read it.
@@ -1018,6 +1063,7 @@ impl Host {
         for w in std::mem::take(&mut self.waits) {
             self.respond_wait(w, Reason::Exit);
         }
+        self.end_attach();
         self.flush_all(Duration::from_secs(1));
 
         let _ = std::fs::remove_file(&self.cfg.socket);
@@ -1071,15 +1117,27 @@ impl Host {
                     busy: false,
                     close_after: false,
                     wants_out: false,
+                    attach: None,
                 },
             );
         }
     }
 
     fn drop_conn(&mut self, id: u64) {
+        let mut resized = false;
         if let Some(c) = self.conns.remove(&id) {
             self.epoll.del(c.fd);
             sys::close(c.fd);
+            resized = c.attach.map(|a| a.resized).unwrap_or(false);
+        }
+        // The session goes back to its own size when the last client that
+        // resized it detaches.
+        if resized && !self.conns.values().any(|c| c.attach.as_ref().map(|a| a.resized).unwrap_or(false)) {
+            if let Some((cols, rows)) = self.restore_size.take() {
+                if self.exit_status.is_none() {
+                    let _ = self.do_resize(cols, rows);
+                }
+            }
         }
         // A client that went away no longer waits. Input it queued is still
         // sent.
@@ -1119,6 +1177,9 @@ impl Host {
     /// Handle as many complete requests as the connection has buffered, one
     /// at a time.
     fn process_conn(&mut self, id: u64) {
+        if self.conns.get(&id).map(|c| c.attach.is_some()).unwrap_or(false) {
+            return self.attach_input(id);
+        }
         loop {
             let parsed = {
                 let Some(c) = self.conns.get_mut(&id) else { return };
@@ -1234,6 +1295,7 @@ impl Host {
             ("GET", "/v1/output"),
             ("POST", "/v1/resize"),
             ("POST", "/v1/signal"),
+            ("GET", "/v1/attach"),
         ];
         match (req.method.as_str(), req.path.as_str()) {
             ("GET", "/v1/status") => self.handle_status(id, &req),
@@ -1244,12 +1306,13 @@ impl Host {
             ("GET", "/v1/output") => self.handle_output(id, &req),
             ("POST", "/v1/resize") => self.handle_resize(id, &req),
             ("POST", "/v1/signal") => self.handle_signal(id, &req),
-            (_, p) if p.starts_with("/v1/triggers") || p == "/v1/attach" => self.error(
+            ("GET", "/v1/attach") => self.handle_attach(id, &req),
+            (_, p) if p.starts_with("/v1/triggers") => self.error(
                 id,
                 &req,
                 501,
                 "not_implemented",
-                "triggers and attach are not implemented yet; to wait for text use POST /v1/wait with until=match",
+                "triggers are not implemented yet; to wait for text use POST /v1/wait with until=match",
             ),
             (m, p) if known.iter().any(|(_, kp)| *kp == p) => {
                 let right = known.iter().find(|(_, kp)| *kp == p).map(|(km, _)| *km).unwrap_or("GET");
@@ -1342,6 +1405,13 @@ impl Host {
                 );
             }
         };
+        let ansi = match field("style").and_then(|v| v.as_str().map(|s| s.to_string())).as_deref() {
+            None | Some("plain") => false,
+            Some("ansi") => true,
+            Some(other) => {
+                return self.error(id, req, 400, "unknown_style", &format!("unknown style '{other}'; use plain or ansi"));
+            }
+        };
         let default_timeout = if until == Until::Done { RUN_TIMEOUT_MS } else { DEFAULT_TIMEOUT_MS };
         let timeout_ms = match field("timeout_ms").or_else(|| field("timeout")) {
             None => default_timeout,
@@ -1397,6 +1467,7 @@ impl Host {
             pattern,
             known: Vec::new(),
             hint,
+            ansi,
         };
         // With input, text that is already on screen does not count: the
         // caller is waiting for what its input causes.
@@ -1455,8 +1526,11 @@ impl Host {
             }
         }
 
+        let mut after_text = false;
         for kind in items {
-            self.queue.push_back(QItem { owner: req_id, kind, off: 0, pause_after: false });
+            let is_key = matches!(kind, QKind::Key { .. });
+            self.queue.push_back(QItem { owner: req_id, kind, off: 0, pause_after: false, pause_before: is_key && after_text });
+            after_text = !is_key;
         }
         self.handle_wait(id, req, Until::Settle, Some(body), Some((req_id, hint)));
         if !self.waits.iter().any(|w| w.req_id == req_id) {
@@ -1531,8 +1605,8 @@ impl Host {
         // As a paste where the shell supports it, so tabs and newlines in the
         // command are taken literally; otherwise typed.
         let kind = if self.emu.dec_mode(2004) { QKind::Paste(line.into_bytes()) } else { QKind::Bytes(text_bytes(&line)) };
-        self.queue.push_back(QItem { owner: req_id, kind, off: 0, pause_after: false });
-        self.queue.push_back(QItem { owner: req_id, kind: QKind::Bytes(b"\r".to_vec()), off: 0, pause_after: false });
+        self.queue.push_back(QItem { owner: req_id, kind, off: 0, pause_after: false, pause_before: false });
+        self.queue.push_back(QItem { owner: req_id, kind: QKind::Bytes(b"\r".to_vec()), off: 0, pause_after: false, pause_before: false });
 
         let mut wait_body = json!({"wait": {"until": "done"}});
         if let Some(t) = body.get("timeout_ms") {
@@ -1572,14 +1646,11 @@ impl Host {
                 &format!("the size must be between {MIN_COLS}x{MIN_ROWS} and {MAX_COLS}x{MAX_ROWS} (cols x rows)"),
             );
         }
-        if let Err(e) = self.emu.resize(cols as u16, rows as u16) {
+        if let Err(e) = self.do_resize(cols as u16, rows as u16) {
             return self.error(id, req, 500, "resize_failed", &e);
         }
-        let _ = sys::set_winsize(self.master, cols as u16, rows as u16);
-        self.hold_since = None;
-        self.collect();
-        self.refresh();
-        self.last_change = Instant::now();
+        // An explicit resize is the new size to keep.
+        self.restore_size = None;
         self.handle_wait(id, req, Until::None, Some(json!({})), None);
     }
 
@@ -1643,4 +1714,239 @@ pub fn envelope(session: &str, seq: u64, trigger: &str, start: Instant) -> Map<S
     m.insert("time".into(), util::rfc3339_now().into());
     m.insert("t_ms".into(), ms_since(start).into());
     m
+}
+
+// ---- attach (DESIGN.md section 7) -----------------------------------------
+//
+// An attached client gets the screen re-rendered from emulator state, never
+// the program's own bytes. After the HTTP upgrade both directions carry one
+// JSON object per line.
+
+const FRAME_INTERVAL: Duration = Duration::from_millis(16);
+const ATTACH_BACKLOG: usize = 256 << 10;
+
+struct Attach {
+    view_cols: u16,
+    view_rows: u16,
+    /// A hash of each viewport row as last sent.
+    sent: Vec<u64>,
+    sent_meta: u64,
+    /// The host state the last frame was drawn from.
+    key: Option<(u64, usize)>,
+    last_sent: Instant,
+    /// This client asked the session to take its size.
+    resized: bool,
+}
+
+fn hash_str(s: &str) -> u64 {
+    let mut h = DefaultHasher::new();
+    h.write(s.as_bytes());
+    h.finish()
+}
+
+fn unhex(s: &str) -> Option<Vec<u8>> {
+    if s.len() % 2 != 0 {
+        return None;
+    }
+    (0..s.len()).step_by(2).map(|i| u8::from_str_radix(s.get(i..i + 2)?, 16).ok()).collect()
+}
+
+impl Host {
+    fn attach_key(&self) -> (u64, usize) {
+        (self.gen, self.waits.len())
+    }
+
+    fn has_attach(&self) -> bool {
+        self.conns.values().any(|c| c.attach.is_some())
+    }
+
+    /// When the next frame for a waiting attach client may go out.
+    fn attach_due(&self) -> Option<Instant> {
+        let key = self.attach_key();
+        self.conns
+            .values()
+            .filter_map(|c| c.attach.as_ref())
+            .filter(|a| a.key != Some(key))
+            .map(|a| a.last_sent + FRAME_INTERVAL)
+            .min()
+    }
+
+    fn do_resize(&mut self, cols: u16, rows: u16) -> Result<(), String> {
+        self.emu.resize(cols, rows)?;
+        let _ = sys::set_winsize(self.master, cols, rows);
+        self.hold_since = None;
+        self.collect();
+        self.refresh();
+        self.last_change = Instant::now();
+        Ok(())
+    }
+
+    fn handle_attach(&mut self, id: u64, req: &Request) {
+        if req.upgrade.as_deref() != Some("waldo-attach") {
+            return self.error(
+                id,
+                req,
+                400,
+                "upgrade_required",
+                "attach is a stream: send 'Upgrade: waldo-attach', or use 'waldo-term attach'. To read the screen once, GET /v1/screen",
+            );
+        }
+        let dim = |name: &str, default: u16| -> u16 {
+            req.query_get(name).and_then(|v| v.parse::<u16>().ok()).filter(|n| *n >= 1).unwrap_or(default).min(1000)
+        };
+        let attach = Attach {
+            view_cols: dim("cols", self.emu.cols()),
+            view_rows: dim("rows", self.emu.rows()),
+            sent: Vec::new(),
+            sent_meta: 0,
+            key: None,
+            last_sent: Instant::now() - FRAME_INTERVAL,
+            resized: false,
+        };
+        let Some(c) = self.conns.get_mut(&id) else { return };
+        c.outbuf.extend_from_slice(b"HTTP/1.1 101 Switching Protocols\r\nUpgrade: waldo-attach\r\nConnection: Upgrade\r\n\r\n");
+        c.attach = Some(attach);
+        self.flush_conn(id);
+        self.attach_input(id);
+    }
+
+    /// Handle the lines an attached client has sent.
+    fn attach_input(&mut self, id: u64) {
+        loop {
+            let line = {
+                let Some(c) = self.conns.get_mut(&id) else { return };
+                let Some(nl) = c.inbuf.iter().position(|b| *b == b'\n') else {
+                    if c.inbuf.len() > (1 << 20) {
+                        self.drop_conn(id);
+                    }
+                    return;
+                };
+                c.inbuf.drain(..=nl).collect::<Vec<u8>>()
+            };
+            let Ok(msg) = serde_json::from_slice::<Value>(&line) else { continue };
+            let size = |v: &Value| -> Option<(u16, u16)> {
+                Some((v.get("cols")?.as_u64()? as u16, v.get("rows")?.as_u64()? as u16))
+            };
+            if let Some((cols, rows)) = msg.get("viewport").and_then(size) {
+                if let Some(a) = self.conns.get_mut(&id).and_then(|c| c.attach.as_mut()) {
+                    a.view_cols = cols.clamp(1, 1000);
+                    a.view_rows = rows.clamp(1, 1000);
+                    // The client cleared its terminal; send everything again.
+                    a.sent.clear();
+                    a.key = None;
+                }
+            }
+            if let Some((cols, rows)) = msg.get("resize").and_then(size) {
+                let (cols, rows) = (cols.clamp(MIN_COLS, MAX_COLS), rows.clamp(MIN_ROWS, MAX_ROWS));
+                if (cols, rows) != (self.emu.cols(), self.emu.rows()) {
+                    let before = (self.emu.cols(), self.emu.rows());
+                    if self.do_resize(cols, rows).is_ok() {
+                        self.restore_size.get_or_insert(before);
+                    }
+                }
+                if let Some(a) = self.conns.get_mut(&id).and_then(|c| c.attach.as_mut()) {
+                    a.resized = true;
+                }
+            }
+            if let Some(bytes) = msg.get("keys_hex").and_then(|k| k.as_str()).and_then(unhex) {
+                if !bytes.is_empty() {
+                    // A person's typing is its own piece of input: requests
+                    // in flight learn that someone else typed.
+                    let owner = self.next_req;
+                    self.next_req += 1;
+                    self.queue.push_back(QItem { owner, kind: QKind::Bytes(bytes), off: 0, pause_after: false, pause_before: false });
+                }
+            }
+            if msg.get("detach").and_then(|d| d.as_bool()) == Some(true) {
+                self.drop_conn(id);
+                return;
+            }
+        }
+    }
+
+    /// Send a frame to each attached client whose view is out of date.
+    fn service_attach(&mut self) {
+        if !self.has_attach() {
+            return;
+        }
+        let now = Instant::now();
+        if self.hold_since.map(|h| now.duration_since(h) < HOLD_CAP).unwrap_or(false) {
+            // The program asked for its updates to be shown together.
+            return;
+        }
+        let key = self.attach_key();
+        let ids: Vec<u64> = self
+            .conns
+            .iter()
+            .filter(|(_, c)| {
+                c.attach
+                    .as_ref()
+                    .map(|a| a.key != Some(key) && now >= a.last_sent + FRAME_INTERVAL && c.outbuf.len() < ATTACH_BACKLOG)
+                    .unwrap_or(false)
+            })
+            .map(|(id, _)| *id)
+            .collect();
+        for id in ids {
+            let Some(a) = self.conns.get(&id).and_then(|c| c.attach.as_ref()) else { continue };
+            let cols = a.view_cols.min(self.emu.cols());
+            let rows = a.view_rows.min(self.emu.rows());
+            let (cx, cy) = self.emu.cursor();
+            // A smaller viewer sees the part of the screen with the cursor.
+            let off_y = if cy >= rows { cy - rows + 1 } else { 0 };
+            let off_x = if cx >= cols { cx - cols + 1 } else { 0 };
+            let mut lines: Vec<Value> = Vec::new();
+            let mut hashes: Vec<u64> = Vec::with_capacity(rows as usize);
+            for r in 0..rows {
+                let text = self.emu.row_ansi(Space::Active, (r + off_y) as u32, off_x, cols).unwrap_or_default();
+                let h = hash_str(&text);
+                if a.sent.get(r as usize) != Some(&h) {
+                    lines.push(json!([r, text]));
+                }
+                hashes.push(h);
+            }
+            let meta = json!({
+                "session": self.cfg.id,
+                "cols": self.emu.cols(),
+                "rows": self.emu.rows(),
+                "view": {"cols": cols, "rows": rows, "x": off_x, "y": off_y},
+                "cursor": {"row": cy - off_y, "col": cx - off_x, "visible": self.emu.cursor_visible()},
+                "title": self.emu.title(),
+                "alt_screen": self.emu.alt_screen(),
+                "busy": self.waits.len(),
+                "modes": {
+                    "app_cursor": self.emu.dec_mode(1),
+                    "app_keypad": self.emu.dec_mode(66),
+                    "bracketed_paste": self.emu.dec_mode(2004),
+                },
+            });
+            let meta_hash = hash_str(&meta.to_string());
+            let changed = !lines.is_empty() || meta_hash != a.sent_meta;
+            let mut frame = meta;
+            frame["lines"] = Value::Array(lines);
+            let Some(c) = self.conns.get_mut(&id) else { continue };
+            if let Some(a) = c.attach.as_mut() {
+                a.key = Some(key);
+                if !changed {
+                    continue;
+                }
+                a.sent = hashes;
+                a.sent_meta = meta_hash;
+                a.last_sent = now;
+            }
+            c.outbuf.extend_from_slice(frame.to_string().as_bytes());
+            c.outbuf.push(b'\n');
+            self.flush_conn(id);
+        }
+    }
+
+    /// Tell attached clients the session is over.
+    fn end_attach(&mut self) {
+        let ids: Vec<u64> = self.conns.iter().filter(|(_, c)| c.attach.is_some()).map(|(id, _)| *id).collect();
+        for id in ids {
+            if let Some(c) = self.conns.get_mut(&id) {
+                c.outbuf.extend_from_slice(b"{\"ended\":true}\n");
+            }
+            self.flush_conn(id);
+        }
+    }
 }

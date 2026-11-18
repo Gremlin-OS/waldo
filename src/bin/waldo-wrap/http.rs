@@ -15,6 +15,7 @@ pub struct Request {
     pub json_body: bool,
     pub wants_text: bool,
     pub keep_alive: bool,
+    pub upgrade: Option<String>,
     pub body: Vec<u8>,
 }
 
@@ -115,6 +116,8 @@ pub fn parse(buf: &[u8], continue_sent: bool) -> Parsed {
             }
         } else if h.name.eq_ignore_ascii_case("expect") {
             expect_continue = value.eq_ignore_ascii_case("100-continue");
+        } else if h.name.eq_ignore_ascii_case("upgrade") {
+            out.upgrade = Some(value.to_ascii_lowercase());
         }
     }
 

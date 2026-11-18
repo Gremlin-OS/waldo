@@ -61,11 +61,18 @@ or a socket path); with exactly one live session it can be left out.
       --until settle|match|change|exit|done [--pattern RE] [--timeout MS]
   output [--tail N]         what the program has printed so far
   resize COLSxROWS          change the terminal size
-  signal NAME | --stop      send a signal, or end the session
+  attach [--drive] [--resize]
+                            watch the session live in your own terminal. View only
+                            unless --drive; Ctrl-\\ toggles typing, Ctrl-] detaches.
+                            --resize makes the session take your terminal's size.
+  kill [ID]                 end the session and wait until it has ended
+  signal NAME               send a signal to the program (--stop is what kill sends)
   gc [--all]                remove ended sessions (--all: regardless of age)
   help [TOPIC]              keys, wait, run, messages, exit-status, commands
 
-Any command that prints a screen takes --json for the full response.
+Any command that prints a screen takes --json for the full response, and
+--style ansi to keep colour codes in the screen text. Programs often mark the
+selected menu entry or button with colour alone; plain text cannot show that.
 '-' as the value of --text, --keys or --paste reads it from stdin.
 
 examples:
@@ -87,6 +94,9 @@ Key names (case does not matter):
   <lt>                a literal '<'
 Modifiers: <C-x> Ctrl, <M-x> Alt, <S-Tab> Shift; they combine: <C-S-Left>.
 
+A key that follows text waits until the program has shown the text, as a
+person would, so --text PROMPT --keys '<Enter>' submits what it typed.
+
 In --keys, an unknown name such as <Entr> is an error and nothing is sent.
 Text with '<' in it (code, HTML, redirects) belongs in --text.
 
@@ -100,7 +110,7 @@ examples:
   $ waldo-term send -s keys-demo --text 'echo \"a <b> c\"' --keys '<Enter>'
   $ waldo-term send -s keys-demo --text 'sleep 30' --keys '<Enter>' --until none
   $ waldo-term send -s keys-demo --keys '<C-c>'
-  $ waldo-term signal -s keys-demo --stop
+  $ waldo-term kill keys-demo
 ";
 
 pub const WAIT: &str = "\
@@ -157,7 +167,7 @@ examples:
   $ waldo-wrap --detach --name run-demo -- bash
   $ waldo-term run -s run-demo 'cd /tmp && pwd'
   $ waldo-term run -s run-demo --timeout 5000 'sleep 1; echo slept'
-  $ waldo-term signal -s run-demo --stop
+  $ waldo-term kill run-demo
 ";
 
 pub const MESSAGES: &str = "\

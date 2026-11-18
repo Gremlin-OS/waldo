@@ -3,6 +3,7 @@
 //! It adds argument parsing, text formatting and help to the control API
 //! (DESIGN.md section 2.4). Everything else happens in the host.
 
+mod attach;
 mod help;
 
 use serde_json::{json, Map, Value};
@@ -47,6 +48,9 @@ struct Opts {
     stop: bool,
     all: bool,
     older_than: Option<i64>,
+    style: Option<String>,
+    drive: bool,
+    resize: bool,
     rest: Vec<String>,
 }
 
@@ -101,6 +105,9 @@ fn parse_opts(cmd: &str, args: &[String], allowed: &[&str], positional: bool) ->
                 }
                 "--json" => o.json = true,
                 "--stop" => o.stop = true,
+                "--drive" => o.drive = true,
+                "--resize" => o.resize = true,
+                "--style" => o.style = Some(value()),
                 "--all" => o.all = true,
                 "--older-than" => {
                     let v = value();
@@ -302,6 +309,9 @@ fn finish(value: &Value, as_json: bool, wanted_exit: bool) -> ! {
 
 fn wait_object(o: &Opts) -> Map<String, Value> {
     let mut wait = Map::new();
+    if let Some(s) = &o.style {
+        wait.insert("style".into(), s.clone().into());
+    }
     if let Some(u) = &o.until {
         wait.insert("until".into(), u.clone().into());
     }
@@ -329,7 +339,7 @@ fn encode(s: &str) -> String {
 
 // ---- commands ------------------------------------------------------------------
 
-const WAIT_OPTS: [&str; 5] = ["--session", "--until", "--pattern", "--timeout", "--json"];
+const WAIT_OPTS: [&str; 6] = ["--session", "--until", "--pattern", "--timeout", "--json", "--style"];
 
 fn cmd_send(args: &[String]) -> ! {
     let mut allowed = WAIT_OPTS.to_vec();
@@ -436,6 +446,120 @@ fn cmd_signal(args: &[String]) -> ! {
     finish(&value, o.json, false);
 }
 
+fn cmd_attach(args: &[String]) -> ! {
+    let o = parse_opts("attach", args, &["--session", "--drive", "--resize"], false);
+    if !attach::is_terminal() {
+        die(EXIT_USAGE, "'attach' draws on a terminal and this is not one; from a script, read the screen with 'waldo-term screen'");
+    }
+    let (id, socket, dir) = match target(o.session.as_deref()) {
+        Target::Live { id, socket, dir } => (id, socket, dir),
+        Target::Ended(sess) => ended(&sess, false, EXIT_CHILD_EXITED),
+    };
+    let mut stream = connect(&socket).unwrap_or_else(|e| die(EXIT_NO_SESSION, &format!("cannot reach session '{id}': {e}")));
+    // The size goes in the request so the first frame already fits. The last
+    // line of the terminal is the status bar.
+    let (cols, rows) = attach::term_size();
+    let request = format!(
+        "GET /v1/attach?cols={cols}&rows={} HTTP/1.1\r\nHost: waldo\r\nUpgrade: waldo-attach\r\nConnection: Upgrade\r\n\r\n",
+        rows.saturating_sub(1).max(1)
+    );
+    if stream.write_all(request.as_bytes()).is_err() {
+        die(EXIT_OTHER, "cannot send the attach request");
+    }
+    // Read the response head; whatever follows it is already the stream.
+    let mut head: Vec<u8> = Vec::new();
+    let split = loop {
+        if let Some(i) = head.windows(4).position(|w| w == b"\r\n\r\n") {
+            break i + 4;
+        }
+        let mut buf = [0u8; 4096];
+        match stream.read(&mut buf) {
+            Ok(n) if n > 0 => head.extend_from_slice(&buf[..n]),
+            _ => die(EXIT_OTHER, "the session closed the connection before answering"),
+        }
+    };
+    if !head.starts_with(b"HTTP/1.1 101") {
+        let body: Value = serde_json::from_slice(&head[split..]).unwrap_or(Value::Null);
+        let text = body.get("text").and_then(|t| t.as_str()).unwrap_or("the session refused to attach");
+        die(EXIT_OTHER, text);
+    }
+    let leftover = head[split..].to_vec();
+    match attach::run(stream, leftover, attach::Options { drive: o.drive, resize: o.resize }) {
+        attach::Outcome::Detached => {
+            println!("detached from '{id}'; it is still running");
+            std::process::exit(EXIT_OK);
+        }
+        attach::Outcome::Lost(e) => die(EXIT_OTHER, &e),
+        attach::Outcome::Ended => {
+            if let Some(d) = dir.as_ref() {
+                let end = Instant::now() + Duration::from_secs(3);
+                while session::lock_is_held(d) && Instant::now() < end {
+                    std::thread::sleep(Duration::from_millis(20));
+                }
+            }
+            match session::find(&id) {
+                Ok(sess) => ended(&sess, false, EXIT_CHILD_EXITED),
+                Err(_) => die(EXIT_CHILD_EXITED, &format!("session '{id}' has ended")),
+            }
+        }
+    }
+}
+
+/// End a session: ask the host to stop its program (hang up, then terminate,
+/// then kill), wait until it has, and say how it ended.
+fn cmd_kill(args: &[String]) -> ! {
+    let o = parse_opts("kill", args, &["--session"], true);
+    let sel = o.session.clone().or_else(|| o.rest.first().cloned());
+    let (id, socket, dir) = match target(sel.as_deref()) {
+        Target::Live { id, socket, dir } => (id, socket, dir),
+        Target::Ended(sess) => {
+            println!("session '{}' had already ended", sess.id);
+            std::process::exit(EXIT_OK);
+        }
+    };
+    match connect(&socket) {
+        Ok(mut stream) => {
+            let _ = stream.set_read_timeout(Some(Duration::from_secs(10)));
+            match http(&mut stream, "POST", "/v1/signal", Some(&json!({"stop": true}))) {
+                Ok((status, value)) => check_status(status, &value),
+                // The host may exit before it answers; that is what was asked for.
+                Err(e) if e == "closed" => {}
+                Err(e) => die(EXIT_OTHER, &e),
+            }
+        }
+        Err(e) => die(EXIT_NO_SESSION, &format!("cannot reach session '{id}' at {}: {e}", socket.display())),
+    }
+    let Some(dir) = dir else {
+        println!("asked '{id}' to stop");
+        std::process::exit(EXIT_OK);
+    };
+    // The host escalates over a few seconds if the program ignores the
+    // hangup, and releases its lock when it is gone.
+    let end = Instant::now() + Duration::from_secs(10);
+    while session::lock_is_held(&dir) {
+        if Instant::now() >= end {
+            die(EXIT_OTHER, &format!("session '{id}' has not stopped after 10 seconds; its host is process {}", host_pid(&dir)));
+        }
+        std::thread::sleep(Duration::from_millis(20));
+    }
+    let will = session::find(&id).ok().and_then(|s| session::read_will(&s.dir, s.meta.as_ref()));
+    match will {
+        // One line: how it ended. The output is still there for `output`.
+        Some(w) => println!("{}", render::will(&w).lines().next().unwrap_or("")),
+        None => println!("session '{id}' stopped"),
+    }
+    std::process::exit(EXIT_OK);
+}
+
+fn host_pid(dir: &Path) -> String {
+    std::fs::read(dir.join("meta.json"))
+        .ok()
+        .and_then(|b| serde_json::from_slice::<Value>(&b).ok())
+        .and_then(|m| m.get("host_pid").and_then(|p| p.as_i64()))
+        .map(|p| p.to_string())
+        .unwrap_or_else(|| "unknown".into())
+}
+
 fn age(secs: i64) -> String {
     match secs {
         s if s < 120 => format!("{s}s"),
@@ -527,8 +651,10 @@ fn main() {
         "output" => cmd_output(rest),
         "resize" => cmd_resize(rest),
         "signal" => cmd_signal(rest),
+        "kill" => cmd_kill(rest),
         "gc" => cmd_gc(rest),
-        "attach" | "screencap" | "match" => die(EXIT_OTHER, &format!("'{cmd}' is not implemented yet")),
+        "attach" => cmd_attach(rest),
+        "screencap" | "match" => die(EXIT_OTHER, &format!("'{cmd}' is not implemented yet")),
         other => usage(&format!("unknown command '{other}'")),
     }
 }

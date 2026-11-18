@@ -1,6 +1,7 @@
 # Waldo design
 
-Status: milestone one is implemented (2026-11-18). Section 13 says what was
+Status: milestone one, styled screens and attach are implemented
+(2026-11-18). Sections 13 and 14 say what was
 built and where it differs from the design text.
 
 Waldo lets an LLM agent (or a human) operate interactive terminal programs
@@ -1142,3 +1143,107 @@ Not done, and not tested:
   without a failure.
 - fish with `run --shell fish` is implemented and untested.
 - aarch64 is declared in the flake and was not built.
+
+## 14. Styled screens and attach as built
+
+Built on 2026-11-18, after milestone one, because both gaps showed up in real
+use: `htop` marks the selected entry of its sort menu with colour alone, and
+watching a session meant polling it.
+
+### Styled screens (section 6.2)
+
+`?style=ansi`, `"style": "ansi"` in a request body, or `waldo-term ...
+--style ansi` returns `screen.text` with SGR sequences. The open question in
+6.2 is settled: the host builds each row from cell styles itself.
+
+- Each run of cells with the same style starts with one complete sequence
+  that begins with a reset, such as `ESC[0;1;31m`, so a run can be read
+  without knowing what came before it. A row that set any style ends with
+  `ESC[0m`. Nothing else is emitted: no cursor movement, no other escapes.
+- Colours are written as the program chose them: the 16 named colours as
+  30 to 37, 40 to 47, 90 to 97 and 100 to 107; other palette entries as
+  `38;5;N`; true colour as `38;2;R;G;B`.
+- Attributes: bold, faint, italic, underline, blink, inverse, invisible,
+  strikethrough. Underline styles and underline colour are not distinguished.
+- Trailing cells are dropped only if they are blank and unstyled, so a
+  highlighted bar that runs to the edge of the screen keeps its width.
+- Plain remains the default. Messages to the destination are always plain.
+
+In `htop`'s sort menu the selected entry now reads
+`ESC[0;30;46mPERCENT_CPU   ESC[0m`, and moves when an arrow key is sent.
+
+### Attach (section 7)
+
+`waldo-term attach [-s ID] [--drive] [--resize]`, and `GET /v1/attach` with
+`Upgrade: waldo-attach`.
+
+What matches section 7: the view is re-rendered from emulator state and the
+program's bytes are never passed through; it is view-only unless `--drive`;
+the session keeps its size unless `--resize`, which is undone when that
+viewer detaches; a person's typing goes through the same queue as requests,
+and a request in flight during it reports `interleaved`; the status bar shows
+when an agent request is waiting; frames are held while the program has a
+synchronized-output hold open, and sent at most every 16 ms.
+
+Where it differs:
+
+- **The stream is one JSON object per line in both directions**, not
+  length-prefixed binary frames. A frame from the host carries the session
+  and view sizes, the cursor, the title, how many requests are waiting, three
+  input modes, and `lines`: pairs of row number and styled text, only for
+  rows that changed. The viewer sends `viewport`, `resize`, `keys_hex` and
+  `detach`. It can be read with a few lines of any language.
+- **The host crops**, since it knows cell widths. The viewer says how big it
+  is (in the request's query, then in `viewport` messages) and receives rows
+  already cut to fit. A viewer smaller than the session sees the part that
+  holds the cursor; the status bar says `(showing 40x9)`.
+- **A larger viewer sees the session in the top left corner**, with the rest
+  blank. There is no border.
+- **Keys.** Ctrl-] detaches. Ctrl-\ switches typing on and off. While not
+  typing, `q` also detaches.
+- **The viewer's keystrokes are sent as its terminal encoded them.** So that
+  they are encoded the way the program expects, the viewer's terminal is put
+  in the same cursor-key, keypad and bracketed-paste modes as the session.
+  The kitty keyboard protocol and modifyOtherKeys are not mirrored, so a
+  program that relies on them gets the traditional encoding from a viewer.
+- When the session ends, the viewer leaves its screen, prints the will, and
+  exits 3, as any other command does.
+
+Tests run `waldo-term attach` inside a second waldo session, which gives it
+a terminal and lets the test read what a person would see.
+
+Not done: mouse input from the viewer, images (shown as nothing, not as the
+outlined box of section 6.4), and scrolling back through history while
+attached. The `q` and Ctrl-] keys were tested through a waldo session, not by
+a person at a keyboard.
+
+### A key after text waits for the program to react
+
+Found by running Claude Code inside waldo. `--text PROMPT --keys '<Enter>'`
+left the prompt sitting in its input box with a blank line under it: the
+text and the Enter arrived together, and the program took the Enter for part
+of a paste. A person never types text and a key in the same instant.
+
+Within one request, a key that follows text is now held until the program
+has reacted to the text: the screen has changed since the text was written
+and has been still for 30 ms. The wait is at least 40 ms. If the screen never
+reacts, as with a password prompt that echoes nothing, the key is sent after
+300 ms.
+
+A fixed pause was tried first and was not enough. 40 ms worked on a program
+that had been running for a while and failed on the first input after it
+started, when it is slower to take a keystroke. On fresh starts, a 40 ms gap
+failed and gaps of 170 ms and more worked; waiting for the reaction worked on
+four fresh starts out of four. The explanation (timing-based paste detection)
+fits what was seen and was not checked against the program's source.
+
+This applies inside one request. Text in one request and a key in the next
+are already separated by the caller.
+
+### `waldo-term kill`
+
+`waldo-term kill [ID]` ends a session: it sends the same stop request as
+`signal --stop` (hang up, terminate after 2 s, kill after 2 more), waits
+until the host has gone, and prints one line saying how the program ended.
+It exits 0 if the session is over when it returns, including when it had
+already ended. The will is still written, so `output` works afterwards.
