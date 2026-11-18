@@ -35,7 +35,7 @@ End the session, see what is left, and clean up:
   $ waldo-term gc --all
 
 Each command prints one status line, such as
-  [demo settle gen=7 80x24 cursor=3,3 running fg=bash]
+  [demo settle gen=7 120x30 cursor=3,3 running fg=bash]
 then the screen (or the output, for run), then sometimes a line starting
 with 'hint:' that says what probably went wrong and what to do.
 
@@ -140,7 +140,7 @@ pub const RUN: &str = "\
 waldo-term run COMMAND types COMMAND into a shell session, waits until it has
 finished, and prints what it printed and its exit status:
 
-  [demo done exit=2 4.1s gen=212 80x24 cursor=24,3 running fg=bash]
+  [demo done exit=2 4.1s gen=212 120x30 cursor=24,3 running fg=bash]
   cc -c foo.c
   foo.c:12: error: expected ';' before 'return'
 

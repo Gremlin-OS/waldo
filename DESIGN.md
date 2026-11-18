@@ -97,7 +97,7 @@ the host answers any terminal queries, collects lines that scrolled off (section
 - Images sent with the Kitty graphics protocol are accepted, and Sixel is
   planned (section 6.4).
 - `WALDO_SESSION` and `WALDO_SOCKET` are set in the child's environment.
-- Default size is 80x24. Bounds are 2x1 to 500x200; zero is rejected.
+- Default size is 120x30 (section 13 says why). Bounds are 2x1 to 500x200; zero is rejected.
 - Emulator scrollback is capped at 4 MiB. It serves attach and reflow. It is
   not the record of output; the output buffer is (section 6.5).
 
@@ -283,8 +283,8 @@ On the deadline the response is still 200 with the current screen and
   "child": {"state": "running", "pid": 48211, "foreground": "vim"},
   "screen": {
     "gen": 41,
-    "cols": 80,
-    "rows": 24,
+    "cols": 120,
+    "rows": 30,
     "cursor": {"row": 1, "col": 19, "visible": true},
     "alt_screen": true,
     "title": "main.c + - VIM",
@@ -314,7 +314,7 @@ On the deadline the response is still 200 with the current screen and
 raw screen text, which is cheaper for an agent to read:
 
 ```
-[k3f9q2 settle gen=41 80x24 cursor=1,19 alt running]
+[k3f9q2 settle gen=41 120x30 cursor=1,19 alt running]
 #include <stdio.h>
 ~
 ```
@@ -362,7 +362,7 @@ session whose program is a shell sitting at its prompt.
 
 ```
 $ waldo-term run -s sh 'make test'
-[sh done exit=2 4.1s gen=212 80x24 cursor=24,3 running]
+[sh done exit=2 4.1s gen=212 120x30 cursor=24,3 running]
 cc -c foo.c
 foo.c:12: error: expected ';' before 'return'
 make: *** [Makefile:8: foo.o] Error 1
@@ -525,7 +525,7 @@ A gap in `seq` means messages were dropped under backpressure.
 ```json
 {"v":1,"session":"k3f9q2","seq":0,"trigger":"hello","time":"2026-11-17T23:41:07.120Z","t_ms":0,
  "name":null,"argv":["vim","main.c"],"cwd":"/home/u/proj","socket":"/run/user/1000/waldo/k3f9q2/sock",
- "cols":80,"rows":24,"host_pid":48200}
+ "cols":120,"rows":30,"host_pid":48200}
 ```
 
 Sent before the child is spawned; it is the destination probe.
@@ -534,7 +534,7 @@ Sent before the child is spawned; it is the destination probe.
 
 ```json
 {"v":1,"session":"k3f9q2","seq":7,"trigger":"settle","time":"2026-11-17T23:41:09.482Z","t_ms":2362,
- "screen":{"gen":41,"cols":80,"rows":24,"cursor":{"row":1,"col":19,"visible":true},"alt_screen":true,
+ "screen":{"gen":41,"cols":120,"rows":30,"cursor":{"row":1,"col":19,"visible":true},"alt_screen":true,
            "title":"main.c + - VIM","text":"#include <stdio.h>\n~\n~"}}
 ```
 
@@ -544,7 +544,7 @@ Sent before the child is spawned; it is the destination probe.
 {"v":1,"session":"k3f9q2","seq":12,"trigger":"match","time":"2026-11-17T23:41:15.003Z","t_ms":7883,
  "match":{"id":"pw","pattern":"[Pp]assword.*: $","text":"Password: ","groups":[],
           "count":1,"line":57,"on_screen":true,"row":9,"col":1},
- "screen":{"gen":63,"cols":80,"rows":24,"cursor":{"row":9,"col":11,"visible":true},"alt_screen":false,
+ "screen":{"gen":63,"cols":120,"rows":30,"cursor":{"row":9,"col":11,"visible":true},"alt_screen":false,
            "title":"","text":"$ sudo make install\nPassword:"}}
 ```
 
@@ -564,7 +564,7 @@ number. `row` and `col` are present only when `on_screen` is true.
 {"v":1,"session":"k3f9q2","seq":31,"trigger":"exit","time":"2026-11-17T23:42:01.900Z","t_ms":54780,
  "exit_code":2,"signal":null,"core_dumped":false,
  "killed_by_waldo":false,"kill_reason":null,"spawn_error":null,"duration_ms":54612,
- "screen":{"gen":140,"cols":80,"rows":24,"cursor":{"row":24,"col":1,"visible":true},"alt_screen":false,
+ "screen":{"gen":140,"cols":120,"rows":30,"cursor":{"row":24,"col":1,"visible":true},"alt_screen":false,
            "title":"","text":"..."},
  "output":{"text":"$ make\ncc -c foo.c\n[... 2210 lines omitted ...]\nmake: *** [Makefile:8: all] Error 2",
            "lines_total":2260,"truncated":true,"omitted_lines":2210}}
@@ -1109,6 +1109,11 @@ code is what was tested:
   first frame. Once input has been sent the rule no longer applies, so a
   program that echoes nothing can still settle. A program that never draws
   runs the wait to its deadline, with a hint.
+- **The default size is 120x30**, not 80x24. Width costs almost nothing,
+  since trailing whitespace is trimmed from screens, and it stops the
+  truncation seen in `top` at 80 columns. Height is what costs, because a
+  full-screen program paints every row, so it grows only a little. This is
+  judgement; token counts were not measured across sizes.
 - `gen` is a hash of the visible cells, cursor, title and size, recomputed
   after each batch of output.
 

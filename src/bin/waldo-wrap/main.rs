@@ -37,7 +37,7 @@ options:
   --dest URI         where messages go; default file:<session dir>/events.ndjson
                      The last message is the will: how PROGRAM ended and its output.
   --no-probe         do not require the destination to accept a message at startup
-  --size COLSxROWS   terminal size, default 80x24
+  --size COLSxROWS   terminal size, default 120x30
   --output-cap BYTES how much rendered output to keep for the will, default 65536
   --quiet-ms MS      how long the screen must be still to count as settled, default 200
   --json             print the session's coordinates as one JSON object
@@ -84,8 +84,8 @@ fn parse_args() -> Args {
         no_probe: false,
         detach: false,
         json: false,
-        cols: 80,
-        rows: 24,
+        cols: 120,
+        rows: 30,
         output_cap: 64 << 10,
         quiet_ms: 200,
         program: Vec::new(),

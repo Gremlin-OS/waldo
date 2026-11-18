@@ -558,7 +558,7 @@ fn wrapped_lines_are_joined_and_progress_bars_collapse() {
     let t = T::new();
     let long = "x".repeat(200);
     let script = format!("printf '10%%\\r50%%\\r100%%\\n'; echo {long}; echo end");
-    let r = t.wrap(&["--name", "wr", "--", "sh", "-c", &script]);
+    let r = t.wrap(&["--name", "wr", "--size", "80x24", "--", "sh", "-c", &script]);
     assert_eq!(r.code, 0);
     let will = t.will("wr");
     assert_eq!(will["output"]["text"].as_str().unwrap(), format!("100%\n{long}\nend"));
