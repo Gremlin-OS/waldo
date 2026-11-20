@@ -141,8 +141,8 @@ mod tests {
 
     #[test]
     fn parse_uris() {
-        assert!(matches!(Dest::parse("file:/tmp/x").unwrap(), Dest::File(p) if p == PathBuf::from("/tmp/x")));
-        assert!(matches!(Dest::parse("file:///tmp/x").unwrap(), Dest::File(p) if p == PathBuf::from("/tmp/x")));
+        assert!(matches!(Dest::parse("file:/tmp/x").unwrap(), Dest::File(p) if p == std::path::Path::new("/tmp/x")));
+        assert!(matches!(Dest::parse("file:///tmp/x").unwrap(), Dest::File(p) if p == std::path::Path::new("/tmp/x")));
         assert!(Dest::parse("file:relative").is_err());
         assert!(Dest::parse("http://localhost/x").unwrap_err().contains("only file:"));
         assert!(Dest::parse("nonsense").is_err());

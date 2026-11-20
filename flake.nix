@@ -3,15 +3,12 @@
 
   inputs = {
     nixpkgs.url = "https://channels.nixos.org/nixpkgs-unstable/nixexprs.tar.zst";
-    # The emulator core. Pinned to the release tag; see DESIGN.md section 9.
-    ghostty.url = "github:ghostty-org/ghostty/vt-1.0.1";
   };
 
   outputs =
     {
       self,
       nixpkgs,
-      ghostty,
     }:
     let
       systems = [
@@ -28,11 +25,12 @@
         pkgs.procps
       ];
 
+      # The emulator core, built statically from the tarballs in
+      # vendor/libghostty-vt. See DESIGN.md section 9.2.
+      mkVt = pkgs: pkgs.callPackage ./nix/libghostty-vt.nix { };
+
       mkWaldo =
         system: pkgs:
-        let
-          vt = ghostty.packages.${system}.libghostty-vt;
-        in
         pkgs.rustPlatform.buildRustPackage {
           pname = "waldo";
           version = "0.1.0";
@@ -41,15 +39,13 @@
             fileset = pkgs.lib.fileset.unions [
               ./Cargo.toml
               ./Cargo.lock
+              ./build.rs
               ./src
               ./tests
             ];
           };
           cargoLock.lockFile = ./Cargo.lock;
-          buildInputs = [
-            vt.out
-            vt.dev
-          ];
+          env.LIBGHOSTTY_VT_LIB_DIR = "${mkVt pkgs}/lib";
           nativeCheckInputs = testPrograms pkgs;
           # The tests start real programs in ptys and are timing sensitive;
           # run them one at a time.
@@ -78,20 +74,29 @@
         }
       );
 
-      # Building the package runs the unit and integration tests.
+      # Building the package runs the unit and integration tests. The clippy
+      # check fails on any warning.
       checks = forAll (
         system: pkgs: {
           waldo = self.packages.${system}.waldo;
+          clippy = self.packages.${system}.waldo.overrideAttrs (old: {
+            pname = "waldo-clippy";
+            nativeBuildInputs = old.nativeBuildInputs ++ [ pkgs.clippy ];
+            buildPhase = ''
+              cargo clippy --offline --all-targets -- -D warnings
+            '';
+            doCheck = false;
+            installPhase = ''
+              touch $out
+            '';
+          });
         }
       );
 
       devShells = forAll (
-        system: pkgs:
-        let
-          vt = ghostty.packages.${system}.libghostty-vt;
-        in
-        {
+        system: pkgs: {
           default = pkgs.mkShell {
+            env.LIBGHOSTTY_VT_LIB_DIR = "${mkVt pkgs}/lib";
             packages = [
               pkgs.cargo
               pkgs.rustc
@@ -102,10 +107,6 @@
               pkgs.socat
             ]
             ++ testPrograms pkgs;
-            buildInputs = [
-              vt.out
-              vt.dev
-            ];
           };
         }
       );

@@ -7,7 +7,7 @@ use std::io::Read;
 pub fn rfc3339_now() -> String {
     let mut ts = libc::timespec { tv_sec: 0, tv_nsec: 0 };
     unsafe { libc::clock_gettime(libc::CLOCK_REALTIME, &mut ts) };
-    rfc3339(ts.tv_sec as i64, (ts.tv_nsec / 1_000_000) as u32)
+    rfc3339(ts.tv_sec, (ts.tv_nsec / 1_000_000) as u32)
 }
 
 pub fn rfc3339(secs: i64, millis: u32) -> String {
@@ -39,7 +39,7 @@ pub fn rfc3339(secs: i64, millis: u32) -> String {
 pub fn unix_now() -> i64 {
     let mut ts = libc::timespec { tv_sec: 0, tv_nsec: 0 };
     unsafe { libc::clock_gettime(libc::CLOCK_REALTIME, &mut ts) };
-    ts.tv_sec as i64
+    ts.tv_sec
 }
 
 fn random_bytes(buf: &mut [u8]) {

@@ -24,6 +24,9 @@ use std::path::PathBuf;
 use std::time::{Duration, Instant};
 use waldo::util;
 
+/// Why an input item was refused: an error code and a message for the caller.
+type ItemError = (&'static str, String);
+
 const T_PTY: u64 = 0;
 const T_PIDFD: u64 = 1;
 const T_SIGNAL: u64 = 2;
@@ -599,7 +602,7 @@ impl Host {
             if i == cy as usize {
                 let have = text.chars().count();
                 if have < cx as usize {
-                    text.extend(std::iter::repeat(' ').take(cx as usize - have));
+                    text.extend(std::iter::repeat_n(' ', cx as usize - have));
                 }
             }
             acc.push_str(&text);
@@ -943,22 +946,20 @@ impl Host {
                     }
                 }
             }
-            Reason::Timeout => {
-                if hint.is_none() {
-                    hint = match w.until {
-                        Until::Settle if !self.seen_output => {
-                            Some("the program has not drawn anything yet; settle waits for the first text on screen.".into())
-                        }
-                        Until::Settle if self.last_change.elapsed() < Duration::from_secs(2) => {
-                            Some("the screen never went quiet; wait for specific text with --until match.".into())
-                        }
-                        Until::Done => Some(
-                            "the command is still running; wait for it with 'waldo-term wait --until done', or interrupt it with 'waldo-term send --keys <C-c>'.".into(),
-                        ),
-                        Until::Match => Some("the pattern did not appear; it is matched against one line at a time. Check the screen above for what is there.".into()),
-                        _ => None,
-                    };
-                }
+            Reason::Timeout if hint.is_none() => {
+                hint = match w.until {
+                    Until::Settle if !self.seen_output => {
+                        Some("the program has not drawn anything yet; settle waits for the first text on screen.".into())
+                    }
+                    Until::Settle if self.last_change.elapsed() < Duration::from_secs(2) => {
+                        Some("the screen never went quiet; wait for specific text with --until match.".into())
+                    }
+                    Until::Done => Some(
+                        "the command is still running; wait for it with 'waldo-term wait --until done', or interrupt it with 'waldo-term send --keys <C-c>'.".into(),
+                    ),
+                    Until::Match => Some("the pattern did not appear; it is matched against one line at a time. Check the screen above for what is there.".into()),
+                    _ => None,
+                };
             }
             _ => {}
         }
@@ -1541,7 +1542,7 @@ impl Host {
 
     /// Turn one input item into what goes in the queue. Files are read here,
     /// before anything is sent.
-    fn read_item(&self, item: &Value) -> Result<(Vec<QKind>, Option<String>), (&'static str, String)> {
+    fn read_item(&self, item: &Value) -> Result<(Vec<QKind>, Option<String>), ItemError> {
         let obj = item.as_object().filter(|o| o.len() == 1).ok_or((
             "bad_item",
             "each item is an object with exactly one of: text, keys, paste, text_file, keys_file, paste_file".to_string(),
@@ -1745,7 +1746,7 @@ fn hash_str(s: &str) -> u64 {
 }
 
 fn unhex(s: &str) -> Option<Vec<u8>> {
-    if s.len() % 2 != 0 {
+    if !s.len().is_multiple_of(2) {
         return None;
     }
     (0..s.len()).step_by(2).map(|i| u8::from_str_radix(s.get(i..i + 2)?, 16).ok()).collect()

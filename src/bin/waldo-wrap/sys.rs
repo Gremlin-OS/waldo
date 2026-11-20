@@ -229,9 +229,7 @@ pub fn spawn(program: &CString, argv: &[CString], envp: &[CString], slave: &CStr
             if got == 4 {
                 break;
             }
-        } else if n == 0 {
-            break;
-        } else if io::Error::last_os_error().raw_os_error() != Some(libc::EINTR) {
+        } else if n == 0 || io::Error::last_os_error().raw_os_error() != Some(libc::EINTR) {
             break;
         }
     }

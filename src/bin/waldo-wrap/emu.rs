@@ -171,7 +171,7 @@ mod ffi {
         pub error: GString,
     }
 
-    #[link(name = "ghostty-vt")]
+    #[link(name = "ghostty-vt", kind = "static")]
     extern "C" {
         pub fn ghostty_terminal_new(
             allocator: *const c_void,
