@@ -1,8 +1,8 @@
 # Waldo design
 
-Status: milestone one, styled screens and attach are implemented
-(2026-11-18). Sections 13 and 14 say what was
-built and where it differs from the design text.
+Status, 2026-11-20: this document describes what is built, except where a
+section starts with "Not built". Section 12 lists what exists, what does not,
+and what is tested less than it should be.
 
 Waldo lets an LLM agent (or a human) operate interactive terminal programs
 through messages instead of a keyboard. The model to keep in mind: it is a
@@ -17,9 +17,9 @@ Linux programs:
   waits for conditions, and attaches a human to a session.
 
 Sections 1 to 8 are the design. Section 9 is the language and emulator
-recommendation. Section 10 lists where this departs from the original brief and
-the decisions I'd like reviewed. Section 11 records what was verified by spike
-and what was not.
+choice. Section 10 lists where this departs from the original brief. Section
+11 records what was verified and what was not. Section 12 is the status, and
+section 13 keeps what was learned while building and using it.
 
 ## 1. Process model
 
@@ -39,7 +39,8 @@ failure before step 7 exits non-zero with a one-line error on stderr:
 4. Probe the destination by delivering the `hello` message (section 5). Fail
    if it can't be delivered. `--no-probe` skips the wait: `hello` is queued
    like any other message and startup continues.
-5. Open the pty at the session size. Create the emulator.
+5. Open the `--record` file if one was asked for (section 3.4). Open the pty
+   at the session size. Create the emulator.
 6. Fork the child: `setsid`, make the pty slave its controlling terminal, dup
    it to fds 0 to 2, `close_range` everything else, set the environment
    (section 1.3), `execve`. Exec failure is reported back through a
@@ -67,8 +68,13 @@ and then exits with the child's code, or 128 plus the signal number.
 ### 1.2 Event loop
 
 The host is a single-threaded epoll loop over: the pty master, the child's
-pidfd, a signalfd (SIGTERM, SIGINT, SIGHUP), timerfds for settle windows and
-request deadlines, the listening socket, and client connections. All pty and
+pidfd, a signalfd (SIGTERM, SIGINT, SIGHUP), the listening socket, and client
+connections. Timers are the epoll timeout: each turn of the loop works out
+the nearest moment at which something can happen (a deadline, a settle
+window closing, a paused key, a trigger or stream message falling due) and
+sleeps until then. A timer is set only for something that time alone can
+bring about. Waiting for a program's first output, or for a command that has
+not finished, sets none, so an idle host uses no CPU. All pty and
 socket I/O is non-blocking. Input for the child sits in a queue and is written
 as the pty accepts it, while the loop keeps reading output; writing input with
 a blocking call can deadlock against a child that is itself blocked writing
@@ -95,10 +101,14 @@ the host answers any terminal queries, collects lines that scrolled off (section
   1 s cap on a hold.
 - Clipboard access (OSC 52) is refused. Title changes are recorded. Mouse
   reporting is tracked but waldo sends no mouse input in v1.
-- Images sent with the Kitty graphics protocol are accepted, and Sixel is
-  planned (section 6.4).
+- Images are not handled yet (section 6.4).
 - `WALDO_SESSION` and `WALDO_SOCKET` are set in the child's environment.
-- Default size is 120x30 (section 13 says why). Bounds are 2x1 to 500x200; zero is rejected.
+- Default size is 120x30. Bounds are 2x1 to 500x200; zero is rejected. Width
+  costs almost nothing, since trailing whitespace is trimmed from screens,
+  and 120 columns stops the truncation seen in `top` at 80. Height is what
+  costs, because a full-screen program paints every row, so it is only a
+  little more than the traditional 24. This is judgement; token counts were
+  not measured across sizes.
 - Emulator scrollback is capped at 4 MiB. It serves attach and reflow. It is
   not the record of output; the output buffer is (section 6.5).
 
@@ -134,10 +144,13 @@ exits cleanly after delivering the will.
 - **Liveness**: a session is alive if its `lock` is held. The kernel releases
   the lock however the host dies, including SIGKILL. This distinguishes
   "host is busy" from "host is gone", which a connect attempt cannot.
-- **Stale sessions**: a directory whose lock is free belongs to a host that
-  died without cleaning up, or one that could not deliver its will. `list`
-  shows the first as `dead` and the second as `undelivered`. `waldo-term gc`
-  removes both kinds once they are older than a threshold.
+- **Ended sessions**: a directory whose lock is free belongs to a host that
+  has gone. `list` shows it as `exited` if the will is readable in the
+  directory, which is the normal end with the default destination; as
+  `undelivered` if the will is in `will.json` because it could not be
+  delivered; and as `dead` if there is no will at all, because the host
+  died without cleaning up. `waldo-term gc` removes all three once they are
+  older than a threshold. A live session is `live`.
 
 ### 1.5 Shutdown
 
@@ -148,15 +161,26 @@ When the child exits (pidfd readable), the host:
    output once every slave fd is closed. If a surviving grandchild still holds
    the slave, EIO never comes, so the drain also ends after 100 ms without
    data.
-3. Answers every pending request with reason `exit`.
+3. Runs the match triggers one last time and sends the end of the stream
+   (sections 3.2 and 3.4).
 4. Composes the exit message and delivers it to the destination as the last
-   message of the session (section 4.5), removes the session directory, and
-   exits. With `--linger SECONDS` it first keeps serving read-only requests
-   for that long.
+   message of the session (section 4.5).
+5. Answers every pending request with reason `exit`. The will goes first so
+   that a client that sees `exit` can read it at once.
+6. With `--linger SECONDS`, keeps the socket open for that long and answers
+   `GET` requests for the status, screen, output and triggers, each with
+   reason `exit`. Anything else gets 409 `exited`. A stop request or a signal
+   to the host ends the linger early, which is what `waldo-term kill` does.
+7. Removes the socket, and with an explicit `--dest` the session directory,
+   and exits.
 
 When the host is told to stop (SIGTERM, SIGINT, or `POST /v1/signal` with
-`"stop": true`), it sends the child's process group SIGHUP, then SIGTERM after
-2 s, then SIGKILL after 2 more, and reports `killed_by_waldo: true`.
+`"stop": true`), it sends SIGHUP, then SIGTERM after 2 s, then SIGKILL after
+2 more, and reports `killed_by_waldo: true`. Signals go to the child's
+process group and to the terminal's foreground process group, which is what
+Ctrl-C at a keyboard reaches: with a shell as the child, the running command
+is in a group of its own. `POST /v1/signal` with a signal name does the same
+with that one signal.
 
 If the host itself dies, the pty master closes and the kernel sends SIGHUP to
 the child's foreground process group. Most programs exit on that. Waldo does
@@ -185,13 +209,13 @@ a wide character occupies two.
 | Method and path | Purpose |
 |---|---|
 | `GET /v1/status` | Session metadata, child state, current `gen` |
-| `GET /v1/screen` | Current screen. Accepts the wait parameters below. `?format=png` returns a picture and `?format=cells` styled runs (section 6.3) |
+| `GET /v1/screen` | Current screen. Accepts the wait parameters below. `?format=png` and `?format=cells` are not built (section 6.3) |
 | `POST /v1/input` | Send input, then wait, then return the screen |
 | `POST /v1/wait` | Wait without sending input |
 | `POST /v1/run` | Run a shell command and wait for it to finish (section 2.5) |
 | `GET /v1/output` | Rendered output so far, from the capped buffer: `?tail=N` lines |
-| `GET /v1/triggers` | List match triggers |
-| `POST /v1/triggers` | Add a match trigger |
+| `GET /v1/triggers` | List match triggers (section 3.2) |
+| `POST /v1/triggers` | Add one: `{"pattern": RE, "id": NAME, "mode": "edge" or "once"}`; only `pattern` is required |
 | `DELETE /v1/triggers/<id>` | Remove one |
 | `POST /v1/resize` | `{"cols": 100, "rows": 30}` |
 | `POST /v1/signal` | `{"signal": "SIGINT"}` to the child's process group, or `{"stop": true}` |
@@ -248,6 +272,14 @@ A lone `<Esc>` is followed by a 30 ms pause before the next byte, unless the
 program has enabled the kitty keyboard protocol, so the program doesn't read
 `<Esc>` plus the next character as an Alt chord.
 
+Within one request, a key that follows text is held until the program has
+reacted to the text: the screen has changed since the text was written and
+has been still for 30 ms. The wait is at least 40 ms, and if the screen never
+reacts, as with a password prompt that echoes nothing, the key is sent after
+300 ms. A person never types text and a key in the same instant, and programs
+that detect a paste by timing take an Enter that arrives with the text for a
+line break inside it (section 13 has how this was found).
+
 For curl, a body whose content type is not `application/json` is treated as one
 `keys` item, and `wait` and `timeout_ms` may be query parameters:
 
@@ -263,9 +295,15 @@ curl --unix-socket "$S" -d ':q!<Enter>' 'http://waldo/v1/input?until=settle'
 |---|---|
 | `settle` (default) | The screen is settled (section 3.1) |
 | `match` | `wait.pattern` matches a rendered line (section 3.2 rules) |
-| `change` | `gen` differs from `wait.since_gen` |
+| `change` | `gen` differs from `wait.since_gen`, or from its value when the request began if that is not given |
 | `exit` | The child has exited |
+| `done` | The command started by `run` has finished (section 2.5) |
 | `none` | Immediately |
+
+With input, `match` ignores text that was already on screen when the request
+began, so a wait for the prompt after a command is not satisfied by the
+prompt the command was typed at. Without input (`POST /v1/wait`), text
+already on screen counts.
 
 Every request has a deadline: `timeout_ms`, default 10 000, maximum 600 000.
 On the deadline the response is still 200 with the current screen and
@@ -294,10 +332,11 @@ On the deadline the response is still 200 with the current screen and
 }
 ```
 
-- `reason`: `settle`, `match`, `change`, `exit`, `none`, or `timeout`.
+- `reason`: `settle`, `match`, `change`, `exit`, `done`, `none`, or `timeout`.
 - `gen` increases whenever the rendered screen changes (text, style or
   cursor). Clients use it with `until: change` and to notice that nothing
-  happened.
+  happened. It is a count of changes to a hash of the visible cells, cursor,
+  title and size, recomputed after each batch of output.
 - `text` has trailing whitespace trimmed from each row and trailing blank rows
   dropped. `rows` gives the real height.
 - `interleaved` is true if another client's input reached the pty during this
@@ -315,10 +354,12 @@ On the deadline the response is still 200 with the current screen and
 raw screen text, which is cheaper for an agent to read:
 
 ```
-[k3f9q2 settle gen=41 120x30 cursor=1,19 alt running]
+[k3f9q2 settle gen=41 120x30 cursor=1,19 alt running fg=vim]
 #include <stdio.h>
 ~
 ```
+
+`fg` is the terminal's foreground process, the `foreground` of the JSON.
 
 Errors use HTTP status codes and a body like
 `{"error": "unknown_key", "text": "unknown key name <Entr> at offset 4; use <lt> for a literal <"}`.
@@ -335,10 +376,22 @@ waldo-term send   [-s ID] [--text S | --keys S | --paste S]... [--until U] [--ti
 waldo-term screen [-s ID] [--until U] [--json]
 waldo-term wait   [-s ID] --until match --pattern RE | --until exit | ...
 waldo-term output [-s ID] [--tail N]
-waldo-term screencap [-s ID] -o FILE.png [--until U] [--scale N] [--font PATH]
-waldo-term match add|rm|list ...
-waldo-term resize|signal|attach|gc ...
+waldo-term match add [-s ID] [--id NAME] [--once] PATTERN
+waldo-term match rm [-s ID] NAME
+waldo-term match list [-s ID]
+waldo-term resize [-s ID] COLSxROWS
+waldo-term attach [-s ID] [--drive] [--resize]
+waldo-term kill [ID]
+waldo-term signal [-s ID] NAME | --stop
+waldo-term gc [--all]
 ```
+
+`waldo-term screencap` is not built (section 6.3).
+
+- `kill` sends the stop request of section 1.5, waits until the host has
+  gone, and prints one line saying how the program ended. It exits 0 if the
+  session is over when it returns, including when it had already ended. The
+  will is still written, so `output` works afterwards.
 
 - `-s` takes an id, a name, a unique prefix, or a socket path. With exactly one
   live session it may be omitted.
@@ -352,7 +405,8 @@ waldo-term resize|signal|attach|gc ...
   else. The screen is printed in the first three cases and for 5.
 - A run-to-completion command may finish before the agent's next call. If the
   session used the default destination, `waldo-term` finds the will there,
-  prints the exit details and exits 3. If it used an explicit `--dest`, the
+  prints the exit details and exits 3; `output` prints the will's output and
+  exits 0. If it used an explicit `--dest`, the
   session directory is gone, the agent gets status 4, and the will is wherever
   it pointed `--dest`.
 
@@ -372,10 +426,18 @@ make: *** [Makefile:8: foo.o] Error 1
 - `POST /v1/run` with `{"command": "make test", "timeout_ms": 120000}`. The
   default deadline is 120 s, longer than for other requests.
 - The host types the command followed by a sentinel: a `printf` of a private
-  OSC escape sequence carrying a one-time nonce and `$?`. The sequence draws
+  OSC escape sequence carrying `$?` and a one-time nonce. The sequence draws
   nothing; the emulator hands it to the host, which then knows the command
-  finished and with what status. If the shell already emits OSC 133
-  command-end marks, the host uses those and adds no sentinel.
+  finished and with what status. What is typed is `{ COMMAND`, then on a new
+  line `}; printf` of the mark: the group stops a command that ends in `&`
+  or a comment from swallowing the mark.
+- If the shell reports the end of each command itself, with OSC 133 marks
+  that carry the exit status, the host uses those and types the command
+  alone. It does so once it has seen such a mark in the session, and only
+  for a one-line command, because each line of several ends with a mark of
+  its own. The output then starts where the shell's output-start mark was.
+- Once the end is known, `run` waits for the screen to settle, so the
+  response shows the new prompt.
 - The response has `"reason": "done"`, `command_exit_code`, the command's
   `output` (the rendered lines between the command and its end, capped head
   and tail like the will's), and the screen. The echoed sentinel is removed
@@ -384,8 +446,8 @@ make: *** [Makefile:8: foo.o] Error 1
   with the output so far, and `waldo-term wait --until done` picks it up
   again.
 - One `run` at a time per session; a second gets 409 `run_in_progress`.
-- A multi-line command is sent as a paste when the shell has enabled
-  bracketed paste.
+- The line is sent as a paste when the shell has enabled bracketed paste, so
+  tabs and newlines in the command are taken literally.
 - It assumes `;` and `$?`, which holds for sh, bash and zsh. `--shell fish`
   uses `$status`. If the foreground program is not a shell at its prompt the
   result is whatever typing that line into it does; `run` cannot check.
@@ -442,9 +504,14 @@ the unix socket. It is not planned until there is a need.
 
 The screen is settled when all of these hold:
 
-1. `gen` has not changed for the quiet window (`quiet_ms`, default 200).
+1. `gen` has not changed for the quiet window (`--quiet-ms`, default 200).
 2. All queued input has been written to the pty.
 3. No synchronized-output hold (mode 2026) is open.
+4. The screen has shown text, or input has been sent. A blank screen that
+   stays blank is a program that has not drawn yet, not a settled one.
+   Output alone does not count, because programs such as `top` set the
+   terminal up well before their first frame. A program that never draws
+   runs the wait to its deadline, with a hint.
 
 The window is measured from the later of the last screen change and the last
 input write. It shrinks to 40 ms when the shell has emitted an OSC 133
@@ -463,11 +530,15 @@ can react:
   still returned.
 
 As an asynchronous trigger, `settle` emits one message each time the screen
-settles after having changed.
+settles after having changed. It is off unless the session was started with
+`waldo-wrap --on settle`.
 
 ### 3.2 Match
 
-A match trigger is a regex with an id. Rules:
+A match trigger is a regex with an id, added with `POST /v1/triggers` or
+`waldo-term match add`. Its matches go to the destination as `match`
+messages. Ids are 1 to 32 characters from letters, digits, `_` and `-`; one
+is made up (`t1`, `t2`, ...) if none is given. Rules:
 
 - The subject is one logical line: physical rows joined where the terminal
   soft-wrapped them. Patterns never span logical lines. Lines longer than 4096
@@ -478,18 +549,25 @@ A match trigger is a regex with an id. Rules:
   each line once as it scrolls off the primary screen, so fast output that
   never rests on screen is still seen. The cursor's own line is included, which
   is what makes prompts without a trailing newline (`Password: `) matchable.
-- Evaluation happens after each chunk of output, at most every 25 ms, and never
-  inside a synchronized-output hold.
+- The visible screen is looked at after output, at most every 25 ms, never
+  inside a synchronized-output hold, and always at a settle point. Lines that
+  scroll off are looked at as they go, without that limit.
 - **Edge triggering**: a match is identified by its line's absolute row number
   (rows scrolled off so far plus the screen row) and its matched text. The
   trigger fires when a match appears that is not already known. A known match
   is forgotten only when it is absent at a settle point. A program that clears
   and repaints the same content between settles therefore does not re-fire;
   the same text appearing again after the screen has settled without it does.
+- Text that is already on screen when a trigger is added is a match, and
+  fires.
 - A resize reflows lines and changes row numbers. Matches present immediately
   after a resize are recorded without firing.
 - `mode` is `edge` (the default) or `once` (fires one time, then removes
   itself).
+
+A `match` wait (section 2.2) uses the same line and pattern rules, with one
+difference: it forgets a known match as soon as it is gone, not at a settle
+point. A wait is answered once, so a repaint cannot make it fire twice.
 
 ### 3.3 Exit
 
@@ -497,12 +575,20 @@ Fires exactly once, after the pty is drained. See section 4.5.
 
 ### 3.4 Stream
 
-Opt-in. Emits rendered output lines as they are committed (scroll off the
-primary screen), batched, at most one message per 250 ms. It is a `tail -f` of
-the output buffer. It carries text, not escape sequences, and emits nothing
-while a full-screen program is on the alternate screen; `settle` covers that
-case. Raw byte recording, if wanted, is a separate `--record FILE` option
-writing asciicast.
+Opt-in, with `waldo-wrap --on stream`. Emits rendered output lines as they
+are committed (scroll off the primary screen), batched, at most one message
+per 250 ms. It is a `tail -f` of the output. It carries text, not escape
+sequences, and emits nothing while a full-screen program is on the alternate
+screen; `settle` covers that case. When the program exits, the lines still on
+screen are sent too, so the stream as a whole is the will's `output` before
+any capping. If lines arrive faster than they are sent, at most 512 KiB wait;
+the oldest beyond that are skipped and counted in `skipped_lines`.
+
+Raw byte recording is separate: `waldo-wrap --record FILE` writes the
+program's output as it arrived to an asciicast v2 file, with a resize event
+for each resize, which `asciinema play` replays. If the file cannot be
+created the session does not start; if writing fails later the recording
+stops and the session carries on.
 
 ## 4. Message schema
 
@@ -514,12 +600,13 @@ message has this envelope:
 | `v` | Schema version, 1 |
 | `session` | Session id |
 | `seq` | Starts at 0, increases by 1 per message, assigned when queued |
-| `trigger` | `hello`, `settle`, `match`, `stream` or `exit` |
+| `trigger` | `hello`, `settle`, `match`, `stream`, `heartbeat` or `exit` |
 | `time` | Wall clock, RFC 3339 UTC |
 | `t_ms` | Milliseconds since the session started, monotonic |
-| `dropped` | Present when messages were dropped since the previous one; the count |
+| `dropped` | Present when messages were dropped, or could not be delivered, since the previous one that arrived; the count |
 
-A gap in `seq` means messages were dropped under backpressure.
+A gap in `seq` means messages were lost, and the next message that arrives
+says how many in `dropped`. A `heartbeat` message is the envelope alone.
 
 ### 4.1 hello
 
@@ -558,6 +645,10 @@ number. `row` and `col` are present only when `on_screen` is true.
 {"v":1,"session":"k3f9q2","seq":20,"trigger":"stream","time":"2026-11-17T23:41:20.250Z","t_ms":13130,
  "from_line":118,"lines":["cc -c foo.c","cc -c bar.c","foo.c:12: warning: unused variable 'x'"]}
 ```
+
+`from_line` is the number of the first line in `lines`, counting the
+session's output lines from 1. `skipped_lines`, when present, is how many
+lines just before `from_line` were not sent (section 3.4).
 
 ### 4.5 exit (the will)
 
@@ -601,22 +692,32 @@ receiver comes up after the session does.
 |---|---|---|
 | `file:PATH` | Append one line per message, one `write` each, `O_APPEND` | Open for append, write `hello` |
 | `unix:PATH` | Connect once, stream NDJSON | Connect, write `hello` |
-| `http://HOST/PATH` | POST each message, `Content-Type: application/json` | POST `hello`, require 2xx |
+| `http://HOST[:PORT]/PATH` | POST each message, `Content-Type: application/json` | POST `hello`, require 2xx |
 
 `https:` is out of scope; put a local proxy in front if needed.
+
+- `unix:` keeps the connection the probe opened for the whole session. If a
+  write fails, the message is lost and the next one connects again. Writes
+  time out after 5 s.
+- `http:` opens a connection for each message and reads only the status
+  line. That is slower than keeping one open, and it cannot go stale. An
+  IPv6 address is written in brackets. Connecting, writing and reading each
+  time out after 5 s.
 
 **Queue.** The delivery thread reads from a bounded queue (256 messages or
 8 MiB). When it is full:
 
-- a queued `settle` is replaced by a newer `settle`; consecutive `stream`
-  messages are merged;
-- otherwise the oldest `match` or `stream` message is dropped and counted in
-  the next message's `dropped`;
+- a queued `settle` is replaced by a newer `settle`, which takes its place
+  and its `seq`; a `stream` message that follows another is merged into it;
+- otherwise the oldest `match` or `stream` message is dropped, then the
+  oldest `settle`, and counted in the next message's `dropped`;
 - `hello` and `exit` are never dropped.
 
 **Delivery guarantees.** At most once for `file:` and `unix:`. At least once
-for `http:`, which retries on failure, so receivers should de-duplicate on
-`(session, seq)`.
+for `http:`, which tries a failed message twice more, after 250 ms and after
+1 s, so receivers should de-duplicate on `(session, seq)`. A message that
+still fails is counted in `dropped`. The log says when delivery starts
+failing and when it works again, not once per message.
 
 **The will.** On delivery failure the host retries for up to 5 s. If it still
 can't deliver, it writes the will to `will.json` in the session directory and
@@ -630,7 +731,8 @@ kill. Receivers can tell by:
   `lock` is free, and it holds no `will.json`. A clean exit removes the
   directory. `waldo-term list` reports this state as `dead`.
 - `http:` receivers with no filesystem access can ask for `--heartbeat SECONDS`
-  and treat silence as death.
+  and treat silence as death. A `heartbeat` message is sent whenever that
+  long has passed without another message. It works with any destination.
 
 ## 6. Screen and output model
 
@@ -643,13 +745,29 @@ they are joined in `output` and for matching, because those are about content.
 
 ### 6.2 Styled screen text
 
-With `style=ansi`, each row is written with SGR sequences where the style
-changes and a reset at the end of the row. No cursor movement, no other
-escapes. The emulator has a formatter that emits escape sequences; whether it
-can be limited to SGR, or the host must build rows from cell styles itself,
-has not been checked.
+`?style=ansi`, `"style": "ansi"` in a request body, or `waldo-term ...
+--style ansi` returns `screen.text` with SGR sequences. The host builds each
+row from cell styles itself.
+
+- Each run of cells with the same style starts with one complete sequence
+  that begins with a reset, such as `ESC[0;1;31m`, so a run can be read
+  without knowing what came before it. A row that set any style ends with
+  `ESC[0m`. Nothing else is emitted: no cursor movement, no other escapes.
+- Colours are written as the program chose them: the 16 named colours as
+  30 to 37, 40 to 47, 90 to 97 and 100 to 107; other palette entries as
+  `38;5;N`; true colour as `38;2;R;G;B`.
+- Attributes: bold, faint, italic, underline, blink, inverse, invisible,
+  strikethrough. Underline styles and underline colour are not distinguished.
+- Trailing cells are dropped only if they are blank and unstyled, so a
+  highlighted bar that runs to the edge of the screen keeps its width.
+- Plain remains the default. Messages to the destination are always plain.
+
+In `htop`'s sort menu the selected entry reads
+`ESC[0;30;46mPERCENT_CPU   ESC[0m`, and moves when an arrow key is sent.
 
 ### 6.3 Screen capture to PNG
+
+Not built. The font to vendor is not chosen.
 
 `GET /v1/screen?format=png` returns a picture of the current screen as
 `image/png`. It takes the same wait parameters as any screen request, so
@@ -679,6 +797,9 @@ prints is sent in a `Waldo-Status` response header.
   plus the cursor. It is there for a client that wants to draw its own.
 
 ### 6.4 Images
+
+Not built, and nothing here has been tried: no image has been sent through
+the emulator. The Sixel translation in particular is an idea to spike first.
 
 Programs draw pictures in a terminal with one of three protocols. Waldo is a
 terminal, so it should take them, and with PNG capture a client with vision
@@ -748,29 +869,47 @@ child's queries a second time and those answers would be injected as input;
 the human's terminal is rarely the session's size; and a client that attaches
 late needs the current state, not the byte history.
 
-So the host sends frames: on attach a full repaint of the screen in escape
-sequences generated from emulator state, then repaints of changed rows, at most
-60 per second. `waldo-term` puts its own terminal in raw mode on the alternate
-screen and draws frames inside a viewport with a one-line status bar. It does
-not link the emulator; only the host does.
+So the host sends frames: on attach every row of the screen as styled text
+built from emulator state, then the rows that changed, at most one frame
+every 16 ms and none while the program has a synchronized-output hold open.
+`waldo-term` puts its own terminal in raw mode on the alternate screen and
+draws frames inside a viewport with a one-line status bar. It does not link
+the emulator; only the host does.
 
-The attach stream is an HTTP upgrade on the control socket carrying
-length-prefixed frames in both directions (screen frames down; input, resize
-and detach up).
+The attach stream is an HTTP upgrade on the control socket (`GET /v1/attach`
+with `Upgrade: waldo-attach`) carrying one JSON object per line in both
+directions, so it can be read with a few lines of any language. A frame from
+the host carries the session and view sizes, the cursor, the title, how many
+requests are waiting, three input modes, and `lines`: pairs of row number and
+styled text, only for rows that changed. The viewer sends `viewport`,
+`resize`, `keys_hex` and `detach`.
+
+When the session ends, the viewer leaves its screen, prints the will, and
+exits 3, as any other command does.
 
 ### 7.2 Size
 
-The session owns its size. Attaching never resizes it. A smaller viewer sees a
-cropped view with a notice; a larger one sees the session letterboxed.
+The session owns its size. Attaching never resizes it. The host crops, since
+it knows cell widths: the viewer says how big it is, in the request's query
+and then in `viewport` messages, and receives rows already cut to fit. A
+smaller viewer sees the part that holds the cursor, and its status bar says
+`(showing 40x9)`. A larger one sees the session in the top left corner with
+the rest blank; there is no border.
 `attach --resize` opts in to adopting the viewer's size and restores the old
-size on detach. `POST /v1/resize` sets it explicitly. A resize sends SIGWINCH
-through the pty, reflows the primary screen, counts as a screen change, and
-restarts any settle window.
+size when that viewer detaches. `POST /v1/resize` sets it explicitly. A resize
+sends SIGWINCH through the pty, reflows the primary screen, counts as a screen
+change, and restarts any settle window.
 
 ### 7.3 Human and agent input
 
-- Attach is view-only by default. `attach --drive`, or a key chord inside
-  attach, lets the human type.
+- Attach is view-only by default. `attach --drive`, or Ctrl-\ inside attach,
+  lets the human type; Ctrl-\ again stops. Ctrl-] detaches, and so does `q`
+  while not typing.
+- The viewer's keystrokes are sent as its terminal encoded them. So that they
+  are encoded the way the program expects, the viewer's terminal is put in
+  the same cursor-key, keypad and bracketed-paste modes as the session. The
+  kitty keyboard protocol and modifyOtherKeys are not mirrored, so a program
+  that relies on them gets the traditional encoding from a viewer.
 - All input goes through one queue. Each API request is atomic in it; a human's
   keystrokes are queued between requests, never inside one.
 - There is no lock. An agent's request still works while a human is driving,
@@ -778,6 +917,9 @@ restarts any settle window.
   during it, so the agent knows the screen may not be the result of its keys
   alone.
 - The status bar shows when an agent request is in flight.
+
+Not built: mouse input from the viewer, scrolling back through history while
+attached, and images, which are shown as nothing.
 
 ## 8. Failure modes
 
@@ -789,6 +931,8 @@ restarts any settle window.
 | Destination unreachable at exit | Retry 5 s, then write `will.json` in the session directory and keep the directory |
 | Agent calls `waldo-term` after the session ended | Default destination: the will is read from it, status 3. Explicit `--dest`: status 4, and the will is at that destination |
 | `run` used when the foreground program is not a shell | The command line is typed into whatever is there. The sentinel never arrives and the request times out |
+| A request arrives during `--linger` | Status, screen, output and triggers are answered with reason `exit`; anything else gets 409 `exited` |
+| The `--record` file cannot be written | At startup: the session does not start. Later: the recording stops, the session continues, the log says so |
 | Child exits with output unread | Pty drained before the will is composed (section 1.5) |
 | Grandchild keeps the pty open after the child exits | Drain ends after 100 ms of silence; the will is sent; the grandchild is left alone and gets SIGHUP when the host exits |
 | Child exits during a request | Request returns `reason: exit` with the exit object |
@@ -849,23 +993,32 @@ where the alternative is writing and securing our own parser or rasteriser.
 
 | Dependency | Kind | Used for |
 |---|---|---|
-| libghostty-vt 1.0.1 | Vendored source, built with Zig | The emulator |
+| libghostty-vt 1.0.1 | Vendored source, built with Zig, linked statically | The emulator |
 | Zig 0.17.x | Build tool, from nixpkgs | Building the library. Not present at run time |
 | `libc` | Crate | Declarations for the Linux system calls |
 | `regex-lite` | Crate | Linear-time regex for match triggers. No dependencies of its own, unlike `regex` |
 | `serde`, `serde_json` | Crates | JSON for the API and messages |
 | `httparse` | Crate | Parsing HTTP requests and responses |
-| `ab_glyph` | Crate | Reading an OpenType or TrueType font and rasterising glyphs for `screencap` |
-| `png` | Crate | Writing the PNG |
+| `ab_glyph` | Crate, not added yet | Reading an OpenType or TrueType font and rasterising glyphs for `screencap` |
+| `png` | Crate, not added yet | Writing the PNG |
 
 At run time the binaries need only glibc.
 
 **Vendoring libghostty-vt.** The release tarball (4.5 MB, 26 MB unpacked) and
 the tarball of its own five build dependencies are committed under `vendor/`
 with their checksums, and the flake builds from those. The build then needs
-no network, and survives upstream moving its hosting. The library is built in
-its safety-checked, no-SIMD configuration: speed is irrelevant here and it
-drops a C++ dependency from the build.
+no network, and survives upstream moving its hosting. The library is built
+static and safety-checked (`ReleaseSafe`), so a bug in it stops the session
+with a message instead of corrupting memory.
+
+SIMD stays on. The plan was to turn it off to keep C++ out of the build, but
+in 1.0.1 the no-SIMD library is built without libc and exports stub `calloc`
+and `free` functions; linked statically into a program that uses a shared
+glibc, the stubs replace the real ones and the program's own allocations
+fail. The SIMD build links libc and has no stubs. Its C++ (simdutf, in the source tarball, and
+Highway, in the dependency tarball) is compiled
+by Zig itself without the C++ standard library, so it adds no build tool and
+no run-time library.
 
 **Crates** are pinned by `Cargo.lock` and fetched by hash in the Nix build.
 They are not committed to the repository.
@@ -994,30 +1147,28 @@ Verified on this machine (NixOS, kernel 6.18):
 - Vim under `xterm-256color` emits, before drawing: two cursor-position
   queries, DA2, OSC 10 and 11 queries, and enables modifyOtherKeys and
   bracketed paste. Bash only enables bracketed paste.
+- Added 2026-11-20: the library builds from the two vendored tarballs inside
+  the Nix sandbox, which has no network, as a static safety-checked library.
+  The whole test suite passes against it and `waldo-wrap` needs only glibc
+  and libgcc at run time. The no-SIMD variant also builds, but breaks the
+  program it is linked into (section 9.2).
+- By the tests, since the first build: the key encoder; the paste encoder,
+  which does sanitise; the mode 2026 hold callback; the OSC 133 callbacks
+  for prompt start, output start and command end with its exit status; that
+  an unknown private OSC reaches the host and draws nothing, which `run`'s
+  sentinel depends on; that DA1 and DSR 5n are answered; and that the Nix
+  sandbox has a usable pty and a loopback interface.
 
 Not verified:
 
-- The safety-checked, no-SIMD build of the library, and building it from a
-  vendored tarball instead of the upstream flake. Only the upstream flake's
-  default variant was built. Upstream documents an offline build from its
-  dependency tarball, and other projects have reported trouble with it.
 - Image support. That the core implements Kitty graphics and not Sixel comes
   from reading its 1.0.1 source and headers; no image was sent through it.
   The Sixel translation is an idea, not a tested approach: it depends on
   filtering the byte stream ahead of the emulator and on the two protocols'
   cursor behaviour being close enough to map.
-- The crates named in section 9.2: that `regex-lite` has no dependencies and
-  is linear-time, that `httparse` does no I/O, and that `ab_glyph` and `png`
-  are current and maintained. These are from memory, not checked against
-  today's releases. Which font to vendor is also undecided.
-- The key encoder, the paste encoder, OSC 133 callbacks and the 2026 hold
-  callback. Their declarations were read; they were not exercised.
-- That the emulator hands an unrecognised private OSC sequence to the host,
-  which `run`'s sentinel depends on. The library has an unknown-sequence
-  callback; it was not exercised. If it doesn't work, the fallback is a
-  visible sentinel line, as zmx uses.
-- That the Nix build sandbox provides a usable `/dev/ptmx` for the integration
-  tests. I believe it does; the first check run will tell.
+- That `ab_glyph` and `png`, the crates section 9.2 names for PNG capture,
+  are current and maintained. They are not dependencies yet. Which font to
+  vendor is also undecided.
 - Reading `/proc/<pid>/syscall` of the foreground process to detect "blocked
   waiting for input" as a stronger settle signal. My probe was refused by the
   kernel's ptrace policy because the reader was not the target's ancestor;
@@ -1027,223 +1178,98 @@ Not verified:
   conventions adopted here (snake_case keys, `error` codes with a `text`
   sentence, NDJSON) come from the part that was.
 
-## 12. First milestone
+## 12. Status
 
-A vertical slice, as in the brief: `waldo-wrap` runs a program, accepts input,
-returns screens, and writes an exit message to a `file:` destination.
+As of 2026-11-20. `nix flake check` builds the emulator from the vendored
+tarballs, builds both binaries, runs clippy with warnings as errors, and runs
+the unit and integration tests in the Nix sandbox against bash, vim and
+coreutils from nixpkgs. `TODO.md` is the working list of what is open.
 
-In scope: sections 1 (all of it, including `--detach` and the session
-directory), 2.1 to 2.3 with `until` of `settle`, `match`, `exit` and `none`,
-file items in input, the `hello` and `exit` messages, the default destination
-and `--no-probe`, the output buffer, `run` (section 2.5), help and hints
-(section 2.6), `waldo-term` `help`, `run`, `list`, `send`, `screen`, `wait`,
-`output` and `gc`, and the flake (devShell, both packages, checks).
+**Built:** everything in sections 1 to 5 and 7; of section 6, screen text,
+styled screens and the output buffer.
 
-Out of scope: `unix:` and `http:` destinations, asynchronous `settle`, `match`
-and `stream` messages, attach, styled screens, `screencap`, images, heartbeat,
-linger.
+**Not built:**
 
-Integration tests, all with programs from nixpkgs:
+- PNG capture, `format=cells` and `waldo-term screencap` (section 6.3).
+- Images (section 6.4).
+- `--token-file` (section 2.7). Not planned until bridged use is common.
+- In attach: mouse input, scrolling back, mirroring the kitty keyboard
+  protocol and modifyOtherKeys to the viewer's terminal, and a border when
+  the viewer is larger than the session.
 
-- vim: open, insert text containing `<`, write, quit; assert file contents and
-  the screens along the way.
-- `run` in bash: a command that succeeds, one that fails, and one that is
-  silent for longer than the settle window; assert exit status and output.
-- A settle during a silent foreground job, asserting the hint.
+**What the integration tests cover**, all with real programs in real ptys:
+
+- vim: open, insert text containing `<`, write, quit.
+- `run` in bash: success, failure, a command silent for longer than the
+  settle window, a timeout picked up again with `until: done`, and a shell
+  that emits OSC 133 marks.
 - Every example printed by `waldo-term help`, executed as written.
-- bash: run a command, match the prompt, check `output`.
-- A prompt with echo off (`read -s`), matched without a trailing newline.
-- A run-to-completion command with more output than the screen, asserting the
-  will's `output` head, tail and omitted count.
-- A program killed by a signal, and one that dumps core, asserting the will.
-- A child that exits leaving a background process holding the pty.
-- A program that never settles, asserting `timeout` and exit status 124.
-- `--detach` returning promptly with a usable socket path; a nonexistent
-  program failing without one.
-- SIGKILL of the host, asserting `list` reports `dead` and the lock is free.
-- A resize during output, repeated, as a soak for the reflow path.
+- Waits: match on a prompt, a prompt with echo off, lines that scroll past, a
+  screen that never settles, a program that has not drawn yet.
+- The will: output capped head and tail, wrapped lines joined, a program
+  killed by a signal, a background process left holding the pty, SIGTERM and
+  SIGKILL of the host.
+- Resize, including a soak that resizes through eight sizes during 100 000
+  lines of output.
+- Styled screens; attach, run inside a second waldo session so the test
+  reads what a person would see.
+- Match triggers: once per appearance, lines that scroll away, `once`, a
+  repaint between settles, the refusals.
+- `settle` and `stream` messages; `unix:` and `http:` destinations with a
+  receiver in the test; heartbeat; `--record`; `--linger`.
+- That the host uses no CPU while a command is quiet.
 
-## 13. Milestone one as built
+**Tested less than it should be:**
 
-Built on 2026-11-18. `nix flake check` builds both binaries and runs 34 unit
-tests and 35 integration tests in the Nix sandbox, against bash, vim and
-coreutils from nixpkgs.
-
-Everything in the milestone's scope exists, plus `resize` and `signal`, which
-the test list needed. Where the code differs from the sections above, the
-code is what was tested:
-
-- **The emulator is linked from the upstream flake**, as a shared library, not
-  vendored and static (section 9.2). Vendoring and the safety-checked build
-  are still to do.
-- **Timers are the epoll timeout**, not timerfds (section 1.2). There is one
-  deadline to wait for at a time, so one timeout does it.
-- **`run` wraps the command in a group**: it types `{ COMMAND` and, on a new
-  line, `}; printf` of the end mark. A command ending in `&` or a comment
-  would otherwise swallow the mark. The mark carries `$?` then the nonce.
-  When the shell has bracketed paste on, the line is sent as a paste, so tabs
-  in the command do not trigger completion. OSC 133 end marks are not used
-  yet; the sentinel is always sent. After the mark arrives, `run` waits for
-  the screen to settle so the response shows the new prompt.
-- **`until: match` with input ignores text that was already on screen** when
-  the request began, so a wait for the prompt after a command is not
-  satisfied by the prompt the command was typed at. Without input
-  (`POST /v1/wait`), text already on screen counts. Section 3.2's rule that a
-  known match is forgotten only at a settle point is simplified: it is
-  forgotten as soon as it is gone.
-- **The will is delivered before pending requests are answered** (section 1.5
-  has it the other way round). A client that sees `reason: exit` can then read
-  the will at once.
-- **`list` has a third state for ended sessions, `exited`**: the host is gone
-  and the will is readable in the directory. That is the normal end with the
-  default destination. `waldo-term output` on such a session prints the will's
-  output and exits 0; other commands print the will and exit 3.
-- **`POST /v1/signal` signals the terminal's foreground process group** as
-  well as the child's, which is what Ctrl-C at a keyboard does. With a shell
-  as the child, the running command is in its own group.
-- **The status line adds `fg=NAME`**, the foreground process, after `running`.
-- **`until: done`** is a wait condition (section 2.2 does not list it), and
-  `until: change` without `since_gen` means "differs from now".
-- **Settle waits for the first text on screen** (added after trying `top`):
-  a blank screen that stays blank is a program that has not drawn yet. Output
-  alone is not enough, because `top` sets the terminal up well before its
-  first frame. Once input has been sent the rule no longer applies, so a
-  program that echoes nothing can still settle. A program that never draws
-  runs the wait to its deadline, with a hint.
-- **The default size is 120x30**, not 80x24. Width costs almost nothing,
-  since trailing whitespace is trimmed from screens, and it stops the
-  truncation seen in `top` at 80 columns. Height is what costs, because a
-  full-screen program paints every row, so it grows only a little. This is
-  judgement; token counts were not measured across sizes.
-- `gen` is a hash of the visible cells, cursor, title and size, recomputed
-  after each batch of output.
-
-Verified by this work, and no longer open in section 11: the key encoder, the
-paste encoder (it does sanitise), the mode 2026 hold callback, the OSC 133
-callback, that an unknown private OSC reaches the host and draws nothing, that
-DA1 and DSR 5n are answered, and that the Nix sandbox has a usable pty.
-
-Found along the way:
-
-- Vim started with `-u NONE` turns bracketed paste on but does not recognise
-  the paste markers, so a paste into it is mangled. `vim --clean` is fine.
-  Waldo does what the terminal protocol says; the program is at fault, but an
-  agent will meet it.
-- Input typed before a shell has drawn its first prompt is echoed twice: once
-  by the terminal and once by the shell when it starts. It is harmless, and
-  `run` strips both echoes from `output`.
+- `run --shell fish` is implemented and has never been run.
+- aarch64 is declared in the flake and has never been built.
+- Attach: holding frames during a synchronized update, and marking a request
+  `interleaved` when a person types during it, have no test. The detach keys
+  were exercised through a waldo session and once by a person; colour and
+  redraw quality in a real terminal were never reported back.
 - Whether a crash sets `core_dumped` depends on the machine's core limit and
-  core pattern. The test asserts the signal and only that the flag is present.
+  core pattern, so the test asserts the signal and only that the flag is
+  present.
+- The queue's behaviour when full is unit tested. No test makes a real
+  receiver slow enough to fill it.
+- `http:` retries, and `unix:` reconnecting after a failed write, have no
+  test.
+- The CI workflow has not run yet.
 
-Not done, and not tested:
+## 13. Findings from building and using it
 
-- A resize while the emulator's viewport is scrolled (the upstream bug in
-  section 9.3) cannot happen here, since the host never scrolls the viewport.
-  The soak test resizes through eight sizes during 100 000 lines of output
-  without a failure.
-- fish with `run --shell fish` is implemented and untested.
-- aarch64 is declared in the flake and was not built.
+Kept because they explain choices above, or because an agent will meet them.
 
-## 14. Styled screens and attach as built
-
-Built on 2026-11-18, after milestone one, because both gaps showed up in real
-use: `htop` marks the selected entry of its sort menu with colour alone, and
-watching a session meant polling it.
-
-### Styled screens (section 6.2)
-
-`?style=ansi`, `"style": "ansi"` in a request body, or `waldo-term ...
---style ansi` returns `screen.text` with SGR sequences. The open question in
-6.2 is settled: the host builds each row from cell styles itself.
-
-- Each run of cells with the same style starts with one complete sequence
-  that begins with a reset, such as `ESC[0;1;31m`, so a run can be read
-  without knowing what came before it. A row that set any style ends with
-  `ESC[0m`. Nothing else is emitted: no cursor movement, no other escapes.
-- Colours are written as the program chose them: the 16 named colours as
-  30 to 37, 40 to 47, 90 to 97 and 100 to 107; other palette entries as
-  `38;5;N`; true colour as `38;2;R;G;B`.
-- Attributes: bold, faint, italic, underline, blink, inverse, invisible,
-  strikethrough. Underline styles and underline colour are not distinguished.
-- Trailing cells are dropped only if they are blank and unstyled, so a
-  highlighted bar that runs to the edge of the screen keeps its width.
-- Plain remains the default. Messages to the destination are always plain.
-
-In `htop`'s sort menu the selected entry now reads
-`ESC[0;30;46mPERCENT_CPU   ESC[0m`, and moves when an arrow key is sent.
-
-### Attach (section 7)
-
-`waldo-term attach [-s ID] [--drive] [--resize]`, and `GET /v1/attach` with
-`Upgrade: waldo-attach`.
-
-What matches section 7: the view is re-rendered from emulator state and the
-program's bytes are never passed through; it is view-only unless `--drive`;
-the session keeps its size unless `--resize`, which is undone when that
-viewer detaches; a person's typing goes through the same queue as requests,
-and a request in flight during it reports `interleaved`; the status bar shows
-when an agent request is waiting; frames are held while the program has a
-synchronized-output hold open, and sent at most every 16 ms.
-
-Where it differs:
-
-- **The stream is one JSON object per line in both directions**, not
-  length-prefixed binary frames. A frame from the host carries the session
-  and view sizes, the cursor, the title, how many requests are waiting, three
-  input modes, and `lines`: pairs of row number and styled text, only for
-  rows that changed. The viewer sends `viewport`, `resize`, `keys_hex` and
-  `detach`. It can be read with a few lines of any language.
-- **The host crops**, since it knows cell widths. The viewer says how big it
-  is (in the request's query, then in `viewport` messages) and receives rows
-  already cut to fit. A viewer smaller than the session sees the part that
-  holds the cursor; the status bar says `(showing 40x9)`.
-- **A larger viewer sees the session in the top left corner**, with the rest
-  blank. There is no border.
-- **Keys.** Ctrl-] detaches. Ctrl-\ switches typing on and off. While not
-  typing, `q` also detaches.
-- **The viewer's keystrokes are sent as its terminal encoded them.** So that
-  they are encoded the way the program expects, the viewer's terminal is put
-  in the same cursor-key, keypad and bracketed-paste modes as the session.
-  The kitty keyboard protocol and modifyOtherKeys are not mirrored, so a
-  program that relies on them gets the traditional encoding from a viewer.
-- When the session ends, the viewer leaves its screen, prints the will, and
-  exits 3, as any other command does.
-
-Tests run `waldo-term attach` inside a second waldo session, which gives it
-a terminal and lets the test read what a person would see.
-
-Not done: mouse input from the viewer, images (shown as nothing, not as the
-outlined box of section 6.4), and scrolling back through history while
-attached. The `q` and Ctrl-] keys were tested through a waldo session, not by
-a person at a keyboard.
-
-### A key after text waits for the program to react
-
-Found by running Claude Code inside waldo. `--text PROMPT --keys '<Enter>'`
-left the prompt sitting in its input box with a blank line under it: the
-text and the Enter arrived together, and the program took the Enter for part
-of a paste. A person never types text and a key in the same instant.
-
-Within one request, a key that follows text is now held until the program
-has reacted to the text: the screen has changed since the text was written
-and has been still for 30 ms. The wait is at least 40 ms. If the screen never
-reacts, as with a password prompt that echoes nothing, the key is sent after
-300 ms.
-
-A fixed pause was tried first and was not enough. 40 ms worked on a program
-that had been running for a while and failed on the first input after it
-started, when it is slower to take a keystroke. On fresh starts, a 40 ms gap
-failed and gaps of 170 ms and more worked; waiting for the reaction worked on
-four fresh starts out of four. The explanation (timing-based paste detection)
-fits what was seen and was not checked against the program's source.
-
-This applies inside one request. Text in one request and a key in the next
-are already separated by the caller.
-
-### `waldo-term kill`
-
-`waldo-term kill [ID]` ends a session: it sends the same stop request as
-`signal --stop` (hang up, terminate after 2 s, kill after 2 more), waits
-until the host has gone, and prints one line saying how the program ended.
-It exits 0 if the session is over when it returns, including when it had
-already ended. The will is still written, so `output` works afterwards.
+- **The no-SIMD emulator build breaks its host program** (section 9.2).
+  Found on 2026-11-20 when the first test to allocate died with "memory
+  allocation of 504 bytes failed".
+- **The host used to spin.** A wait for settle set a timer for the moment
+  the screen would count as settled, even when that also depended on the
+  program drawing something, or on a `run` command finishing. The timer was
+  already in the past, so the loop never slept: a quiet three-second `run`
+  cost 2.8 s of CPU. Fixed on 2026-11-20 (section 1.2), with a test.
+- **A key after text has to wait for the program** (section 2.1). Found by
+  running Claude Code inside waldo. `--text PROMPT --keys '<Enter>'` left the
+  prompt sitting in its input box with a blank line under it: the text and
+  the Enter arrived together, and the program took the Enter for part of a
+  paste. A fixed pause was tried first and was not enough: 40 ms worked on a
+  program that had been running for a while and failed on the first input
+  after it started. On fresh starts a 40 ms gap failed and gaps of 170 ms
+  and more worked; waiting for the reaction worked on four fresh starts out
+  of four. The explanation (timing-based paste detection) fits what was seen
+  and was not checked against the program's source. The test for this is
+  weak: it could pass by luck without the fix.
+- **Colour carries meaning.** `htop` marks the selected entry of its sort
+  menu with colour alone, which is why styled screens exist (section 6.2).
+- **Settle has to wait for the first text** (section 3.1). `top` sets the
+  terminal up well before its first frame, so output alone is not a sign
+  that the program has drawn.
+- **Vim started with `-u NONE`** turns bracketed paste on but does not
+  recognise the paste markers, so a paste into it is mangled. `vim --clean`
+  is fine. Waldo does what the terminal protocol says; the program is at
+  fault, but an agent will meet it.
+- **Input typed before a shell has drawn its first prompt is echoed twice**:
+  once by the terminal and once by the shell when it starts. It is harmless,
+  and `run` strips both echoes from `output`.
+- **The upstream resize bug** of section 9.3 (resizing while the viewport is
+  scrolled) cannot happen here, since the host never scrolls the viewport.

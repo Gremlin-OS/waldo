@@ -1,6 +1,6 @@
 # Waldo: open work
 
-Everything known to be unfinished as of 2026-11-18, in one place. `DESIGN.md`
+Everything known to be unfinished as of 2026-11-20, in one place. `DESIGN.md`
 has the reasoning; section numbers below refer to it. Within each group the
 order is my suggested priority.
 
@@ -38,26 +38,27 @@ not from the design.
 
 ## Designed, not built
 
-1. **Vendor the emulator** (9.2). It links the upstream flake's shared
-   library. Still to do: commit the release tarball and its dependency
-   tarball, build statically in the safety-checked, no-SIMD configuration,
-   and confirm the build works offline. Not verified that this works at all.
-2. **Asynchronous messages and triggers** (3, 4.2 to 4.4). `settle`, `match`
-   and `stream` messages to the destination; `GET`/`POST`/`DELETE
-   /v1/triggers`; `waldo-term match add|rm|list`. Today only `hello` and
-   `exit` are sent, and matching exists only as a wait.
-3. **Other destinations** (5). `unix:` and `http:`, with the queue's
-   coalescing and drop counting, and `--heartbeat`.
-4. **PNG capture** (6.3). `GET /v1/screen?format=png`, `waldo-term
+1. **PNG capture** (6.3). `GET /v1/screen?format=png`, `waldo-term
    screencap`, `format=cells`, and a vendored font. The font is not chosen.
-5. **Images** (6.4). Kitty graphics, composited into captures and listed in
+2. **Images** (6.4). Kitty graphics, composited into captures and listed in
    text screens. Sixel by translation is an untested idea; spike it first.
-6. **`run` using the shell's own OSC 133 marks** (2.5) when it emits them,
-   instead of always typing a sentinel.
-7. **`--linger SECONDS`** (1.5): keep serving read-only requests after the
-   program exits.
-8. **`--record FILE`** (3.4): raw output as asciicast.
-9. **`--token-file`** (2.7): only if bridged use becomes common.
+3. **`--token-file`** (2.7): only if bridged use becomes common. Not planned.
+
+## Follow-ups from the 2026-11-20 work
+
+1. **Report the emulator bug upstream.** The no-SIMD static library exports
+   stub `calloc` and `free` that override a shared glibc's (9.2).
+2. **A `run` that relies on the shell's marks has no way back.** Once the
+   shell has reported a command's end with OSC 133, `run` stops typing its
+   sentinel. If the marks then stop (the prompt hook is unset, or a subshell
+   without it is started), that `run` waits until its deadline. Options:
+   fall back to the sentinel after such a timeout, or a request field that
+   forces it.
+3. **Triggers can only be added once the session is running**, so output
+   before the first `match add` is missed unless it is still on screen. A
+   `waldo-wrap --match ID=PATTERN` option would close that.
+4. **`settle` and `stream` are chosen at startup only** (`--on`). Turning
+   them on and off through the API was not asked for; note it if it is.
 
 ## Attach, beyond what exists
 
@@ -80,18 +81,16 @@ not from the design.
   reported back.
 - The core-dump flag: the test only checks that it is present.
 - Whether the default size of 120x30 is right: judgement, no token counts.
+- The message queue when full: unit tested only. No test makes a real
+  receiver slow enough to fill it.
+- `http:` retries and `unix:` reconnecting after a failed write: no test.
+- A recording was checked as JSON lines, never played with `asciinema`.
 
 ## Housekeeping
 
-- Seven `clippy` style warnings.
-- No README. `waldo-term help` is the only introduction.
-- `DESIGN.md` sections 1 to 12 still describe the original plan; sections
-  13 and 14 list where the code differs. Fold the differences back in, so
-  the document reads as what exists. Section 12's scope list is out of date.
-- No CI. `nix flake check` is run by hand.
-- The match rule in 3.2 (a known match is forgotten only at a settle point)
-  was simplified; decide whether the simple rule stays before triggers are
-  built on it.
+- CI (`.github/workflows/ci.yml` runs `nix flake check`, which includes
+  clippy with warnings as errors) has never run: it was written before
+  being pushed. Check the first run.
 
 ## Driving waldo with subagents
 
