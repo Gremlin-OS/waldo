@@ -782,7 +782,8 @@ fn plain_http_as_curl_would_send_it() {
     let resp = raw_http(socket, "POST /v1/input HTTP/1.1\r\nHost: waldo\r\nTransfer-Encoding: chunked\r\nConnection: close\r\n\r\n");
     assert!(resp.starts_with("HTTP/1.1 411 "), "{resp}");
     let resp = raw_http(socket, "POST /v1/triggers HTTP/1.1\r\nHost: waldo\r\nContent-Length: 2\r\nConnection: close\r\n\r\n{}");
-    assert!(resp.starts_with("HTTP/1.1 501 "), "{resp}");
+    assert!(resp.starts_with("HTTP/1.1 400 "), "{resp}");
+    assert!(resp.contains("\"error\":\"missing_pattern\""), "{resp}");
 }
 
 #[test]
@@ -804,6 +805,7 @@ fn a_session_under_a_very_long_path() {
 fn every_help_example_runs_as_written() {
     let t = T::new();
     let _ = std::fs::remove_file("/tmp/waldo-demo.c");
+    let _ = std::fs::remove_file("/tmp/waldo-match-demo.ndjson");
     let bin_dir = std::path::Path::new(WRAP).parent().unwrap();
     let path = format!("{}:{}", bin_dir.display(), std::env::var("PATH").unwrap_or_default());
     let mut ran = 0;
@@ -827,6 +829,7 @@ fn every_help_example_runs_as_written() {
     assert!(ran >= 20, "only {ran} examples were found");
     // The guide's vim example really wrote the file.
     assert_eq!(std::fs::read_to_string("/tmp/waldo-demo.c").unwrap(), "#include <stdio.h>\n");
+    let _ = std::fs::remove_file("/tmp/waldo-match-demo.ndjson");
     let _ = std::fs::remove_file("/tmp/waldo-demo.c");
     // The guide is short enough to read in one go.
     assert!(t.term(&["help"]).out.lines().count() <= 45);
@@ -1085,4 +1088,487 @@ fn kill_ends_a_session_and_waits() {
     assert_eq!(r.code, 0, "{}", r.err);
     assert!(r.out.contains("signal=SIGKILL killed_by_waldo"), "{}", r.out);
     assert!(began.elapsed() >= Duration::from_secs(3) && began.elapsed() < Duration::from_secs(9), "{:?}", began.elapsed());
+}
+
+// ---- messages: triggers, settle, stream, destinations ------------------------------
+
+fn read_events(path: &std::path::Path) -> Vec<Value> {
+    std::fs::read_to_string(path).unwrap_or_default().lines().filter_map(|l| serde_json::from_str(l).ok()).collect()
+}
+
+fn of_kind(events: &[Value], kind: &str) -> Vec<Value> {
+    events.iter().filter(|e| e["trigger"] == kind).cloned().collect()
+}
+
+/// Poll until `enough` is satisfied by the events in the file; messages are
+/// written by the delivery thread a moment after they are queued.
+fn events_when(path: &std::path::Path, enough: impl Fn(&[Value]) -> bool) -> Vec<Value> {
+    let end = Instant::now() + Duration::from_secs(10);
+    loop {
+        let events = read_events(path);
+        if enough(&events) {
+            return events;
+        }
+        assert!(Instant::now() < end, "the expected messages never arrived in {}: {events:?}", path.display());
+        std::thread::sleep(Duration::from_millis(20));
+    }
+}
+
+/// Sequence numbers count up from 0 with nothing missing.
+fn assert_unbroken(events: &[Value]) {
+    for (i, e) in events.iter().enumerate() {
+        assert_eq!(e["seq"], i as u64, "{e}");
+        assert!(e.get("dropped").is_none(), "{e}");
+    }
+}
+
+#[test]
+fn a_match_trigger_fires_once_per_appearance() {
+    let t = T::new();
+    t.bash("mt");
+    let events = t.session_dir("mt").join("events.ndjson");
+
+    let r = t.term(&["match", "add", "-s", "mt", "--id", "fin", r"^finished (\d+)"]);
+    assert_eq!(r.code, 0, "{}", r.err);
+    assert!(r.out.contains("added trigger fin (edge)"), "{}", r.out);
+    assert!(r.out.contains("events.ndjson"), "{}", r.out);
+
+    assert_eq!(t.term(&["run", "-s", "mt", "echo finished 7"]).code, 0);
+    let got = of_kind(&events_when(&events, |e| !of_kind(e, "match").is_empty()), "match");
+    let m = &got[0]["match"];
+    assert_eq!(m["id"], "fin");
+    assert_eq!(m["text"], "finished 7");
+    assert_eq!(m["groups"], serde_json::json!(["7"]));
+    assert_eq!(m["count"], 1);
+    assert_eq!(m["on_screen"], true);
+    assert_eq!(m["col"], 1);
+    assert!(got[0]["screen"]["text"].as_str().unwrap().contains("finished 7"));
+
+    // The line stays on screen through more commands and settles: no repeat.
+    assert_eq!(t.term(&["run", "-s", "mt", "true"]).code, 0);
+    assert_eq!(t.term(&["run", "-s", "mt", "echo other"]).code, 0);
+    // A second appearance is a second match.
+    assert_eq!(t.term(&["run", "-s", "mt", "echo finished 8"]).code, 0);
+    let all = events_when(&events, |e| of_kind(e, "match").len() >= 2);
+    let got = of_kind(&all, "match");
+    assert_eq!(got.len(), 2, "{got:?}");
+    assert_eq!(got[1]["match"]["text"], "finished 8");
+    assert_eq!(got[1]["match"]["count"], 2);
+    assert_unbroken(&all);
+
+    let r = t.term(&["match", "list", "-s", "mt"]);
+    assert!(r.out.contains("fin  edge  matches=2"), "{}", r.out);
+    let listed: Value = serde_json::from_str(&t.term(&["match", "list", "-s", "mt", "--json"]).out).unwrap();
+    assert_eq!(listed["triggers"][0]["pattern"], r"^finished (\d+)");
+
+    // Removed, it is silent. Scrolling the old matches away sends nothing either.
+    let r = t.term(&["match", "rm", "-s", "mt", "fin"]);
+    assert_eq!(r.code, 0, "{}", r.err);
+    assert!(r.out.contains("removed trigger fin after 2 matches"), "{}", r.out);
+    assert_eq!(t.term(&["run", "-s", "mt", "echo finished 9; seq 1 100"]).code, 0);
+    assert!(t.term(&["match", "list", "-s", "mt"]).out.contains("no triggers"));
+    t.term(&["kill", "mt"]);
+    assert_eq!(of_kind(&read_events(&events), "match").len(), 2);
+}
+
+#[test]
+fn matches_that_scroll_away_are_not_reported_twice() {
+    let t = T::new();
+    t.bash("ms");
+    let events = t.session_dir("ms").join("events.ndjson");
+    assert_eq!(t.term(&["match", "add", "-s", "ms", "--id", "x", "^mark$"]).code, 0);
+    // Seen on screen first, then pushed off by 200 lines.
+    assert_eq!(t.term(&["run", "-s", "ms", "echo mark"]).code, 0);
+    events_when(&events, |e| of_kind(e, "match").len() == 1);
+    assert_eq!(t.term(&["run", "-s", "ms", "seq 1 200"]).code, 0);
+    // Never rests on screen: line 77 of 5000 goes straight past.
+    assert_eq!(t.term(&["match", "add", "-s", "ms", "--id", "y", "^n77$"]).code, 0);
+    assert_eq!(t.term(&["run", "-s", "ms", "for i in $(seq 1 5000); do echo n$i; done"]).code, 0);
+    let all = events_when(&events, |e| of_kind(e, "match").len() >= 2);
+    t.term(&["kill", "ms"]);
+    let got = of_kind(&read_events(&events), "match");
+    assert_eq!(got.len(), 2, "{got:?}");
+    assert_eq!(got[1]["match"]["id"], "y");
+    assert_eq!(got[1]["match"]["text"], "n77");
+    assert_unbroken(&all);
+}
+
+#[test]
+fn a_once_trigger_removes_itself_and_text_on_screen_counts() {
+    let t = T::new();
+    t.bash("mo");
+    let events = t.session_dir("mo").join("events.ndjson");
+    assert_eq!(t.term(&["run", "-s", "mo", "echo already here"]).code, 0);
+    // Text that is on screen when the trigger is added is a match.
+    let r = t.term(&["match", "add", "-s", "mo", "--once", "already"]);
+    assert_eq!(r.code, 0, "{}", r.err);
+    assert!(r.out.contains("added trigger t1 (once)"), "{}", r.out);
+    events_when(&events, |e| of_kind(e, "match").len() == 1);
+    assert!(t.term(&["match", "list", "-s", "mo"]).out.contains("no triggers"));
+    assert_eq!(t.term(&["run", "-s", "mo", "echo already again"]).code, 0);
+    t.term(&["kill", "mo"]);
+    let got = of_kind(&read_events(&events), "match");
+    assert_eq!(got.len(), 1, "{got:?}");
+    assert_eq!(got[0]["match"]["id"], "t1");
+}
+
+#[test]
+fn trigger_requests_that_are_refused() {
+    let t = T::new();
+    t.bash("me");
+    let r = t.term(&["match", "add", "-s", "me", "(unclosed"]);
+    assert_eq!(r.code, 2);
+    assert!(r.err.contains("not a valid regular expression"), "{}", r.err);
+    assert_eq!(t.term(&["match", "add", "-s", "me", "--id", "a", "x"]).code, 0);
+    let r = t.term(&["match", "add", "-s", "me", "--id", "a", "y"]);
+    assert_eq!(r.code, 1);
+    assert!(r.err.contains("already a trigger 'a'"), "{}", r.err);
+    let r = t.term(&["match", "add", "-s", "me", "--id", "no spaces", "y"]);
+    assert_eq!(r.code, 2);
+    let r = t.term(&["match", "rm", "-s", "me", "nope"]);
+    assert_eq!(r.code, 2);
+    assert!(r.err.contains("no trigger 'nope'; there are: a"), "{}", r.err);
+    assert_eq!(t.term(&["match"]).code, 2);
+    assert_eq!(t.term(&["match", "add", "-s", "me"]).code, 2);
+    // At most 32.
+    for i in 0..31 {
+        assert_eq!(t.term(&["match", "add", "-s", "me", &format!("p{i}")]).code, 0);
+    }
+    let r = t.term(&["match", "add", "-s", "me", "one too many"]);
+    assert_eq!(r.code, 1);
+    assert!(r.err.contains("at most 32"), "{}", r.err);
+
+    let socket = t.session_dir("me").join("sock");
+    let resp = raw_http(socket.to_str().unwrap(), "PUT /v1/triggers HTTP/1.1\r\nHost: x\r\nConnection: close\r\n\r\n");
+    assert!(resp.starts_with("HTTP/1.1 405"), "{resp}");
+    assert!(resp.contains("GET or POST"), "{resp}");
+    let resp = raw_http(socket.to_str().unwrap(), "GET /v1/triggers/a HTTP/1.1\r\nHost: x\r\nConnection: close\r\n\r\n");
+    assert!(resp.starts_with("HTTP/1.1 405"), "{resp}");
+}
+
+#[test]
+fn settle_and_stream_messages() {
+    let t = T::new();
+    let dest = t.work.join("ev.ndjson");
+    let r = t.wrap(&[
+        "--name",
+        "ss",
+        "--on",
+        "settle,stream",
+        "--dest",
+        &format!("file:{}", dest.display()),
+        "--",
+        "sh",
+        "-c",
+        "seq 1 100; sleep 1; echo tail; sleep 1",
+    ]);
+    assert_eq!(r.code, 0, "{}", r.err);
+    let events = read_events(&dest);
+    assert_unbroken(&events);
+    assert_eq!(events[0]["trigger"], "hello");
+    assert_eq!(events.last().unwrap()["trigger"], "exit");
+
+    // The stream is every output line, in order, numbered from 1.
+    let streams = of_kind(&events, "stream");
+    assert!(!streams.is_empty());
+    let mut expect_from = 1;
+    let mut lines: Vec<String> = Vec::new();
+    for s in &streams {
+        assert_eq!(s["from_line"], expect_from, "{s}");
+        let batch = s["lines"].as_array().unwrap();
+        expect_from += batch.len() as u64;
+        lines.extend(batch.iter().map(|l| l.as_str().unwrap().to_string()));
+    }
+    let mut want: Vec<String> = (1..=100).map(|n| n.to_string()).collect();
+    want.push("tail".into());
+    assert_eq!(lines, want);
+    assert_eq!(events.last().unwrap()["output"]["lines_total"], 101);
+
+    // The screen settled twice: after the numbers, and after `tail`.
+    let settles = of_kind(&events, "settle");
+    assert_eq!(settles.len(), 2, "{settles:?}");
+    assert!(settles[0]["screen"]["text"].as_str().unwrap().ends_with("\n100"), "{}", settles[0]);
+    assert!(settles[1]["screen"]["text"].as_str().unwrap().ends_with("\ntail"), "{}", settles[1]);
+    assert!(settles[1]["screen"]["gen"].as_u64() > settles[0]["screen"]["gen"].as_u64());
+
+    // Without --on, neither is sent.
+    let quiet = t.work.join("quiet.ndjson");
+    let r = t.wrap(&["--name", "sq", "--dest", &format!("file:{}", quiet.display()), "--", "sh", "-c", "seq 1 100; sleep 0.5"]);
+    assert_eq!(r.code, 0, "{}", r.err);
+    let kinds: Vec<String> = read_events(&quiet).iter().map(|e| e["trigger"].as_str().unwrap().to_string()).collect();
+    assert_eq!(kinds, ["hello", "exit"]);
+
+    let r = t.wrap(&["--on", "matches", "--", "true"]);
+    assert_eq!(r.code, 2);
+    assert!(r.err.contains("settle, stream"), "{}", r.err);
+}
+
+#[test]
+fn unix_destination_streams_lines() {
+    let t = T::new();
+    let path = t.work.join("dest.sock");
+    let uri = format!("unix:{}", path.display());
+
+    // Nothing is listening: the probe refuses.
+    let r = t.wrap(&["--detach", "--dest", &uri, "--", "sleep", "30"]);
+    assert_eq!(r.code, 1);
+    assert!(r.err.contains("cannot deliver to unix:"), "{}", r.err);
+
+    let listener = std::os::unix::net::UnixListener::bind(&path).unwrap();
+    let reader = std::thread::spawn(move || {
+        let (mut conn, _) = listener.accept().unwrap();
+        let mut text = String::new();
+        conn.read_to_string(&mut text).unwrap();
+        text
+    });
+    let r = t.wrap(&["--name", "ux", "--on", "stream", "--dest", &uri, "--", "sh", "-c", "echo one; echo two"]);
+    assert_eq!(r.code, 0, "{}", r.err);
+    assert!(r.out.contains(&format!("dest={uri}")), "{}", r.out);
+    // One connection for the whole session; it ends after the will.
+    let text = reader.join().unwrap();
+    let events: Vec<Value> = text.lines().map(|l| serde_json::from_str(l).unwrap()).collect();
+    assert_unbroken(&events);
+    let kinds: Vec<&str> = events.iter().map(|e| e["trigger"].as_str().unwrap()).collect();
+    assert_eq!(kinds.first(), Some(&"hello"));
+    assert_eq!(kinds.last(), Some(&"exit"));
+    assert!(kinds.contains(&"stream"), "{kinds:?}");
+    assert_eq!(events.last().unwrap()["output"]["text"], "one\ntwo");
+    assert!(!t.session_dir("ux").exists());
+}
+
+/// A receiver for `http:` destinations: answers every request with `status`
+/// and records the request line, the content type and the body.
+type Received = std::sync::Arc<std::sync::Mutex<Vec<(String, String, Value)>>>;
+
+fn http_receiver(status: u16) -> (u16, Received) {
+    let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    let port = listener.local_addr().unwrap().port();
+    let seen = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+    let record = seen.clone();
+    std::thread::spawn(move || {
+        for conn in listener.incoming() {
+            let Ok(mut conn) = conn else { continue };
+            let mut raw = Vec::new();
+            let mut buf = [0u8; 4096];
+            let (head_end, length) = loop {
+                let n = conn.read(&mut buf).unwrap_or(0);
+                raw.extend_from_slice(&buf[..n]);
+                let text = String::from_utf8_lossy(&raw).into_owned();
+                if let Some(end) = text.find("\r\n\r\n") {
+                    let length = text[..end]
+                        .lines()
+                        .find_map(|l| l.to_ascii_lowercase().strip_prefix("content-length:").map(|v| v.trim().parse::<usize>().unwrap()))
+                        .unwrap_or(0);
+                    break (end + 4, length);
+                }
+                if n == 0 {
+                    break (raw.len(), 0);
+                }
+            };
+            while raw.len() < head_end + length {
+                let n = conn.read(&mut buf).unwrap_or(0);
+                if n == 0 {
+                    break;
+                }
+                raw.extend_from_slice(&buf[..n]);
+            }
+            let head = String::from_utf8_lossy(&raw[..head_end]).into_owned();
+            let request_line = head.lines().next().unwrap_or("").to_string();
+            let content_type = head
+                .lines()
+                .find_map(|l| l.to_ascii_lowercase().strip_prefix("content-type:").map(|v| v.trim().to_string()))
+                .unwrap_or_default();
+            let body: Value = serde_json::from_slice(&raw[head_end..]).unwrap_or(Value::Null);
+            record.lock().unwrap().push((request_line, content_type, body));
+            let _ = conn.write_all(format!("HTTP/1.1 {status} X\r\nContent-Length: 0\r\nConnection: close\r\n\r\n").as_bytes());
+        }
+    });
+    (port, seen)
+}
+
+#[test]
+fn http_destination_posts_each_message_and_heartbeats() {
+    let t = T::new();
+    let (port, seen) = http_receiver(204);
+    let uri = format!("http://127.0.0.1:{port}/hook?x=1");
+    let r = t.wrap(&["--name", "hx", "--heartbeat", "1", "--dest", &uri, "--", "sh", "-c", "echo hi; sleep 2.6"]);
+    assert_eq!(r.code, 0, "{}", r.err);
+    assert!(r.out.contains(&format!("dest={uri}")), "{}", r.out);
+    let seen = seen.lock().unwrap().clone();
+    for (line, ctype, _) in &seen {
+        assert_eq!(line, "POST /hook?x=1 HTTP/1.1");
+        assert_eq!(ctype, "application/json");
+    }
+    let events: Vec<Value> = seen.iter().map(|s| s.2.clone()).collect();
+    assert_unbroken(&events);
+    let kinds: Vec<&str> = events.iter().map(|e| e["trigger"].as_str().unwrap()).collect();
+    assert_eq!(kinds.first(), Some(&"hello"));
+    assert_eq!(kinds.last(), Some(&"exit"));
+    // 2.6 s of silence with a 1 s heartbeat: two of them.
+    assert_eq!(kinds.iter().filter(|k| **k == "heartbeat").count(), 2, "{kinds:?}");
+    assert_eq!(events.last().unwrap()["output"]["text"], "hi");
+    assert!(!t.session_dir("hx").exists());
+}
+
+#[test]
+fn http_destination_that_refuses_stops_the_session_from_starting() {
+    let t = T::new();
+    let (port, seen) = http_receiver(500);
+    let r = t.wrap(&["--detach", "--dest", &format!("http://127.0.0.1:{port}/hook"), "--", "sleep", "30"]);
+    assert_eq!(r.code, 1);
+    assert!(r.err.contains("the receiver answered 500"), "{}", r.err);
+    assert_eq!(seen.lock().unwrap().len(), 1);
+    assert_eq!(std::fs::read_dir(&t.base).unwrap().count(), 0);
+
+    let r = t.wrap(&["--dest", "https://example.org/hook", "--", "true"]);
+    assert_eq!(r.code, 2);
+    assert!(r.err.contains("proxy"), "{}", r.err);
+}
+
+/// The host sleeps while nothing happens. It used to spin for the whole of
+/// a `run` whose command printed nothing.
+#[test]
+fn the_host_is_idle_while_a_command_is_quiet() {
+    let t = T::new();
+    t.bash("idle");
+    let meta: Value = serde_json::from_str(&std::fs::read_to_string(t.session_dir("idle").join("meta.json")).unwrap()).unwrap();
+    let pid = meta["host_pid"].as_u64().unwrap();
+    let ticks = || -> u64 {
+        let stat = std::fs::read_to_string(format!("/proc/{pid}/stat")).unwrap();
+        // Fields after the command name, which may contain spaces.
+        let rest: Vec<&str> = stat.rsplit_once(')').unwrap().1.split_whitespace().collect();
+        rest[11].parse::<u64>().unwrap() + rest[12].parse::<u64>().unwrap()
+    };
+    assert_eq!(t.term(&["match", "add", "-s", "idle", "never-printed"]).code, 0);
+    let before = ticks();
+    assert_eq!(t.term(&["run", "-s", "idle", "sleep 2"]).code, 0);
+    let used = ticks() - before;
+    // Ticks are 10 ms. Spinning would use about 200.
+    assert!(used < 30, "the host used {used} ticks of CPU during a quiet 2 s command");
+}
+
+/// Section 3.2: a match is forgotten only when it is absent at a settle
+/// point. A program that clears and repaints the same text without pausing
+/// reports it once; after the screen has rested without it, it is new.
+#[test]
+fn a_repaint_between_settles_does_not_fire_again() {
+    let t = T::new();
+    let script = "read x; printf '\\033[?1049h'; \
+                  for i in 1 2 3 4 5; do printf '\\033[2J'; sleep 0.05; printf '\\033[Hmark'; sleep 0.05; done; \
+                  sleep 0.7; printf '\\033[2J'; sleep 0.7; printf '\\033[Hmark'; sleep 0.7";
+    t.start("rp", &["sh", "-c", script]);
+    assert_eq!(t.term(&["match", "add", "-s", "rp", "--id", "m", "^mark$"]).code, 0);
+    let r = t.term(&["send", "-s", "rp", "--keys", "<Enter>", "--until", "exit", "--timeout", "20000"]);
+    assert_eq!(r.code, 0, "{}\n{}", r.out, r.err);
+    let got = of_kind(&read_events(&t.session_dir("rp").join("events.ndjson")), "match");
+    let counts: Vec<u64> = got.iter().map(|m| m["match"]["count"].as_u64().unwrap()).collect();
+    assert_eq!(counts, [1, 2], "{got:?}");
+}
+
+// ---- record, linger, and run by the shell's own marks ------------------------------
+
+#[test]
+fn record_writes_an_asciicast() {
+    let t = T::new();
+    let cast = t.work.join("session.cast");
+    let r = t.wrap(&["--name", "rec", "--size", "90x20", "--record", cast.to_str().unwrap(), "--", "sh", "-c", "printf 'h\\303\\251llo\\n'; sleep 0.2"]);
+    assert_eq!(r.code, 0, "{}", r.err);
+    let lines: Vec<Value> = std::fs::read_to_string(&cast).unwrap().lines().map(|l| serde_json::from_str(l).unwrap()).collect();
+    assert_eq!(lines[0]["version"], 2);
+    assert_eq!(lines[0]["width"], 90);
+    assert_eq!(lines[0]["height"], 20);
+    assert!(lines[0]["timestamp"].as_i64().unwrap() > 1_700_000_000);
+    let mut text = String::new();
+    let mut last = 0.0;
+    for e in &lines[1..] {
+        assert_eq!(e[1], "o");
+        let at = e[0].as_f64().unwrap();
+        assert!(at >= last);
+        last = at;
+        text.push_str(e[2].as_str().unwrap());
+    }
+    // Raw output: the pty's line ending, not the rendered text.
+    assert_eq!(text, "héllo\r\n");
+
+    let r = t.wrap(&["--detach", "--record", "/no/such/dir/x.cast", "--", "sleep", "30"]);
+    assert_eq!(r.code, 1);
+    assert!(r.err.contains("cannot write the recording"), "{}", r.err);
+    assert_eq!(std::fs::read_dir(&t.base).unwrap().filter(|e| e.as_ref().unwrap().file_name() != "rec").count(), 0);
+}
+
+#[test]
+fn linger_keeps_the_last_screen_readable() {
+    let t = T::new();
+    let r = t.wrap(&["--detach", "--name", "lg", "--linger", "60", "--", "sh", "-c", "echo bye; exit 4"]);
+    assert_eq!(r.code, 0, "{}", r.err);
+    // The will is delivered when the program exits, not when the linger ends.
+    assert_eq!(t.will("lg")["exit_code"], 4);
+
+    let (code, v) = t.json(&["screen", "-s", "lg"]);
+    assert_eq!(code, 3);
+    assert_eq!(v["reason"], "exit");
+    assert_eq!(v["screen"]["text"], "bye");
+    assert_eq!(v["child"]["state"], "exited");
+    assert_eq!(v["exit"]["exit_code"], 4);
+    let r = t.term(&["output", "-s", "lg"]);
+    assert_eq!(r.code, 0, "{}", r.err);
+    assert_eq!(r.out, "bye\n");
+
+    // Nothing can be sent any more, and the refusal says why.
+    let r = t.term(&["send", "-s", "lg", "--text", "x"]);
+    assert_eq!(r.code, 1, "{}", r.out);
+    assert!(r.err.contains("the program has exited"), "{}", r.err);
+
+    // kill ends the linger at once.
+    let began = Instant::now();
+    let r = t.term(&["kill", "lg"]);
+    assert_eq!(r.code, 0, "{}", r.err);
+    assert!(began.elapsed() < Duration::from_secs(5), "{:?}", began.elapsed());
+    assert!(r.out.starts_with("[lg exit code=4"), "{}", r.out);
+    assert!(t.term(&["list"]).out.lines().any(|l| l.starts_with("lg") && l.contains("exited")));
+}
+
+#[test]
+fn linger_ends_by_itself() {
+    let t = T::new();
+    let began = Instant::now();
+    let r = t.wrap(&["--name", "l1", "--linger", "1", "--", "true"]);
+    assert_eq!(r.code, 0, "{}", r.err);
+    let took = began.elapsed();
+    assert!(took >= Duration::from_secs(1) && took < Duration::from_secs(4), "{took:?}");
+}
+
+#[test]
+fn run_uses_the_shells_own_marks_when_it_has_them() {
+    let t = T::new();
+    t.bash("mk");
+    // Without marks the sentinel is typed, and shows on screen.
+    let setup = r#"PS0='\e]133;C\a'; PROMPT_COMMAND='printf "\033]133;D;%s\007" "$?"'"#;
+    let (code, v) = t.json(&["run", "-s", "mk", setup]);
+    assert_eq!(code, 0, "{v}");
+    assert!(v["screen"]["text"].as_str().unwrap().contains("7770;waldo"), "{v}");
+
+    // Now the shell reports each command's end itself: nothing extra is typed.
+    let (code, v) = t.json(&["run", "-s", "mk", "echo marked; (exit 3)"]);
+    assert_eq!(code, 5, "{v}");
+    assert_eq!(v["reason"], "done");
+    assert_eq!(v["command_exit_code"], 3);
+    assert_eq!(v["output"]["text"], "marked");
+    let screen = v["screen"]["text"].as_str().unwrap();
+    assert_eq!(screen.matches("7770;waldo").count(), 1, "{screen}");
+    assert!(screen.contains("$ echo marked; (exit 3)\nmarked\n$"), "{screen}");
+
+    let (code, v) = t.json(&["run", "-s", "mk", "seq 1 3"]);
+    assert_eq!(code, 0, "{v}");
+    assert_eq!(v["output"]["text"], "1\n2\n3");
+    // No output at all.
+    let (code, v) = t.json(&["run", "-s", "mk", "true"]);
+    assert_eq!(code, 0, "{v}");
+    assert_eq!(v["output"]["text"], "");
+
+    // Several lines would end with a mark each, so they still get the sentinel.
+    let (code, v) = t.json(&["run", "-s", "mk", "echo a\necho b; false"]);
+    assert_eq!(code, 5, "{v}");
+    assert_eq!(v["command_exit_code"], 1);
+    assert_eq!(v["output"]["text"], "a\nb");
 }

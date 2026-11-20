@@ -65,6 +65,10 @@ or a socket path); with exactly one live session it can be left out.
                             watch the session live in your own terminal. View only
                             unless --drive; Ctrl-\\ toggles typing, Ctrl-] detaches.
                             --resize makes the session take your terminal's size.
+  match add [--id NAME] [--once] PATTERN
+                            send a message to the session's destination each
+                            time a line matches PATTERN (help messages)
+  match rm ID | match list  remove a trigger; list them
   kill [ID]                 end the session and wait until it has ended
   signal NAME               send a signal to the program (--stop is what kill sends)
   gc [--all]                remove ended sessions (--all: regardless of age)
@@ -172,9 +176,14 @@ examples:
 
 pub const MESSAGES: &str = "\
 Every session has a destination, printed as 'dest' when it starts. Messages
-are appended to it, one JSON object per line. By default it is
-events.ndjson in the session directory.
+go to it, one JSON object each. By default it is events.ndjson in the
+session directory. waldo-wrap --dest URI picks another:
 
+  file:/PATH             append one line per message
+  unix:/PATH             connect to a socket and write one line per message
+  http://HOST:PORT/PATH  POST each message; the receiver must answer 2xx
+
+Always sent:
   hello   first message: the command line, the socket, the size
   exit    last message, the will. Fields:
             exit_code        the program's exit status, or null
@@ -184,12 +193,36 @@ events.ndjson in the session directory.
             output.text      everything the program printed, as it was rendered
             output.truncated true if the middle was cut; omitted_lines says how much
 
+Sent when asked for:
+  match   a line matched a trigger added with 'waldo-term match add PATTERN'.
+          Fields: match.id, match.text, match.groups, match.count, and the
+          screen. It is sent once per appearance: text that stays on screen,
+          or is redrawn before the screen goes still, does not repeat.
+          --once removes the trigger after its first match.
+  settle  waldo-wrap --on settle: the screen, each time it changes and then
+          goes still
+  stream  waldo-wrap --on stream: output lines as they scroll off the
+          screen, in 'lines', at most four messages a second
+  heartbeat  waldo-wrap --heartbeat SECS: sent after SECS seconds with no
+          other message, so a receiver can tell a dead host from a quiet one
+
+Each message has 'seq', counting from 0. If the receiver is too slow,
+messages are dropped, never hello or exit; the next message that arrives
+carries 'dropped' with the count.
+
 After a session has ended, waldo-term commands for it print the will and
 exit with status 3. 'waldo-term gc' removes ended sessions.
 
 examples:
   $ waldo-wrap --name msg-demo -- echo hello
   $ waldo-term output -s msg-demo
+  $ waldo-wrap --detach --name match-demo --dest file:/tmp/waldo-match-demo.ndjson -- bash
+  $ waldo-term match add -s match-demo --id done '^finished'
+  $ waldo-term run -s match-demo 'echo finished'
+  $ waldo-term match list -s match-demo
+  $ waldo-term match rm -s match-demo done
+  $ waldo-term kill match-demo
+  $ grep -c '\"trigger\":\"match\"' /tmp/waldo-match-demo.ndjson
 ";
 
 pub const EXIT_STATUS: &str = "\

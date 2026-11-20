@@ -51,6 +51,8 @@ struct Opts {
     style: Option<String>,
     drive: bool,
     resize: bool,
+    id: Option<String>,
+    once: bool,
     rest: Vec<String>,
 }
 
@@ -107,6 +109,8 @@ fn parse_opts(cmd: &str, args: &[String], allowed: &[&str], positional: bool) ->
                 "--stop" => o.stop = true,
                 "--drive" => o.drive = true,
                 "--resize" => o.resize = true,
+                "--once" => o.once = true,
+                "--id" => o.id = Some(value()),
                 "--style" => o.style = Some(value()),
                 "--all" => o.all = true,
                 "--older-than" => {
@@ -446,6 +450,57 @@ fn cmd_signal(args: &[String]) -> ! {
     finish(&value, o.json, false);
 }
 
+fn cmd_match(args: &[String]) -> ! {
+    let how = "'match' takes add PATTERN, rm ID or list, such as: waldo-term match add --id pw 'assword: $'";
+    let Some(sub) = args.first() else { usage(how) };
+    let rest = &args[1..];
+    let (o, method, path, body) = match sub.as_str() {
+        "add" => {
+            let o = parse_opts("match add", rest, &["--session", "--id", "--once", "--json"], true);
+            let Some(pattern) = o.rest.first() else { usage("'match add' takes a pattern: a regular expression matched against one line") };
+            let mut body = json!({"pattern": pattern, "mode": if o.once { "once" } else { "edge" }});
+            if let Some(id) = o.id.as_ref() {
+                body["id"] = id.clone().into();
+            }
+            (o, "POST", "/v1/triggers".to_string(), Some(body))
+        }
+        "rm" | "remove" => {
+            let o = parse_opts("match rm", rest, &["--session", "--json"], true);
+            let Some(id) = o.rest.first() else { usage("'match rm' takes the id of a trigger; 'waldo-term match list' shows them") };
+            let path = format!("/v1/triggers/{}", encode(id));
+            (o, "DELETE", path, None)
+        }
+        "list" | "ls" => (parse_opts("match list", rest, &["--session", "--json"], false), "GET", "/v1/triggers".to_string(), None),
+        _ => usage(how),
+    };
+    let (_, status, value) = call(o.session.as_deref(), method, &path, body.as_ref(), o.json, EXIT_CHILD_EXITED);
+    check_status(status, &value);
+    if o.json {
+        println!("{value}");
+        std::process::exit(EXIT_OK);
+    }
+    let field = |t: &Value, k: &str| t.get(k).map(|v| v.as_str().map(|s| s.to_string()).unwrap_or_else(|| v.to_string())).unwrap_or_default();
+    let dest = field(&value, "dest");
+    if let Some(t) = value.get("added") {
+        println!("added trigger {} ({}): {}", field(t, "id"), field(t, "mode"), field(t, "pattern"));
+        println!("its matches go to {dest}");
+    } else if let Some(t) = value.get("removed") {
+        println!("removed trigger {} after {} matches", field(t, "id"), field(t, "count"));
+    } else {
+        let list = value.get("triggers").and_then(|t| t.as_array()).cloned().unwrap_or_default();
+        if list.is_empty() {
+            println!("no triggers; add one with: waldo-term match add PATTERN");
+        }
+        for t in &list {
+            println!("{}  {}  matches={}  {}", field(t, "id"), field(t, "mode"), field(t, "count"), field(t, "pattern"));
+        }
+        if !list.is_empty() {
+            println!("matches go to {dest}");
+        }
+    }
+    std::process::exit(EXIT_OK);
+}
+
 fn cmd_attach(args: &[String]) -> ! {
     let o = parse_opts("attach", args, &["--session", "--drive", "--resize"], false);
     if !attach::is_terminal() {
@@ -654,7 +709,8 @@ fn main() {
         "kill" => cmd_kill(rest),
         "gc" => cmd_gc(rest),
         "attach" => cmd_attach(rest),
-        "screencap" | "match" => die(EXIT_OTHER, &format!("'{cmd}' is not implemented yet")),
+        "match" => cmd_match(rest),
+        "screencap" => die(EXIT_OTHER, &format!("'{cmd}' is not implemented yet")),
         other => usage(&format!("unknown command '{other}'")),
     }
 }

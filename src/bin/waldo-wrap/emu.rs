@@ -48,6 +48,8 @@ mod ffi {
 
     pub const UNKNOWN_SEQUENCE_OSC: c_int = 1;
     pub const SEMANTIC_PROMPT_PROMPT_START: c_int = 1;
+    pub const SEMANTIC_PROMPT_OUTPUT_START: c_int = 3;
+    pub const SEMANTIC_PROMPT_COMMAND_END: c_int = 4;
 
     pub const CELL_DATA_CONTENT_TAG: c_int = 2;
     pub const CELL_DATA_WIDE: c_int = 3;
@@ -413,6 +415,16 @@ struct Events {
     unknown_osc: Vec<Vec<u8>>,
     hold: bool,
     prompt_start: bool,
+    marks: Vec<Mark>,
+}
+
+/// A step of a command, as the shell reports it with OSC 133.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum Mark {
+    /// The command started; what follows is its output.
+    OutputStart,
+    /// The command finished, with its exit status if the shell gave one.
+    CommandEnd(Option<i32>),
 }
 
 pub struct Emu {
@@ -471,8 +483,20 @@ unsafe extern "C" fn on_semantic_prompt(
     event: *const ffi::SemanticPrompt,
 ) {
     let ev = &mut *(ud as *mut Events);
-    if !event.is_null() && (*event).kind == ffi::SEMANTIC_PROMPT_PROMPT_START {
-        ev.prompt_start = true;
+    if event.is_null() {
+        return;
+    }
+    let mark = match (*event).kind {
+        ffi::SEMANTIC_PROMPT_PROMPT_START => {
+            ev.prompt_start = true;
+            return;
+        }
+        ffi::SEMANTIC_PROMPT_OUTPUT_START => Mark::OutputStart,
+        ffi::SEMANTIC_PROMPT_COMMAND_END => Mark::CommandEnd((*event).has_exit_code.then_some((*event).exit_code)),
+        _ => return,
+    };
+    if ev.marks.len() < 64 {
+        ev.marks.push(mark);
     }
 }
 
@@ -571,6 +595,11 @@ impl Emu {
     /// Whether the program has a synchronized-output hold open (mode 2026).
     pub fn hold(&mut self) -> bool {
         self.events().hold
+    }
+
+    /// Command start and end marks (OSC 133) since last asked, in order.
+    pub fn take_marks(&mut self) -> Vec<Mark> {
+        std::mem::take(&mut self.events().marks)
     }
 
     /// Whether a shell prompt-start mark (OSC 133) arrived since last asked.
@@ -1002,6 +1031,14 @@ mod tests {
         e.feed(b"\x1b]133;A\x07$ ");
         assert!(e.take_prompt_start());
         assert!(!e.take_prompt_start());
+    }
+
+    #[test]
+    fn command_marks_carry_the_exit_status() {
+        let mut e = emu();
+        e.feed(b"\x1b]133;A\x07$ ls\r\n\x1b]133;C\x07out\r\n\x1b]133;D;3\x07\x1b]133;D\x07");
+        assert_eq!(e.take_marks(), [Mark::OutputStart, Mark::CommandEnd(Some(3)), Mark::CommandEnd(None)]);
+        assert!(e.take_marks().is_empty());
     }
 
     #[test]

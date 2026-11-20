@@ -7,10 +7,11 @@ mod host;
 mod http;
 mod keys;
 mod outbuf;
+mod record;
 mod sys;
 
-use dest::{Delivery, Dest};
-use serde_json::{json, Value};
+use dest::{Delivery, Dest, Kind, Sink};
+use serde_json::{json, Map, Value};
 use std::ffi::CString;
 use std::fs::{self, File, OpenOptions};
 use std::io::{Read, Write};
@@ -35,8 +36,18 @@ options:
   --detach           return once the session is ready; the host keeps running
   --name NAME        session id to use (a-z 0-9 _ -); default is six random characters
   --dest URI         where messages go; default file:<session dir>/events.ndjson
+                     file:/PATH appends lines, unix:/PATH streams lines to a
+                     socket, http://HOST:PORT/PATH posts each message.
                      The last message is the will: how PROGRAM ended and its output.
   --no-probe         do not require the destination to accept a message at startup
+  --on LIST          also send these messages: settle (the screen, each time it
+                     goes still) and stream (output lines as they scroll off).
+                     Comma separated. Matches are added with: waldo-term match add
+  --heartbeat SECS   send a heartbeat message after SECS seconds without another
+  --linger SECS      after PROGRAM exits, keep answering screen, output and status
+                     requests for SECS seconds before closing the session
+  --record FILE      also write PROGRAM's raw output to FILE as an asciicast,
+                     which 'asciinema play FILE' replays
   --size COLSxROWS   terminal size, default 120x30
   --output-cap BYTES how much rendered output to keep for the will, default 65536
   --quiet-ms MS      how long the screen must be still to count as settled, default 200
@@ -69,6 +80,11 @@ struct Args {
     rows: u16,
     output_cap: usize,
     quiet_ms: u64,
+    on_settle: bool,
+    on_stream: bool,
+    heartbeat: Option<u64>,
+    linger: Option<u64>,
+    record: Option<String>,
     program: Vec<String>,
 }
 
@@ -88,6 +104,11 @@ fn parse_args() -> Args {
         rows: 30,
         output_cap: 64 << 10,
         quiet_ms: 200,
+        on_settle: false,
+        on_stream: false,
+        heartbeat: None,
+        linger: None,
+        record: None,
         program: Vec::new(),
     };
     let mut it = std::env::args().skip(1);
@@ -148,6 +169,35 @@ fn parse_args() -> Args {
                     .filter(|n| (10..=10_000).contains(n))
                     .unwrap_or_else(|| usage_error("--quiet-ms takes milliseconds between 10 and 10000"));
             }
+            "--on" => {
+                for word in value("--on").split(',').map(|w| w.trim()).filter(|w| !w.is_empty()) {
+                    match word {
+                        "settle" => a.on_settle = true,
+                        "stream" => a.on_stream = true,
+                        "match" => usage_error("--on takes settle and stream; match messages are sent for triggers added with: waldo-term match add"),
+                        other => usage_error(&format!("--on does not know '{other}'; it takes settle, stream, or both as settle,stream")),
+                    }
+                }
+            }
+            "--heartbeat" => {
+                a.heartbeat = Some(
+                    value("--heartbeat")
+                        .parse::<u64>()
+                        .ok()
+                        .filter(|n| (1..=3600).contains(n))
+                        .unwrap_or_else(|| usage_error("--heartbeat takes seconds between 1 and 3600")),
+                );
+            }
+            "--linger" => {
+                a.linger = Some(
+                    value("--linger")
+                        .parse::<u64>()
+                        .ok()
+                        .filter(|n| (1..=86_400).contains(n))
+                        .unwrap_or_else(|| usage_error("--linger takes seconds between 1 and 86400")),
+                );
+            }
+            "--record" => a.record = Some(value("--record")),
             "--" => {
                 a.program = it.by_ref().collect();
                 break;
@@ -425,7 +475,7 @@ fn main() {
     let cwd = std::env::current_dir().map(|p| p.display().to_string()).unwrap_or_default();
 
     // Step 4: the hello message, which is also the destination probe.
-    let mut hello = host::envelope(&sd.id, 0, "hello", start);
+    let mut hello = Map::new();
     hello.insert("name".into(), args.name.clone().map(Value::from).unwrap_or(Value::Null));
     hello.insert("argv".into(), json!(args.program));
     hello.insert("cwd".into(), cwd.clone().into());
@@ -433,9 +483,12 @@ fn main() {
     hello.insert("cols".into(), args.cols.into());
     hello.insert("rows".into(), args.rows.into());
     hello.insert("host_pid".into(), std::process::id().into());
-    let hello_line = serde_json::to_string(&Value::Object(hello)).unwrap_or_default();
+    // The sink keeps the connection the probe opens, for `unix:`.
+    let mut sink = Sink::new(dest.clone());
     if !args.no_probe {
-        if let Err(e) = dest.deliver(&hello_line) {
+        let mut probe = dest::envelope(&sd.id, 0, "hello", start);
+        probe.extend(hello.clone());
+        if let Err(e) = sink.deliver(&serde_json::to_string(&Value::Object(probe)).unwrap_or_default()) {
             remove_session_dir(&sd.dir);
             report.fail(&format!(
                 "cannot deliver to {}: {e}; fix the destination, or pass --no-probe to start without checking it",
@@ -443,6 +496,17 @@ fn main() {
             ));
         }
     }
+
+    // The recording, if asked for. A file that cannot be written is found
+    // out now, not after the program has run.
+    let recorder = args.record.as_deref().map(|path| {
+        File::create(path)
+            .and_then(|f| record::Recorder::start(f, args.cols, args.rows, util::unix_now(), start))
+            .unwrap_or_else(|e| {
+                remove_session_dir(&sd.dir);
+                report.fail(&format!("cannot write the recording to {path}: {e}"))
+            })
+    });
 
     // Step 5: the pty and the emulator.
     let pty = sys::open_pty(args.cols, args.rows).unwrap_or_else(|e| {
@@ -466,7 +530,7 @@ fn main() {
         Ok(c) => c,
         Err(e) => {
             let text = format!("cannot run {}: {e}", program.display());
-            let mut exit = host::envelope(&sd.id, 1, "exit", start);
+            let mut exit = dest::envelope(&sd.id, 1, "exit", start);
             exit.insert("exit_code".into(), Value::Null);
             exit.insert("signal".into(), Value::Null);
             exit.insert("core_dumped".into(), false.into());
@@ -474,7 +538,7 @@ fn main() {
             exit.insert("kill_reason".into(), Value::Null);
             exit.insert("spawn_error".into(), text.clone().into());
             exit.insert("duration_ms".into(), 0.into());
-            let _ = dest.deliver(&serde_json::to_string(&Value::Object(exit)).unwrap_or_default());
+            let _ = sink.deliver(&serde_json::to_string(&Value::Object(exit)).unwrap_or_default());
             remove_session_dir(&sd.dir);
             report.fail(&text)
         }
@@ -482,13 +546,16 @@ fn main() {
 
     // Every fork is done; the delivery thread can start.
     let log_for_thread = log.as_ref().and_then(|f| f.try_clone().ok());
-    let mut delivery = Delivery::start(dest.clone(), move |msg| {
+    // With a probe, hello has gone out already as message 0.
+    let first_seq = if args.no_probe { 0 } else { 1 };
+    let heartbeat = args.heartbeat.map(Duration::from_secs);
+    let delivery = Delivery::start(sink, sd.id.clone(), start, first_seq, heartbeat, move |msg| {
         if let Some(mut f) = log_for_thread.as_ref() {
             let _ = writeln!(f, "{} {msg}", util::rfc3339_now());
         }
     });
     if args.no_probe {
-        delivery.send_blocking(hello_line);
+        delivery.send(Kind::Hello, hello);
     }
 
     // Step 7: meta.json, then the coordinates.
@@ -524,9 +591,12 @@ fn main() {
         dest_is_default,
         output_cap: args.output_cap,
         quiet_ms: args.quiet_ms,
+        on_settle: args.on_settle,
+        on_stream: args.on_stream,
+        linger: args.linger.map(Duration::from_secs),
         started_wall,
     };
-    let host = match host::Host::new(cfg, pty.master, child, sigfd, listener, emu, log, delivery, start) {
+    let host = match host::Host::new(cfg, pty.master, child, sigfd, listener, emu, log, delivery, recorder, start) {
         Ok(h) => h,
         Err(e) => {
             remove_session_dir(&sd.dir);

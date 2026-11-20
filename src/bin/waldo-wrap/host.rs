@@ -4,11 +4,12 @@
 //! listening socket and the client connections. Timers are the epoll
 //! timeout. Nothing here blocks on the pty or on a client.
 
-use crate::dest::{Delivery, Dest};
-use crate::emu::{Emu, Row, Space, Tracked};
+use crate::dest::{Delivery, Dest, Kind};
+use crate::emu::{Emu, Mark, Row, Space, Tracked};
 use crate::http::{self, Parsed, Request};
 use crate::keys::{self, Tok};
 use crate::outbuf::{cap_lines, OutBuf};
+use crate::record::Recorder;
 use crate::sys::{self, Child, Epoll, ExitStatus};
 use regex_lite::Regex;
 use serde_json::{json, Map, Value};
@@ -56,6 +57,15 @@ const DRAIN_CAP: Duration = Duration::from_secs(2);
 const KILL_STEP: Duration = Duration::from_secs(2);
 const MAX_FILE_ITEM: u64 = 1 << 20;
 const ALT_BASE: u64 = 1 << 40;
+/// Match triggers look at the visible screen at most this often (section 3.2).
+const TRIG_EVERY: Duration = Duration::from_millis(25);
+const MAX_TRIGGERS: usize = 32;
+/// Longest line a pattern is matched against, in characters.
+const MATCH_CHARS: usize = 4096;
+/// Stream messages go out at most this often (section 3.4).
+const STREAM_EVERY: Duration = Duration::from_millis(250);
+/// Lines waiting for the next stream message; beyond this the oldest are skipped.
+const STREAM_BUF_BYTES: usize = 512 << 10;
 /// The private OSC number `run` uses for its end-of-command mark.
 const SENTINEL_PREFIX: &str = "7770;waldo;";
 
@@ -75,6 +85,12 @@ pub struct Config {
     pub dest_is_default: bool,
     pub output_cap: usize,
     pub quiet_ms: u64,
+    /// Send a `settle` message each time the screen settles.
+    pub on_settle: bool,
+    /// Send `stream` messages with output lines as they are committed.
+    pub on_stream: bool,
+    /// Keep answering read-only requests this long after the program exits.
+    pub linger: Option<Duration>,
     pub started_wall: String,
 }
 
@@ -153,6 +169,19 @@ struct Wait {
     ansi: bool,
 }
 
+/// A standing match trigger (section 3.2). Its matches go to the destination.
+struct Trigger {
+    id: String,
+    re: Regex,
+    pattern: String,
+    once: bool,
+    /// How many times it has fired.
+    count: u64,
+    /// Matches already reported: the line's absolute row and the matched
+    /// text. One is forgotten when it is absent at a settle point.
+    known: Vec<(u64, String)>,
+}
+
 struct RunResult {
     code: i64,
     output: Value,
@@ -166,6 +195,11 @@ struct Run {
     tracked: Option<Tracked>,
     started: Instant,
     finished: Option<RunResult>,
+    /// The end is found from the shell's own OSC 133 marks; no sentinel
+    /// was typed.
+    by_marks: bool,
+    /// With `by_marks`: the shell has said the command started.
+    output_started: bool,
 }
 
 struct Conn {
@@ -195,7 +229,6 @@ pub struct Host {
     emu: Emu,
     log: Option<File>,
     delivery: Option<Delivery>,
-    seq: u64,
     start: Instant,
 
     gen: u64,
@@ -216,6 +249,25 @@ pub struct Host {
     abs_base: u64,
     fresh_lines: Vec<(u64, String)>,
 
+    triggers: Vec<Trigger>,
+    next_trigger: u64,
+    /// Lines that left the screen since the triggers last looked.
+    trig_fresh: Vec<(u64, String)>,
+    /// `gen` when the triggers last looked at the visible screen.
+    trig_gen: u64,
+    trig_last: Instant,
+    /// The screen has changed since it last settled.
+    settle_pending: bool,
+
+    /// Output lines committed so far; the number of the newest one.
+    lines_committed: u64,
+    stream_buf: VecDeque<String>,
+    stream_bytes: usize,
+    /// The line number of the first line in `stream_buf`.
+    stream_from: u64,
+    stream_skipped: u64,
+    stream_last: Instant,
+
     replies: Vec<u8>,
     queue: VecDeque<QItem>,
     pause_until: Option<Instant>,
@@ -229,6 +281,14 @@ pub struct Host {
     next_conn: u64,
     waits: Vec<Wait>,
     run: Option<Run>,
+    /// The shell has reported a command's end and exit status with OSC 133,
+    /// so `run` can rely on that instead of typing a sentinel.
+    shell_marks: bool,
+    record: Option<Recorder>,
+    /// The program has exited and the will is delivered; only read-only
+    /// requests are answered (`--linger`).
+    lingering: bool,
+    linger_stop: bool,
 
     pty_eof: bool,
     exit_status: Option<ExitStatus>,
@@ -259,6 +319,7 @@ impl Host {
         emu: Emu,
         log: Option<File>,
         delivery: Delivery,
+        record: Option<Recorder>,
         start: Instant,
     ) -> std::io::Result<Host> {
         let epoll = Epoll::new()?;
@@ -280,7 +341,6 @@ impl Host {
             emu,
             log,
             delivery: Some(delivery),
-            seq: 1,
             start,
             gen: 0,
             screen_hash: 0,
@@ -294,6 +354,18 @@ impl Host {
             rows_committed: 0,
             abs_base: 0,
             fresh_lines: Vec::new(),
+            triggers: Vec::new(),
+            next_trigger: 1,
+            trig_fresh: Vec::new(),
+            trig_gen: 0,
+            trig_last: now,
+            settle_pending: false,
+            lines_committed: 0,
+            stream_buf: VecDeque::new(),
+            stream_bytes: 0,
+            stream_from: 0,
+            stream_skipped: 0,
+            stream_last: now,
             replies: Vec::new(),
             queue: VecDeque::new(),
             pause_until: None,
@@ -305,6 +377,10 @@ impl Host {
             next_conn: T_FIRST_CONN,
             waits: Vec::new(),
             run: None,
+            shell_marks: false,
+            record,
+            lingering: false,
+            linger_stop: false,
             pty_eof: false,
             exit_status: None,
             exited_at: None,
@@ -345,6 +421,9 @@ impl Host {
             }
             self.pump_input();
             self.tick();
+            // Triggers first, so a match is on its way to the destination
+            // before a request that saw the same screen is answered.
+            self.evaluate_triggers(false);
             self.evaluate_waits();
             self.service_attach();
             if self.ready_to_finish() {
@@ -362,12 +441,33 @@ impl Host {
                 next = Some(t);
             }
         };
-        let settle_at = self.settle_at();
+        // A timer is set only for something that can then happen, or the
+        // loop would spin: waiting for the first output, or for a command
+        // that has not finished, has no time to wait for.
+        let settle_timer = self.settle_timer(now);
+        let run_finished = matches!(&self.run, Some(r) if r.finished.is_some());
         for w in &self.waits {
             consider(w.deadline);
-            if matches!(w.until, Until::Settle | Until::Done) {
-                consider(settle_at);
+            let on_settle = match w.until {
+                Until::Settle => true,
+                Until::Done => run_finished,
+                _ => false,
+            };
+            if let Some(t) = settle_timer.filter(|_| on_settle) {
+                consider(t);
             }
+        }
+        let held = self.hold_since.filter(|h| now < *h + HOLD_CAP);
+        if !self.triggers.is_empty() && self.trig_gen != self.gen {
+            consider(held.map(|h| h + HOLD_CAP).unwrap_or(self.trig_last + TRIG_EVERY));
+        }
+        if self.settle_pending && (self.cfg.on_settle || !self.triggers.is_empty()) {
+            if let Some(t) = settle_timer {
+                consider(t);
+            }
+        }
+        if !self.stream_buf.is_empty() {
+            consider(self.stream_last + STREAM_EVERY);
         }
         if let Some(p) = self.pause_until {
             consider(p);
@@ -424,6 +524,7 @@ impl Host {
                 }
                 Ok(Some(n)) => {
                     total += n;
+                    self.record(|r| r.output(&buf[..n]));
                     self.process_chunk(&buf[..n]);
                 }
                 Ok(None) => break,
@@ -433,6 +534,7 @@ impl Host {
             if self.exit_status.is_some() {
                 self.drain_until = Some(Instant::now() + DRAIN_QUIET);
             }
+            self.record(|r| r.flush());
             self.refresh();
         }
     }
@@ -444,9 +546,11 @@ impl Host {
             off += n.max(1);
             if stopped {
                 self.handle_unknown_osc();
+                self.handle_marks();
             }
         }
         self.handle_unknown_osc();
+        self.handle_marks();
         let replies = self.emu.take_replies();
         if self.exit_status.is_none() {
             self.replies.extend_from_slice(&replies);
@@ -485,6 +589,51 @@ impl Host {
         }
     }
 
+    /// The shell's own command marks (OSC 133). They end a `run` that typed
+    /// no sentinel.
+    fn handle_marks(&mut self) {
+        for mark in self.emu.take_marks() {
+            let waiting = matches!(&self.run, Some(r) if r.by_marks && r.finished.is_none());
+            let started = self.run.as_ref().map(|r| r.output_started).unwrap_or(false);
+            match mark {
+                Mark::OutputStart => {
+                    if waiting && !started {
+                        // The output begins where the cursor is now.
+                        let (_, cy) = self.emu.cursor();
+                        let tracked = if self.emu.alt_screen() { None } else { self.emu.track(Space::Active, cy as u32) };
+                        if let Some(run) = self.run.as_mut() {
+                            run.output_started = true;
+                            run.tracked = tracked;
+                        }
+                    }
+                }
+                Mark::CommandEnd(code) => {
+                    if code.is_some() {
+                        self.shell_marks = true;
+                    }
+                    if waiting && started {
+                        let output = self.run_output();
+                        if let Some(run) = self.run.as_mut() {
+                            run.finished = Some(RunResult { code: code.map(i64::from).unwrap_or(-1), output, ms: ms_since(run.started) });
+                            run.tracked = None;
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    /// Write to the recording, if there is one. A recording that cannot be
+    /// written is given up, not the session.
+    fn record(&mut self, f: impl FnOnce(&mut Recorder) -> std::io::Result<()>) {
+        if let Some(r) = self.record.as_mut() {
+            if let Err(e) = f(r) {
+                self.record = None;
+                self.log(&format!("recording stopped: {e}"));
+            }
+        }
+    }
+
     /// Move rows that have scrolled into history to the output buffer
     /// (section 6.5).
     fn collect(&mut self) {
@@ -496,7 +645,7 @@ impl Host {
         let start = match tracked {
             Some(y) => y,
             None => {
-                self.outbuf.push("[... output lost ...]".into());
+                self.commit_line("[... output lost ...]".into());
                 self.watermark = self.emu.track(Space::Screen, 0);
                 0
             }
@@ -517,7 +666,10 @@ impl Host {
                 if self.waits.iter().any(|w| w.until == Until::Match) {
                     self.fresh_lines.push((abs, line.clone()));
                 }
-                self.outbuf.push(line);
+                if !self.triggers.is_empty() {
+                    self.trig_fresh.push((abs, line.clone()));
+                }
+                self.commit_line(line);
                 line_start = y;
             }
         }
@@ -549,6 +701,7 @@ impl Host {
             self.screen_hash = hash;
             self.gen += 1;
             self.last_change = Instant::now();
+            self.settle_pending = true;
         }
         if !self.seen_output && rows.iter().any(|r| !r.text.trim().is_empty()) {
             self.seen_output = true;
@@ -654,13 +807,16 @@ impl Host {
         // line that carries the mark's arguments as typed. The terminal may
         // echo the line once itself and the shell again when it redraws, so
         // take the last such line.
-        let head = lines.len().min(200);
-        let echo_end = lines[..head]
-            .iter()
-            .rposition(|l| l.contains(&run.echo_tail))
-            .or_else(|| lines[..head].iter().position(|l| l.contains(&run.nonce)));
-        if let Some(i) = echo_end {
-            lines.drain(..=i);
+        // With the shell's own marks the lines start at the output itself.
+        if !run.by_marks {
+            let head = lines.len().min(200);
+            let echo_end = lines[..head]
+                .iter()
+                .rposition(|l| l.contains(&run.echo_tail))
+                .or_else(|| lines[..head].iter().position(|l| l.contains(&run.nonce)));
+            if let Some(i) = echo_end {
+                lines.drain(..=i);
+            }
         }
         while lines.last().map(|l| l.is_empty()).unwrap_or(false) {
             lines.pop();
@@ -791,9 +947,266 @@ impl Host {
         self.last_change.max(self.last_input) + self.quiet()
     }
 
+    fn held(&self, now: Instant) -> bool {
+        self.hold_since.map(|h| now.duration_since(h) < HOLD_CAP).unwrap_or(false)
+    }
+
     fn settled(&self, now: Instant) -> bool {
-        let held = self.hold_since.map(|h| now.duration_since(h) < HOLD_CAP).unwrap_or(false);
-        self.seen_output && self.input_idle() && !held && now >= self.settle_at()
+        self.seen_output && self.input_idle() && !self.held(now) && now >= self.settle_at()
+    }
+
+    /// When the screen will count as settled if nothing else happens. None
+    /// while that waits on something other than time: the first output, or
+    /// input still to be written.
+    fn settle_timer(&self, now: Instant) -> Option<Instant> {
+        if !self.seen_output || !self.input_idle() {
+            return None;
+        }
+        let at = self.settle_at();
+        match self.hold_since.map(|h| h + HOLD_CAP) {
+            Some(cap) if now < cap => Some(at.max(cap)),
+            _ => Some(at),
+        }
+    }
+
+    // ---- triggers, settle and stream messages (sections 3 and 4) ---------
+
+    fn send(&self, kind: Kind, fields: Map<String, Value>) {
+        if let Some(d) = self.delivery.as_ref() {
+            d.send(kind, fields);
+        }
+    }
+
+    /// A line has left the screen for good: it joins the output, and the
+    /// stream if that is on.
+    fn commit_line(&mut self, line: String) {
+        self.lines_committed += 1;
+        if self.cfg.on_stream {
+            self.stream_push(line.clone(), self.lines_committed);
+        }
+        self.outbuf.push(line);
+    }
+
+    fn stream_push(&mut self, line: String, number: u64) {
+        if self.stream_buf.is_empty() {
+            self.stream_from = number;
+            // After a quiet spell, wait a moment for the lines that follow
+            // the first, so they travel together.
+            let now = Instant::now();
+            if self.stream_last + STREAM_EVERY < now {
+                self.stream_last = now;
+            }
+        }
+        self.stream_bytes += line.len() + 1;
+        self.stream_buf.push_back(line);
+        while self.stream_bytes > STREAM_BUF_BYTES && self.stream_buf.len() > 1 {
+            if let Some(old) = self.stream_buf.pop_front() {
+                self.stream_bytes -= old.len() + 1;
+                self.stream_from += 1;
+                self.stream_skipped += 1;
+            }
+        }
+    }
+
+    fn flush_stream(&mut self, now: Instant) {
+        if self.stream_buf.is_empty() {
+            return;
+        }
+        let lines: Vec<String> = self.stream_buf.drain(..).collect();
+        let mut fields = Map::new();
+        fields.insert("from_line".into(), self.stream_from.into());
+        fields.insert("lines".into(), lines.into());
+        if self.stream_skipped > 0 {
+            fields.insert("skipped_lines".into(), self.stream_skipped.into());
+        }
+        self.stream_bytes = 0;
+        self.stream_skipped = 0;
+        self.stream_last = now;
+        self.send(Kind::Stream, fields);
+    }
+
+    /// Run the match triggers, and send the settle and stream messages that
+    /// are due. `last` is the final call, after the child has exited: it
+    /// looks at the screen regardless of the 25 ms limit.
+    fn evaluate_triggers(&mut self, last: bool) {
+        let now = Instant::now();
+        let at_settle = self.settle_pending && self.settled(now);
+        if self.triggers.is_empty() {
+            self.trig_fresh.clear();
+        } else {
+            let due = self.trig_gen != self.gen && now >= self.trig_last + TRIG_EVERY;
+            let look = last || (!self.held(now) && (at_settle || due));
+            let lines = if look { self.visible_lines() } else { Vec::new() };
+            let fresh = std::mem::take(&mut self.trig_fresh);
+            let committed = self.rows_committed;
+            let mut triggers = std::mem::take(&mut self.triggers);
+            let mut fired: Vec<(usize, MatchInfo)> = Vec::new();
+            for (i, t) in triggers.iter_mut().enumerate() {
+                // Lines that scrolled off, each seen once here. One that
+                // matched while it was on screen is already known.
+                for (abs, line) in &fresh {
+                    if let Some(m) = line_match(&t.re, *abs, line) {
+                        if !t.known.iter().any(|k| k.0 == m.line && k.1 == m.text) {
+                            fired.push((i, m));
+                        }
+                    }
+                }
+                // Rows that are now output cannot be on screen again.
+                t.known.retain(|k| k.0 >= ALT_BASE || k.0 >= committed);
+                if look {
+                    let found = self.matches_now(&t.re, &lines);
+                    if at_settle {
+                        t.known.retain(|k| found.iter().any(|f| f.line == k.0 && f.text == k.1));
+                    }
+                    for f in found {
+                        if !t.known.iter().any(|k| k.0 == f.line && k.1 == f.text) {
+                            t.known.push((f.line, f.text.clone()));
+                            fired.push((i, f));
+                        }
+                    }
+                }
+            }
+            if look {
+                self.trig_gen = self.gen;
+                self.trig_last = now;
+            }
+            let screen = if fired.is_empty() { Value::Null } else { self.screen_json(false) };
+            let mut spent: Vec<usize> = Vec::new();
+            for (i, m) in fired {
+                let t = &mut triggers[i];
+                if t.once && t.count > 0 {
+                    continue;
+                }
+                t.count += 1;
+                let mut mj = json!({
+                    "id": t.id,
+                    "pattern": t.pattern,
+                    "text": m.text,
+                    "groups": m.groups,
+                    "count": t.count,
+                    "line": m.line,
+                    "on_screen": m.row.is_some(),
+                });
+                if let Some(row) = m.row {
+                    mj["row"] = row.into();
+                    mj["col"] = m.col.into();
+                }
+                if t.once {
+                    spent.push(i);
+                }
+                let mut fields = Map::new();
+                fields.insert("match".into(), mj);
+                fields.insert("screen".into(), screen.clone());
+                self.send(Kind::Match, fields);
+            }
+            for i in spent.into_iter().rev() {
+                triggers.remove(i);
+            }
+            self.triggers = triggers;
+        }
+
+        if at_settle {
+            self.settle_pending = false;
+            if self.cfg.on_settle {
+                let mut fields = Map::new();
+                fields.insert("screen".into(), self.screen_json(false));
+                self.send(Kind::Settle, fields);
+            }
+        }
+        if last || now >= self.stream_last + STREAM_EVERY {
+            self.flush_stream(now);
+        }
+    }
+
+    fn trigger_json(t: &Trigger) -> Value {
+        json!({"id": t.id, "pattern": t.pattern, "mode": if t.once { "once" } else { "edge" }, "count": t.count})
+    }
+
+    fn triggers_reply(&mut self, id: u64, req: &Request, extra: Option<(&str, Value)>) {
+        let mut v = json!({
+            "v": 1,
+            "session": self.cfg.id,
+            "dest": self.cfg.dest.uri(),
+            "triggers": self.triggers.iter().map(Host::trigger_json).collect::<Vec<_>>(),
+        });
+        if let Some((k, x)) = extra {
+            v[k] = x;
+        }
+        self.reply(id, 200, &v, false, req.keep_alive);
+    }
+
+    fn handle_trigger_add(&mut self, id: u64, req: &Request) {
+        let Some(body) = self.body_json(id, req) else { return };
+        let Some(pattern) = body.get("pattern").and_then(|p| p.as_str()) else {
+            return self.error(
+                id,
+                req,
+                400,
+                "missing_pattern",
+                "the body needs a pattern, such as {\"pattern\": \"[Pp]assword: $\"}: a regular expression matched against one line",
+            );
+        };
+        let re = match regex_lite::RegexBuilder::new(pattern).size_limit(1 << 20).build() {
+            Ok(re) => re,
+            Err(e) => return self.error(id, req, 400, "bad_pattern", &format!("the pattern is not a valid regular expression: {e}")),
+        };
+        let once = match body.get("mode").and_then(|m| m.as_str()) {
+            None | Some("edge") => false,
+            Some("once") => true,
+            Some(other) => return self.error(id, req, 400, "unknown_mode", &format!("unknown mode '{other}'; use edge or once")),
+        };
+        let name = match body.get("id") {
+            None | Some(Value::Null) => loop {
+                let candidate = format!("t{}", self.next_trigger);
+                self.next_trigger += 1;
+                if !self.triggers.iter().any(|t| t.id == candidate) {
+                    break candidate;
+                }
+            },
+            Some(v) => match v.as_str().filter(|s| {
+                (1..=32).contains(&s.len()) && s.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'_' || b == b'-')
+            }) {
+                Some(s) => s.to_string(),
+                None => {
+                    return self.error(id, req, 400, "bad_id", "a trigger id is 1 to 32 characters from a-z, A-Z, 0-9, _ and -");
+                }
+            },
+        };
+        if self.triggers.iter().any(|t| t.id == name) {
+            return self.error(
+                id,
+                req,
+                409,
+                "trigger_exists",
+                &format!("there is already a trigger '{name}'; remove it with 'waldo-term match rm {name}', or pick another id"),
+            );
+        }
+        if self.triggers.len() >= MAX_TRIGGERS {
+            return self.error(
+                id,
+                req,
+                409,
+                "too_many_triggers",
+                &format!("a session takes at most {MAX_TRIGGERS} triggers; remove one with 'waldo-term match rm ID'"),
+            );
+        }
+        let t = Trigger { id: name, re, pattern: pattern.to_string(), once, count: 0, known: Vec::new() };
+        let added = Host::trigger_json(&t);
+        self.triggers.push(t);
+        // Look at the screen for it straight away: text that is already
+        // there is a match.
+        self.trig_gen = 0;
+        self.triggers_reply(id, req, Some(("added", added)));
+    }
+
+    fn handle_trigger_remove(&mut self, id: u64, req: &Request, name: &str) {
+        let Some(i) = self.triggers.iter().position(|t| t.id == name) else {
+            let have: Vec<&str> = self.triggers.iter().map(|t| t.id.as_str()).collect();
+            let list = if have.is_empty() { "there are none".to_string() } else { format!("there are: {}", have.join(", ")) };
+            return self.error(id, req, 404, "no_such_trigger", &format!("no trigger '{name}'; {list}"));
+        };
+        let removed = Host::trigger_json(&self.triggers.remove(i));
+        self.triggers_reply(id, req, Some(("removed", removed)));
     }
 
     /// Matches of a pattern on the visible screen.
@@ -1041,20 +1454,25 @@ impl Host {
         let st = self.exit_status.unwrap_or(ExitStatus { code: Some(1), signal: None, core_dumped: false });
         self.log(&format!("child exited: code={:?} signal={:?}", st.code, st.signal));
 
-        let output = self.outbuf.render(&self.primary_lines(), None);
-        let mut will = envelope(&self.cfg.id, self.seq, "exit", self.start);
-        let dropped = self.delivery.as_ref().map(|d| d.dropped).unwrap_or(0);
-        if dropped > 0 {
-            will.insert("dropped".into(), dropped.into());
+        // Whatever the last output matched, and the end of the stream: the
+        // lines still on screen never scroll off, so they are sent now.
+        if self.cfg.on_stream {
+            let mut number = self.lines_committed;
+            for line in self.primary_lines() {
+                number += 1;
+                self.stream_push(line, number);
+            }
         }
-        will.extend(self.exit_fields(output));
+        self.evaluate_triggers(true);
+
+        let output = self.outbuf.render(&self.primary_lines(), None);
+        let mut will = self.exit_fields(output);
         will.insert("screen".into(), self.screen_json(false));
-        let will_line = serde_json::to_string(&Value::Object(will)).unwrap_or_default();
 
         // The will goes out first, so a client that sees `exit` can read it.
-        let delivered = match self.delivery.take() {
-            Some(d) => d.deliver_will(will_line.clone()),
-            None => false,
+        let (delivered, will_line) = match self.delivery.take() {
+            Some(d) => d.deliver_will(will),
+            None => (false, String::new()),
         };
         if !delivered {
             self.log("writing the will to will.json");
@@ -1065,7 +1483,12 @@ impl Host {
             self.respond_wait(w, Reason::Exit);
         }
         self.end_attach();
+        self.record(|r| r.flush());
+        self.record = None;
         self.flush_all(Duration::from_secs(1));
+        if let Some(time) = self.cfg.linger {
+            self.linger(time);
+        }
 
         let _ = std::fs::remove_file(&self.cfg.socket);
         if delivered && !self.cfg.dest_is_default {
@@ -1080,6 +1503,42 @@ impl Host {
             (None, Some(s)) => 128 + s,
             _ => 1,
         }
+    }
+
+    /// `--linger`: the program is gone and the will is delivered. Keep the
+    /// socket open for a while so the last screen and the output can still
+    /// be read. A stop request or a signal to the host ends it early.
+    fn linger(&mut self, time: Duration) {
+        self.lingering = true;
+        self.log(&format!("lingering for {} s", time.as_secs()));
+        if !self.pty_eof {
+            // A grandchild may still hold the pty; its output is no longer read.
+            self.epoll.del(self.master);
+        }
+        let end = Instant::now() + time;
+        while !self.linger_stop {
+            let now = Instant::now();
+            if now >= end {
+                break;
+            }
+            let ms = (end.duration_since(now).as_millis() as i64 + 1).min(60_000) as i32;
+            for (token, ev) in self.epoll.wait(ms) {
+                match token {
+                    T_PTY | T_PIDFD => {}
+                    T_SIGNAL => {
+                        while sys::read_signal(self.sigfd).is_some() {}
+                        self.linger_stop = true;
+                    }
+                    T_LISTEN => self.accept(),
+                    id => self.on_conn(id, ev),
+                }
+            }
+            // Nothing is left to wait for: every request is answered at once.
+            for w in std::mem::take(&mut self.waits) {
+                self.respond_wait(w, Reason::Exit);
+            }
+        }
+        self.flush_all(Duration::from_secs(1));
     }
 
     // ---- connections -------------------------------------------------------
@@ -1297,7 +1756,28 @@ impl Host {
             ("POST", "/v1/resize"),
             ("POST", "/v1/signal"),
             ("GET", "/v1/attach"),
+            ("GET", "/v1/triggers"),
+            ("POST", "/v1/triggers"),
+            ("DELETE", "/v1/triggers/ID"),
         ];
+        if self.lingering {
+            let read_only = req.method == "GET" && ["/v1/status", "/v1/screen", "/v1/output", "/v1/triggers"].contains(&req.path.as_str());
+            if req.method == "POST" && req.path == "/v1/signal" {
+                // Whatever was asked, there is no program to signal; the
+                // caller wants the session gone.
+                self.linger_stop = true;
+                return self.handle_wait(id, &req, Until::None, Some(json!({})), None);
+            }
+            if !read_only {
+                return self.error(
+                    id,
+                    &req,
+                    409,
+                    "exited",
+                    "the program has exited; the session only answers status, screen, output and triggers until it closes. 'waldo-term kill' closes it now",
+                );
+            }
+        }
         match (req.method.as_str(), req.path.as_str()) {
             ("GET", "/v1/status") => self.handle_status(id, &req),
             ("GET", "/v1/screen") => self.handle_wait(id, &req, Until::None, None, None),
@@ -1308,16 +1788,18 @@ impl Host {
             ("POST", "/v1/resize") => self.handle_resize(id, &req),
             ("POST", "/v1/signal") => self.handle_signal(id, &req),
             ("GET", "/v1/attach") => self.handle_attach(id, &req),
-            (_, p) if p.starts_with("/v1/triggers") => self.error(
-                id,
-                &req,
-                501,
-                "not_implemented",
-                "triggers are not implemented yet; to wait for text use POST /v1/wait with until=match",
-            ),
+            ("GET", "/v1/triggers") => self.triggers_reply(id, &req, None),
+            ("POST", "/v1/triggers") => self.handle_trigger_add(id, &req),
+            ("DELETE", p) if p.starts_with("/v1/triggers/") => {
+                let name = p["/v1/triggers/".len()..].to_string();
+                self.handle_trigger_remove(id, &req, &name);
+            }
             (m, p) if known.iter().any(|(_, kp)| *kp == p) => {
-                let right = known.iter().find(|(_, kp)| *kp == p).map(|(km, _)| *km).unwrap_or("GET");
-                self.error(id, &req, 405, "method_not_allowed", &format!("{p} takes {right}, not {m}"));
+                let right: Vec<&str> = known.iter().filter(|(_, kp)| *kp == p).map(|(km, _)| *km).collect();
+                self.error(id, &req, 405, "method_not_allowed", &format!("{p} takes {}, not {m}", right.join(" or ")));
+            }
+            (m, p) if p.starts_with("/v1/triggers/") => {
+                self.error(id, &req, 405, "method_not_allowed", &format!("{p} takes DELETE, not {m}; GET /v1/triggers lists them"));
             }
             (_, p) => {
                 let list: Vec<String> = known.iter().map(|(m, p)| format!("{m} {p}")).collect();
@@ -1360,6 +1842,11 @@ impl Host {
             "gen": self.gen,
             "child": self.child_json(),
             "run_in_progress": matches!(&self.run, Some(r) if r.finished.is_none()),
+            "messages": {
+                "settle": self.cfg.on_settle,
+                "stream": self.cfg.on_stream,
+                "triggers": self.triggers.len(),
+            },
         });
         self.reply(id, 200, &v, req.wants_text, req.keep_alive);
     }
@@ -1596,10 +2083,20 @@ impl Host {
             }
         };
         let echo_tail = format!("{status} {nonce}");
-        let line = format!("{open}{command}\n{close}; printf '\\033]{SENTINEL_PREFIX}%s;%s\\007' {echo_tail}");
+        // A shell that reports the end of each command itself (OSC 133)
+        // needs no sentinel: the command is typed as it is. Only for one
+        // line, because each line of several ends with a mark of its own.
+        let by_marks = self.shell_marks && !command.contains('\n');
+        let line = if by_marks {
+            command.to_string()
+        } else {
+            format!("{open}{command}\n{close}; printf '\\033]{SENTINEL_PREFIX}%s;%s\\007' {echo_tail}")
+        };
         let (_, cy) = self.emu.cursor();
-        let tracked = if self.emu.alt_screen() { None } else { self.emu.track(Space::Active, cy as u32) };
-        self.run = Some(Run { nonce, echo_tail, tracked, started: Instant::now(), finished: None });
+        // With marks, the output's first row is known when the shell says
+        // the command has started.
+        let tracked = if by_marks || self.emu.alt_screen() { None } else { self.emu.track(Space::Active, cy as u32) };
+        self.run = Some(Run { nonce, echo_tail, tracked, started: Instant::now(), finished: None, by_marks, output_started: false });
 
         let req_id = self.next_req;
         self.next_req += 1;
@@ -1706,15 +2203,18 @@ fn read_file_item(path: &str) -> Result<String, String> {
 }
 
 /// The fields every message to the destination starts with (section 4).
-pub fn envelope(session: &str, seq: u64, trigger: &str, start: Instant) -> Map<String, Value> {
-    let mut m = Map::new();
-    m.insert("v".into(), 1.into());
-    m.insert("session".into(), session.into());
-    m.insert("seq".into(), seq.into());
-    m.insert("trigger".into(), trigger.into());
-    m.insert("time".into(), util::rfc3339_now().into());
-    m.insert("t_ms".into(), ms_since(start).into());
-    m
+/// A pattern against one line that has left the screen.
+fn line_match(re: &Regex, abs: u64, line: &str) -> Option<MatchInfo> {
+    let subject: String = line.chars().take(MATCH_CHARS).collect();
+    let caps = re.captures(&subject)?;
+    let m = caps.get(0)?;
+    Some(MatchInfo {
+        text: m.as_str().to_string(),
+        groups: (1..caps.len()).map(|i| caps.get(i).map(|g| Value::from(g.as_str())).unwrap_or(Value::Null)).collect(),
+        line: abs,
+        row: None,
+        col: subject[..m.start()].chars().count() + 1,
+    })
 }
 
 // ---- attach (DESIGN.md section 7) -----------------------------------------
@@ -1775,10 +2275,22 @@ impl Host {
     fn do_resize(&mut self, cols: u16, rows: u16) -> Result<(), String> {
         self.emu.resize(cols, rows)?;
         let _ = sys::set_winsize(self.master, cols, rows);
+        self.record(|r| r.resize(cols, rows));
         self.hold_since = None;
         self.collect();
         self.refresh();
         self.last_change = Instant::now();
+        // A resize reflows lines and renumbers rows. What is on screen now
+        // is recorded, not reported again (section 3.2).
+        if !self.triggers.is_empty() {
+            let lines = self.visible_lines();
+            let mut triggers = std::mem::take(&mut self.triggers);
+            for t in triggers.iter_mut() {
+                t.known = self.matches_now(&t.re, &lines).into_iter().map(|m| (m.line, m.text)).collect();
+            }
+            self.triggers = triggers;
+            self.trig_gen = self.gen;
+        }
         Ok(())
     }
 
