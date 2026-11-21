@@ -1626,7 +1626,7 @@ fn gc_says_what_is_still_running() {
 }
 
 #[test]
-fn run_waits_for_the_first_prompt() {
+fn the_first_input_waits_for_the_first_prompt() {
     let t = T::new();
     // No wait for the prompt: the command arrives while bash is starting.
     t.start("fp", &["bash", "--norc", "--noprofile"]);
@@ -1638,6 +1638,12 @@ fn run_waits_for_the_first_prompt() {
     // the terminal and once by the shell.
     assert_eq!(screen.matches("echo early").count(), 1, "{screen}");
     assert!(screen.lines().nth(1).unwrap_or("").starts_with("$ "), "{screen}");
+
+    // The same holds for send: it is the session's first input that waits.
+    t.start("fs", &["bash", "--norc", "--noprofile"]);
+    let r = t.term(&["send", "-s", "fs", "--text", "echo sent", "--keys", "<Enter>"]);
+    assert_eq!(r.code, 0, "{}\n{}", r.out, r.err);
+    assert_eq!(r.out.lines().skip(1).collect::<Vec<_>>(), vec!["$ echo sent", "sent", "$"], "{}", r.out);
 }
 
 #[test]
@@ -1656,6 +1662,18 @@ fn run_into_something_that_is_not_a_shell_says_so() {
     // A command that is only slow, in a real shell, keeps the usual hint.
     t.bash("sl");
     let r = t.term(&["run", "-s", "sl", "--timeout", "300", "sleep 1"]);
+    assert_eq!(r.code, 124);
+    assert!(r.out.contains("hint: the command is still running"), "{}", r.out);
+
+    // So does a shell whose name is not one waldo knows: it started the
+    // command, so something else is in the foreground now.
+    let bash = String::from_utf8(Command::new("sh").args(["-c", "command -v bash"]).output().unwrap().stdout).unwrap();
+    std::os::unix::fs::symlink(bash.trim(), t.work.join("oddsh")).unwrap();
+    t.start("od", &["./oddsh", "--norc", "--noprofile"]);
+    assert_eq!(t.term(&["wait", "-s", "od", "--until", "match", "--pattern", r"^\$ $"]).code, 0);
+    let (_, v) = t.json(&["screen", "-s", "od"]);
+    assert_eq!(v["child"]["foreground"], "oddsh");
+    let r = t.term(&["run", "-s", "od", "--timeout", "300", "sleep 1"]);
     assert_eq!(r.code, 124);
     assert!(r.out.contains("hint: the command is still running"), "{}", r.out);
 }

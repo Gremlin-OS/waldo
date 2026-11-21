@@ -284,6 +284,12 @@ reacts, as with a password prompt that echoes nothing, the key is sent after
 that detect a paste by timing take an Enter that arrives with the text for a
 line break inside it (section 13 has how this was found).
 
+The first input of a session is held until the screen has settled for the
+first time, or until 2 s after the session started, whichever comes first.
+A shell echoes what arrives before its first prompt a second time: once by
+the terminal, and once by the shell when it draws its prompt. A program that
+draws nothing gets its first input at the 2 s mark at the latest.
+
 For curl, a body whose content type is not `application/json` is treated as one
 `keys` item, and `wait` and `timeout_ms` may be query parameters:
 
@@ -455,11 +461,10 @@ make: *** [Makefile:8: foo.o] Error 1
 - It assumes `;` and `$?`, which holds for sh, bash and zsh. `--shell fish`
   uses `$status`. If the foreground program is not a shell at its prompt the
   result is whatever typing that line into it does. `run` cannot check that
-  for certain, but it notes the foreground program's name when it types,
-  and if that is not a known shell's the timeout carries a hint saying so.
-- If nothing has been typed into the session yet, `run` waits for the
-  program to draw something and go quiet before it types, for at most 2 s.
-  A shell echoes what arrives before its first prompt a second time.
+  for certain. It notes the foreground program when it types. A shell
+  either finishes the command or puts something else in the foreground, so
+  if the same program is still there at the deadline, and its name is not a
+  known shell's, the timeout carries a hint saying so.
 
 ### 2.6 Help and guidance
 
@@ -483,7 +488,7 @@ These are requirements, not polish.
     Later requests to the same program carry no hint: by then it is the
     thing being driven.
   - A `run` that times out after typing into something that is not a shell:
-    `hint: run typed the command while 'vim' was in the foreground, and that does not look like a shell; ...`
+    `hint: run typed the command while 'vim' was in the foreground, and it still is; that does not look like a shell, ...`
   - A timeout while the screen was still changing:
     `hint: the screen never went quiet; wait for specific text with --until match.`
   - Unparsed text that looks like key notation sent as `text`:
@@ -1269,11 +1274,14 @@ Kept because they explain choices above, or because an agent will meet them.
   program that had been running for a while and failed on the first input
   after it started. On fresh starts a 40 ms gap failed and gaps of 170 ms
   and more worked; waiting for the reaction worked on four fresh starts out
-  of four. The explanation (timing-based paste detection) fits what was seen
-  and was not checked against the program's source. The test uses a small
-  program that behaves that way: it is busy for a while after reading, and
-  counts input that arrived meanwhile as part of the same burst. The test
-  fails without the wait.
+  of four. The explanation is that the program goes by what arrives in one
+  burst, not by a clock. That was checked in part against the installed
+  program (version 2.1.322, on 2026-11-21): its input box treats one input
+  event of more than 800 characters as a paste, and holds a Return that
+  arrives while a paste is being handled. Where a short text and an Enter
+  in one burst become a line break was not found. The test uses a small
+  program that is busy for a while after reading and counts input that
+  arrived meanwhile as part of the same burst. It fails without the wait.
 - **Colour carries meaning.** `htop` marks the selected entry of its sort
   menu with colour alone, which is why styled screens exist (section 6.2).
 - **Settle has to wait for the first text** (section 3.1). `top` sets the
@@ -1284,8 +1292,8 @@ Kept because they explain choices above, or because an agent will meet them.
   is fine. Waldo does what the terminal protocol says; the program is at
   fault, but an agent will meet it.
 - **Input typed before a shell has drawn its first prompt is echoed twice**:
-  once by the terminal and once by the shell when it starts. It is harmless.
-  `run` waits for the first prompt before typing (section 2.5); `send` does
-  not, so wait for the prompt before the first `send`.
+  once by the terminal and once by the shell when it starts. It is harmless,
+  but confusing on screen, so the first input of a session waits for the
+  first settle (section 2.1).
 - **The upstream resize bug** of section 9.3 (resizing while the viewport is
   scrolled) cannot happen here, since the host never scrolls the viewport.

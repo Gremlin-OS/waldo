@@ -17,8 +17,9 @@ not from the design.
 2. **`signal --stop` returns before the program is gone**, so a `gc` right
    after it finds the session still running. `gc` now says so, and `kill`
    waits. Whether `signal --stop` should also wait was not decided.
-3. **`send` before a shell's first prompt is still echoed twice.** `run` now
-   waits for the prompt; `send` does not.
+3. **The key-after-text explanation is only partly checked.** Claude Code's
+   input box was read (DESIGN.md section 13), but not the place where a
+   short text and an Enter in one burst become a line break.
 
 ## Designed, not built
 

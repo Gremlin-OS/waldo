@@ -51,8 +51,9 @@ const KEY_MIN: Duration = Duration::from_millis(40);
 const KEY_MAX: Duration = Duration::from_millis(300);
 const KEY_STILL: Duration = Duration::from_millis(30);
 const KEY_POLL: Duration = Duration::from_millis(10);
-/// How long `run` waits for a program that has drawn nothing to draw its
-/// first prompt before typing anyway.
+/// The first input of a session waits for the screen's first settle, but
+/// not past this long after the session started. A shell echoes what
+/// arrives before its first prompt a second time.
 const FIRST_DRAW_MAX: Duration = Duration::from_secs(2);
 const HOLD_CAP: Duration = Duration::from_secs(1);
 const DRAIN_QUIET: Duration = Duration::from_millis(100);
@@ -116,10 +117,6 @@ struct QItem {
     pause_after: bool,
     /// Wait a moment after the previous input before sending this.
     pause_before: bool,
-    /// If nothing has been typed yet, wait until the program has drawn
-    /// something and gone quiet, but no later than this. A shell echoes
-    /// what arrives before its first prompt a second time.
-    first_draw: Option<Instant>,
 }
 
 #[derive(Clone, Copy, PartialEq, Debug)]
@@ -216,9 +213,9 @@ struct Run {
     by_marks: bool,
     /// With `by_marks`: the shell has said the command started.
     output_started: bool,
-    /// The foreground program when the command was typed, if its name is
-    /// not a shell's.
-    not_shell: Option<String>,
+    /// The foreground process group when the command was typed, and its
+    /// name, if the name is not a shell's.
+    not_shell: Option<(libc::pid_t, String)>,
 }
 
 struct Conn {
@@ -887,13 +884,12 @@ impl Host {
                 self.pause_until = None;
             }
             let Some(front) = self.queue.front_mut() else { break };
-            if let Some(latest) = front.first_draw {
+            if !self.typed {
                 let ready = self.drawn && self.last_change.elapsed() >= Duration::from_millis(self.cfg.quiet_ms);
-                if !self.typed && !ready && Instant::now() < latest {
+                if !ready && Instant::now() < self.start + FIRST_DRAW_MAX {
                     self.pause_until = Some(Instant::now() + KEY_POLL);
                     break;
                 }
-                front.first_draw = None;
             }
             if front.pause_before {
                 let since = self.last_input.elapsed();
@@ -1409,9 +1405,17 @@ impl Host {
                     Until::Settle if self.last_change.elapsed() < Duration::from_secs(2) => {
                         Some("the screen never went quiet; wait for specific text with --until match.".into())
                     }
-                    Until::Done => match self.run.as_ref().and_then(|r| r.not_shell.as_ref()) {
-                        Some(name) => Some(format!(
-                            "run typed the command while '{name}' was in the foreground, and that does not look like a shell; run needs a shell prompt. Look at the screen above to see what the typing did."
+                    // A shell would have started the command or finished it.
+                    // The same program still in front, under a name that is
+                    // not a shell's, was most likely typed into.
+                    Until::Done => match self
+                        .run
+                        .as_ref()
+                        .and_then(|r| r.not_shell.as_ref())
+                        .filter(|(pg, _)| sys::foreground_pgrp(self.master) == Some(*pg))
+                    {
+                        Some((_, name)) => Some(format!(
+                            "run typed the command while '{name}' was in the foreground, and it still is; that does not look like a shell, and run needs a shell prompt. Look at the screen above to see what the typing did."
                         )),
                         None => Some(
                             "the command is still running; wait for it with 'waldo-term wait --until done', or interrupt it with 'waldo-term send --keys <C-c>'.".into(),
@@ -2076,7 +2080,7 @@ impl Host {
         let mut after_text = false;
         for kind in items {
             let is_key = matches!(kind, QKind::Key { .. });
-            self.queue.push_back(QItem { owner: req_id, kind, off: 0, pause_after: false, pause_before: is_key && after_text, first_draw: None });
+            self.queue.push_back(QItem { owner: req_id, kind, off: 0, pause_after: false, pause_before: is_key && after_text });
             after_text = !is_key;
         }
         self.handle_wait(id, req, Until::Settle, Some(body), Some((req_id, hint)));
@@ -2156,18 +2160,17 @@ impl Host {
         // the command has started.
         let tracked = if by_marks || self.emu.alt_screen() { None } else { self.emu.track(Space::Active, cy as u32) };
         // Remembered for the hint if the command never ends.
-        let not_shell = sys::foreground_pgrp(self.master).and_then(sys::process_name).filter(|name| !is_shell(name));
+        let not_shell =
+            sys::foreground_pgrp(self.master).and_then(|pg| Some((pg, sys::process_name(pg)?))).filter(|(_, name)| !is_shell(name));
         self.run =
             Some(Run { nonce, echo_tail, tracked, started: Instant::now(), finished: None, by_marks, output_started: false, not_shell });
 
         let req_id = self.next_req;
         self.next_req += 1;
         // As a paste where the shell supports it, so tabs and newlines in the
-        // command are taken literally; otherwise typed. A shell that has not
-        // drawn its prompt yet is given a moment to.
-        let first_draw = Some(Instant::now() + FIRST_DRAW_MAX);
-        self.queue.push_back(QItem { owner: req_id, kind: QKind::Line(line), off: 0, pause_after: false, pause_before: false, first_draw });
-        self.queue.push_back(QItem { owner: req_id, kind: QKind::Bytes(b"\r".to_vec()), off: 0, pause_after: false, pause_before: false, first_draw: None });
+        // command are taken literally; otherwise typed.
+        self.queue.push_back(QItem { owner: req_id, kind: QKind::Line(line), off: 0, pause_after: false, pause_before: false });
+        self.queue.push_back(QItem { owner: req_id, kind: QKind::Bytes(b"\r".to_vec()), off: 0, pause_after: false, pause_before: false });
 
         let mut wait_body = json!({"wait": {"until": "done"}});
         if let Some(t) = body.get("timeout_ms") {
@@ -2438,7 +2441,7 @@ impl Host {
                     // in flight learn that someone else typed.
                     let owner = self.next_req;
                     self.next_req += 1;
-                    self.queue.push_back(QItem { owner, kind: QKind::Bytes(bytes), off: 0, pause_after: false, pause_before: false, first_draw: None });
+                    self.queue.push_back(QItem { owner, kind: QKind::Bytes(bytes), off: 0, pause_after: false, pause_before: false });
                 }
             }
             if msg.get("detach").and_then(|d| d.as_bool()) == Some(true) {
