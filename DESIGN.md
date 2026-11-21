@@ -241,7 +241,26 @@ POST /v1/input
 ```
 
 Items are written to the pty in order and contiguously: input from other
-clients is never interleaved inside one request. Three item kinds:
+clients is never interleaved inside one request. Signals and resizes go
+through the same queue, so they do not land inside a request either:
+
+- A signal or resize takes effect after the requests queued before it, and
+  after the program has taken in their last input (the screen has reacted
+  and gone still, or 300 ms have passed). A signal travels faster than
+  input does, so without that wait it would overtake the keys just typed.
+- Its response comes when it has happened, not when it was asked for.
+- The exception: if the queue is stuck because the program is not reading
+  its input and the terminal's buffer is full, signals and resizes are
+  carried out at once. An interrupt is most needed exactly then.
+- Ending the session (`{"stop": true}`, `kill`) never waits.
+- A request is atomic in order, not all-or-nothing: if the program exits
+  partway through, the rest is dropped. A request that times out is not
+  cancelled; what it still has queued is typed afterwards, in one piece.
+- The terminal's own answers to the program's queries (a cursor position
+  report, for example) are written ahead of queued input and can fall
+  between two items of a request.
+
+Three item kinds:
 
 - `text`: literal. Never parsed. A newline is sent as carriage return, as a
   keyboard would.
@@ -350,7 +369,10 @@ On the deadline the response is still 200 with the current screen and
 - `text` has trailing whitespace trimmed from each row and trailing blank rows
   dropped. `rows` gives the real height.
 - `interleaved` is true if another client's input reached the pty during this
-  request.
+  request. The text format shows it as the word `interleaved` in the status
+  line. Each request's input is typed whole, so it never means mixed-up
+  lines; it means the screen, and a `run`'s output, may hold more than the
+  request caused, such as the echo of what the other client typed.
 - `?style=ansi` (or `"style": "ansi"` in a request body) returns `text` with
   SGR colour and attribute escape sequences left in, and no other escapes.
   Plain text cannot show which button or menu entry is selected; installers
@@ -462,6 +484,9 @@ make: *** [Makefile:8: foo.o] Error 1
   foreground again, with exit code 130. A command that ignores the
   interrupt keeps the foreground and ends in the usual way.
 - One `run` at a time per session; a second gets 409 `run_in_progress`.
+  A run that has ended but is still waiting for the screen to settle is
+  answered at once when the next `run` arrives, so each caller gets its
+  own result.
 - The line is sent as a paste when the shell has enabled bracketed paste, so
   tabs and newlines in the command are taken literally.
 - It assumes `;` and `$?`, which holds for sh, bash and zsh. `--shell fish`
@@ -949,7 +974,8 @@ the request replaces that, and `{"until": "none"}` answers at once.
   kitty keyboard protocol and modifyOtherKeys are not mirrored, so a program
   that relies on them gets the traditional encoding from a viewer.
 - All input goes through one queue. Each API request is atomic in it; a human's
-  keystrokes are queued between requests, never inside one.
+  keystrokes are queued between requests, never inside one. A viewer's
+  `--resize`, and the size coming back when it leaves, are queued too.
 - There is no lock. An agent's request still works while a human is driving,
   and its response carries `interleaved: true` if anyone else's input landed
   during it, so the agent knows the screen may not be the result of its keys

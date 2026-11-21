@@ -64,6 +64,11 @@ pub fn response(resp: &Value) -> String {
         "" => {}
         other => words.push(other.to_string()),
     }
+    // Someone else's input was typed during this request, so the screen
+    // and a run's output may hold more than this request caused.
+    if resp.get("interleaved").and_then(|i| i.as_bool()) == Some(true) {
+        words.push("interleaved".into());
+    }
     if let Some(exit) = resp.get("exit") {
         let w = exit_words(exit);
         if !w.is_empty() {
@@ -123,6 +128,9 @@ mod tests {
             response(&r),
             "[k3f9q2 settle gen=41 80x24 cursor=1,19 alt running fg=vim]\n#include <stdio.h>\n~\nhint: something\n"
         );
+        let mut shared = r.clone();
+        shared["interleaved"] = true.into();
+        assert!(response(&shared).starts_with("[k3f9q2 settle gen=41 80x24 cursor=1,19 alt running fg=vim interleaved]\n"));
     }
 
     #[test]

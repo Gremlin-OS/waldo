@@ -28,9 +28,14 @@ not from the design.
 
 ## Found by the stress tests of 2026-11-21
 
-Twelve subagents (six Sonnet, six Haiku) drove NetHack 5.0.0, htop 3.5.3,
-vim 9.2 and one shared tmux 3.8 session through waldo, 675 logged calls in
-all. Fixed the same day:
+Sixteen subagents (eight Sonnet, eight Haiku) drove NetHack 5.0.0, htop
+3.5.3, vim 9.2, one shared tmux 3.8 session, one shared waldo session, and
+waldo sessions started from inside waldo sessions: 836 logged calls in
+all. A scripted hammer (four clients, one session) found the worst bug:
+concurrent `run`s were answered with each other's output. Signals and
+resizes from another client could land in the middle of a request's
+input; they now go through the input queue (2.1). Fixed the same day:
+that,
 `resize` answering before the redraw, a `run` typed into a program
 blocking later runs, a `run` stopped with Ctrl-C blocking later runs, two
 timeout hints, and a hint when the program being typed into leaves the
@@ -63,10 +68,16 @@ foreground. Still open:
 6. **A paste that ends in a newline leaves an empty last line in vim.**
    That is vim's doing, and correct, but both vim players tripped on it;
    `help` could say that a trailing newline in a paste is an Enter.
-7. **Several agents on one waldo session is untested by agents.** The
-   tmux test used four waldo sessions attached to one tmux session, and
-   found no waldo fault. Two clients typing into the same waldo session,
-   and the `interleaved` flag, were not exercised.
+7. **A shared session's `run` output can hold the other client's typing.**
+   While one agent's `run` was going, the other typed a command; the
+   terminal's echo of it landed in the first one's output. The status
+   line now says `interleaved`, but the output is not cleaned.
+   Nested waldos (three deep by `run`, and two chained attaches with vim
+   at the bottom) showed no fault. Left as they are: each layer reports
+   its own exit status (a failure below shows as 5 above), `hint:` lines
+   printed by an inner waldo-term appear on the outer screen and read
+   like the outer one's, and `waldo-term` inside a session does not
+   default to that session.
 8. **Text left on the shell's input line breaks `run`.** A stray `4` typed
    into bash turned the wrapper into `4{ ...`, the end mark never ran,
    and the `run` sat until its 120 s timeout. `run` could clear the line

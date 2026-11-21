@@ -110,6 +110,29 @@ enum QKind {
     /// A command line from `run`: a paste if the shell takes bracketed
     /// pastes when the line reaches the front, typed otherwise.
     Line(String),
+    /// A signal for the program. Not input, but it takes its turn in the
+    /// queue so that it never lands in the middle of a request's input.
+    Signal(i32),
+    /// A change of terminal size, in the queue for the same reason.
+    Resize { cols: u16, rows: u16, why: Resize },
+}
+
+/// Who asked for a resize, which decides what size the session goes back to.
+#[derive(Clone, Copy, PartialEq)]
+enum Resize {
+    /// A resize request: the new size is the one to keep.
+    Explicit,
+    /// A viewer attached with `--resize`: the old size comes back later.
+    Viewer,
+    /// That viewer left: back to the old size.
+    Restore,
+}
+
+impl QKind {
+    /// Something that acts on the program without being typed.
+    fn is_action(&self) -> bool {
+        matches!(self, QKind::Signal(_) | QKind::Resize { .. })
+    }
 }
 
 struct QItem {
@@ -909,12 +932,28 @@ impl Host {
                     }
                 }
             }
+            // A signal or resize at the front has waited its turn. It also
+            // waits for the program to take in what was typed before it: a
+            // signal travels faster than input, and would otherwise overtake
+            // the last keys of the request ahead of it.
+            if self.queue.front().map(|q| q.kind.is_action()).unwrap_or(false) {
+                if !self.input_absorbed() {
+                    self.pause_until = Some(Instant::now() + KEY_POLL);
+                    break;
+                }
+                self.pause_until = None;
+                if let Some(item) = self.queue.pop_front() {
+                    self.apply_action(item);
+                }
+                continue;
+            }
             if let Some(p) = self.pause_until {
                 if Instant::now() < p {
                     break;
                 }
                 self.pause_until = None;
             }
+            let absorbed = self.input_absorbed();
             let Some(front) = self.queue.front_mut() else { break };
             let mut interrupt = false;
             if !self.typed {
@@ -925,9 +964,7 @@ impl Host {
                 }
             }
             if front.pause_before {
-                let since = self.last_input.elapsed();
-                let reacted = self.gen != self.gen_at_input && self.last_change.elapsed() >= KEY_STILL;
-                if since < KEY_MAX && !(since >= KEY_MIN && reacted) {
+                if !absorbed {
                     self.pause_until = Some(Instant::now() + KEY_POLL);
                     break;
                 }
@@ -957,6 +994,7 @@ impl Host {
                     let bytes = if self.emu.dec_mode(2004) { self.emu.encode_paste(line.as_bytes()) } else { text_bytes(line) };
                     front.kind = QKind::Bytes(bytes);
                 }
+                QKind::Signal(_) | QKind::Resize { .. } => unreachable!(),
             }
             let QKind::Bytes(bytes) = &front.kind else { unreachable!() };
             if front.off < bytes.len() {
@@ -1002,11 +1040,82 @@ impl Host {
                 }
             }
         }
+        if blocked {
+            // The program is not reading its input, so the queue is stuck
+            // and may stay so. Signals and resizes do not wait behind it:
+            // an interrupt is most needed exactly then.
+            let mut rest = VecDeque::with_capacity(self.queue.len());
+            for item in std::mem::take(&mut self.queue) {
+                if item.kind.is_action() {
+                    self.apply_action(item);
+                } else {
+                    rest.push_back(item);
+                }
+            }
+            rest.append(&mut self.queue);
+            self.queue = rest;
+        }
         if blocked != self.master_out {
             self.master_out = blocked;
             let ev = if blocked { sys::IN | sys::OUT } else { sys::IN };
             let _ = self.epoll.modify(self.master, ev, T_PTY);
         }
+    }
+
+    /// Whether the program has taken in the input written so far: nothing
+    /// has been typed, or the screen has reacted to it and gone still, or
+    /// it has had long enough (a program that echoes nothing).
+    fn input_absorbed(&self) -> bool {
+        if !self.typed {
+            return true;
+        }
+        let since = self.last_input.elapsed();
+        let reacted = self.gen != self.gen_at_input && self.last_change.elapsed() >= KEY_STILL;
+        since >= KEY_MAX || (since >= KEY_MIN && reacted)
+    }
+
+    /// Carry out a queued signal or resize.
+    fn apply_action(&mut self, item: QItem) {
+        match item.kind {
+            QKind::Signal(sig) => {
+                self.signal_child(sig);
+                if sig == libc::SIGINT {
+                    if let Some(run) = self.run.as_mut() {
+                        run.interrupted = true;
+                    }
+                }
+            }
+            QKind::Resize { cols, rows, why } => {
+                let before = (self.emu.cols(), self.emu.rows());
+                if why == Resize::Explicit || before != (cols, rows) {
+                    if let Err(e) = self.do_resize(cols, rows) {
+                        self.log(&format!("resize to {cols}x{rows} failed: {e}"));
+                    } else if why == Resize::Viewer {
+                        self.restore_size.get_or_insert(before);
+                    }
+                }
+                if why == Resize::Explicit {
+                    // An explicit resize is the new size to keep.
+                    self.restore_size = None;
+                }
+                // The wait for the redraw starts now, not when it was asked.
+                let now = Instant::now();
+                for w in self.waits.iter_mut().filter(|w| w.req_id == item.owner && w.soft) {
+                    w.deadline = now + RESIZE_WAIT;
+                }
+            }
+            _ => return,
+        }
+        for w in self.waits.iter_mut() {
+            if w.req_id != item.owner {
+                w.interleaved = true;
+            }
+        }
+    }
+
+    /// Whether a request's signal or resize is still waiting its turn.
+    fn action_pending(&self, owner: u64) -> bool {
+        self.queue.iter().any(|q| q.owner == owner && q.kind.is_action())
     }
 
     fn input_idle(&self) -> bool {
@@ -1348,14 +1457,17 @@ impl Host {
         let mut keep = Vec::with_capacity(waits.len());
         for mut w in waits.drain(..) {
             let reason = match w.until {
-                Until::None => Some(Reason::None),
+                // A signal or resize is answered once it has happened.
+                Until::None if !self.action_pending(w.req_id) => Some(Reason::None),
                 Until::Settle if settled => Some(Reason::Settle),
                 Until::Change(g) if self.gen != g => Some(Reason::Change),
                 Until::Done if run_finished && settled => Some(Reason::Done),
                 Until::Match => self.check_match(&mut w, &lines).map(Reason::Match),
                 _ => None,
             };
-            let reason = reason.or_else(|| (now >= w.deadline).then_some(if w.soft { Reason::None } else { Reason::Timeout }));
+            let reason = reason.or_else(|| {
+                (now >= w.deadline).then_some(if w.soft && !self.action_pending(w.req_id) { Reason::None } else { Reason::Timeout })
+            });
             match reason {
                 Some(r) => self.respond_wait(w, r),
                 None => keep.push(w),
@@ -1723,7 +1835,10 @@ impl Host {
         if resized && !self.conns.values().any(|c| c.attach.as_ref().map(|a| a.resized).unwrap_or(false)) {
             if let Some((cols, rows)) = self.restore_size.take() {
                 if self.exit_status.is_none() {
-                    let _ = self.do_resize(cols, rows);
+                    let owner = self.next_req;
+                    self.next_req += 1;
+                    let kind = QKind::Resize { cols, rows, why: Resize::Restore };
+                    self.queue.push_back(QItem { owner, kind, off: 0, pause_after: false, pause_before: false });
                 }
             }
         }
@@ -2207,6 +2322,16 @@ impl Host {
                 "a command started by run is still going; wait for it with 'waldo-term wait --until done', or interrupt it with 'waldo-term send --keys <C-c>'",
             );
         }
+        // The run before this one may have ended with its answer still
+        // waiting for the screen to settle. Whoever waits for it is answered
+        // now, with its own result, before this run takes its place.
+        for w in std::mem::take(&mut self.waits) {
+            if w.until == Until::Done {
+                self.respond_wait(w, Reason::Done);
+            } else {
+                self.waits.push(w);
+            }
+        }
         let shell = body.get("shell").and_then(|s| s.as_str()).unwrap_or("sh");
         let nonce = util::random_id(10);
         // The command is wrapped in a group so that a trailing `&` or comment
@@ -2285,11 +2410,12 @@ impl Host {
                 &format!("the size must be between {MIN_COLS}x{MIN_ROWS} and {MAX_COLS}x{MAX_ROWS} (cols x rows)"),
             );
         }
-        if let Err(e) = self.do_resize(cols as u16, rows as u16) {
-            return self.error(id, req, 500, "resize_failed", &e);
-        }
-        // An explicit resize is the new size to keep.
-        self.restore_size = None;
+        // It takes its turn behind input already queued, so that it never
+        // lands in the middle of another request's typing.
+        let req_id = self.next_req;
+        self.next_req += 1;
+        let kind = QKind::Resize { cols: cols as u16, rows: rows as u16, why: Resize::Explicit };
+        self.queue.push_back(QItem { owner: req_id, kind, off: 0, pause_after: false, pause_before: false });
         // The program redraws for the new size, so the answer waits for
         // that. A program that has drawn nothing has nothing to redraw.
         // It does not wait long: a screen that never goes quiet is no reason
@@ -2298,10 +2424,13 @@ impl Host {
         let until = if self.seen_output { Until::Settle } else { Until::None };
         let own_wait = body.get("wait").map(|w| json!({"wait": w}));
         let chosen = own_wait.is_some();
-        self.handle_wait(id, req, until, Some(own_wait.unwrap_or_else(|| json!({}))), None);
-        if let Some(w) = self.waits.iter_mut().find(|w| w.conn == id).filter(|_| !chosen) {
-            w.soft = true;
-            w.deadline = w.started + RESIZE_WAIT;
+        self.handle_wait(id, req, until, Some(own_wait.unwrap_or_else(|| json!({}))), Some((req_id, None)));
+        match self.waits.iter_mut().find(|w| w.req_id == req_id) {
+            // The short deadline is set when the resize happens.
+            Some(w) if !chosen => w.soft = true,
+            Some(_) => {}
+            // The wait was refused, so nothing is resized.
+            None => self.queue.retain(|q| q.owner != req_id),
         }
     }
 
@@ -2313,12 +2442,11 @@ impl Host {
             let Some(sig) = sys::signal_number(name) else {
                 return self.error(id, req, 400, "unknown_signal", &format!("unknown signal '{name}'; use a name such as SIGINT, SIGTERM or SIGKILL"));
             };
-            self.signal_child(sig);
-            if sig == libc::SIGINT {
-                if let Some(run) = self.run.as_mut() {
-                    run.interrupted = true;
-                }
-            }
+            // Like a resize, a signal takes its turn behind queued input.
+            let req_id = self.next_req;
+            self.next_req += 1;
+            self.queue.push_back(QItem { owner: req_id, kind: QKind::Signal(sig), off: 0, pause_after: false, pause_before: false });
+            return self.handle_wait(id, req, Until::None, Some(json!({})), Some((req_id, None)));
         } else {
             return self.error(id, req, 400, "bad_signal", "the body needs {\"signal\": \"SIGINT\"} or {\"stop\": true}");
         }
@@ -2517,12 +2645,10 @@ impl Host {
             }
             if let Some((cols, rows)) = msg.get("resize").and_then(size) {
                 let (cols, rows) = (cols.clamp(MIN_COLS, MAX_COLS), rows.clamp(MIN_ROWS, MAX_ROWS));
-                if (cols, rows) != (self.emu.cols(), self.emu.rows()) {
-                    let before = (self.emu.cols(), self.emu.rows());
-                    if self.do_resize(cols, rows).is_ok() {
-                        self.restore_size.get_or_insert(before);
-                    }
-                }
+                let owner = self.next_req;
+                self.next_req += 1;
+                let kind = QKind::Resize { cols, rows, why: Resize::Viewer };
+                self.queue.push_back(QItem { owner, kind, off: 0, pause_after: false, pause_before: false });
                 if let Some(a) = self.conns.get_mut(&id).and_then(|c| c.attach.as_mut()) {
                     a.resized = true;
                 }

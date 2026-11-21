@@ -1806,3 +1806,135 @@ fn a_program_that_leaves_the_foreground_is_named() {
     let r = t.term(&["send", "-s", "lf", "--text", "true", "--keys", "<Enter>"]);
     assert!(!r.out.contains("hint:"), "{}", r.out);
 }
+
+// ---- several clients on one session --------------------------------------------------
+
+#[test]
+fn concurrent_runs_each_get_their_own_answer() {
+    let t = T::new();
+    t.bash("cr");
+    let workers: Vec<_> = ["a", "b", "c", "d"]
+        .into_iter()
+        .map(|p| {
+            let cmds: Vec<Command> = (1..=8)
+                .map(|i| {
+                    let mut c = t.command(TERM);
+                    c.args(["run", "-s", "cr", &format!("echo {p}-{i}-end")]);
+                    c
+                })
+                .collect();
+            std::thread::spawn(move || {
+                cmds.into_iter().enumerate().map(|(i, mut c)| (format!("{p}-{}-end", i + 1), T::finish(c.output().unwrap()))).collect::<Vec<_>>()
+            })
+        })
+        .collect();
+    let mut answered = 0;
+    for w in workers {
+        for (want, r) in w.join().unwrap() {
+            if r.code == 0 {
+                // One run at a time, but an answer is never another run's.
+                assert_eq!(r.out.lines().nth(1), Some(want.as_str()), "{}", r.out);
+                answered += 1;
+            } else {
+                assert!(r.err.contains("run_in_progress"), "{} / {}", r.out, r.err);
+            }
+        }
+    }
+    assert!(answered >= 4, "only {answered} runs were answered");
+}
+
+#[test]
+fn concurrent_sends_are_typed_whole() {
+    let t = T::new();
+    t.bash("cs");
+    let workers: Vec<_> = ["a", "b", "c", "d"]
+        .into_iter()
+        .map(|p| {
+            let cmds: Vec<Command> = (1..=8)
+                .map(|i| {
+                    let mut c = t.command(TERM);
+                    c.args(["send", "-s", "cs", "--json", "--text", &format!("echo {p}-{i}-end"), "--keys", "<Enter>"]);
+                    c
+                })
+                .collect();
+            std::thread::spawn(move || cmds.into_iter().map(|mut c| T::finish(c.output().unwrap())).collect::<Vec<_>>())
+        })
+        .collect();
+    let mut interleaved = 0;
+    for w in workers {
+        for r in w.join().unwrap() {
+            assert_eq!(r.code, 0, "{}", r.err);
+            let v: Value = serde_json::from_str(&r.out).unwrap();
+            if v["interleaved"] == true {
+                interleaved += 1;
+            }
+        }
+    }
+    assert_eq!(t.term(&["wait", "-s", "cs", "--until", "settle"]).code, 0);
+    let out = t.term(&["output", "-s", "cs"]).out;
+    // Each request's text and its Enter stay together: no line is mixed.
+    let mut typed: Vec<&str> = out.lines().filter(|l| l.starts_with("$ echo ")).collect();
+    let mut printed: Vec<&str> = out.lines().filter(|l| l.ends_with("-end") && !l.starts_with('$')).collect();
+    typed.sort_unstable();
+    printed.sort_unstable();
+    let mut want: Vec<String> = ["a", "b", "c", "d"].iter().flat_map(|p| (1..=8).map(move |i| format!("{p}-{i}-end"))).collect();
+    want.sort_unstable();
+    assert_eq!(printed, want, "{out}");
+    assert_eq!(typed, want.iter().map(|w| format!("$ echo {w}")).collect::<Vec<_>>(), "{out}");
+    // Requests that overlapped were told so.
+    assert!(interleaved > 0, "no request was marked interleaved");
+}
+
+#[test]
+fn a_signal_waits_for_the_request_being_typed() {
+    let t = T::new();
+    t.bash("sq");
+    // One request that types a command line in pieces. Each key after text
+    // waits for the shell to react, so the request takes a while.
+    let typist = {
+        let mut c = t.command(TERM);
+        c.args(["send", "-s", "sq", "--json", "--text", "echo "]);
+        for part in ["one-", "two-", "three-", "four-", "five-"] {
+            c.args(["--text", part, "--keys", "<Home><End>"]);
+        }
+        c.args(["--text", "six", "--keys", "<Enter>"]);
+        std::thread::spawn(move || T::finish(c.output().unwrap()))
+    };
+    // An interrupt from another client arrives in the middle of it. In the
+    // middle of the line it would throw away what had been typed so far.
+    std::thread::sleep(Duration::from_millis(120));
+    let began = Instant::now();
+    let r = t.term(&["signal", "-s", "sq", "SIGINT"]);
+    assert_eq!(r.code, 0, "{}", r.err);
+    let waited = began.elapsed();
+    let typed = typist.join().unwrap();
+    assert_eq!(typed.code, 0, "{}", typed.err);
+    let v: Value = serde_json::from_str(&typed.out).unwrap();
+    assert_eq!(t.term(&["wait", "-s", "sq", "--until", "settle"]).code, 0);
+    let out = t.term(&["output", "-s", "sq"]).out;
+    assert!(out.lines().any(|l| l == "one-two-three-four-five-six"), "the line was broken:\n{out}");
+    // The signal was held until the typing was done, and the typist is told
+    // that someone else acted during its request.
+    assert!(waited >= Duration::from_millis(100), "the signal did not wait: {waited:?}");
+    assert_eq!(v["interleaved"], true, "{}", typed.out);
+}
+
+#[test]
+fn a_signal_does_not_wait_for_a_program_that_is_not_reading() {
+    let t = T::new();
+    t.start("nr", &["sh", "-c", "stty raw -echo; echo ready; sleep 60"]);
+    assert_eq!(t.term(&["wait", "-s", "nr", "--until", "match", "--pattern", "^ready"]).code, 0);
+    // Far more input than the terminal will hold for a program that never
+    // reads: the queue stops.
+    let big = t.work.join("big.txt");
+    std::fs::write(&big, "x".repeat(1000 << 10)).unwrap();
+    let r = t.term(&["send", "-s", "nr", "--text-file", big.to_str().unwrap(), "--until", "none"]);
+    assert_eq!(r.code, 0, "{}", r.err);
+    std::thread::sleep(Duration::from_millis(300));
+    let began = Instant::now();
+    assert_eq!(t.term(&["signal", "-s", "nr", "SIGTERM"]).code, 0);
+    let r = t.term(&["wait", "-s", "nr", "--until", "exit", "--timeout", "5000"]);
+    assert_eq!(r.code, 0, "{}\n{}", r.out, r.err);
+    assert!(began.elapsed() < Duration::from_secs(4), "{:?}", began.elapsed());
+    assert_eq!(t.will("nr")["signal"], "SIGTERM");
+}

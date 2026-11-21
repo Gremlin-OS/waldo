@@ -37,7 +37,9 @@ End the session, see what is left, and clean up:
 Each command prints one status line, such as
   [demo settle gen=7 120x30 cursor=3,3 running fg=bash]
 then the screen (or the output, for run), then sometimes a line starting
-with 'hint:' that says what probably went wrong and what to do.
+with 'hint:' that says what probably went wrong and what to do. The word
+'interleaved' in the status line means someone else typed into the session
+during your request, so not everything shown is your doing.
 
 Exit status: 0 ok, 124 timed out, 3 the program exited, 4 no such session,
 5 a run command failed, 2 bad usage.
