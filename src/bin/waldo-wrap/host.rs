@@ -1284,7 +1284,7 @@ impl Host {
         json!({"state": "running", "pid": self.child.pid, "foreground": fg})
     }
 
-    /// The fields that describe how the child ended (section 4.5).
+    /// The fields that describe how the child ended (PROTOCOL.md section 8.6).
     fn exit_fields(&self, output: Value) -> Map<String, Value> {
         let st = self.exit_status.unwrap_or(ExitStatus { code: None, signal: None, core_dumped: false });
         let mut m = Map::new();

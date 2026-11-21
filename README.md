@@ -78,6 +78,9 @@ It runs on Linux only.
 
 ## More
 
+- `PROTOCOL.md`: the reference for writing another client or a harness
+  integration: the session directory, the control API, the attach stream
+  and the messages.
 - `DESIGN.md`: how it works and why.
 - `TODO.md`: the open work.
 - `soak/README.md`: the slow tests, run by hand: a scripted hammer, and

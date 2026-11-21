@@ -1841,3 +1841,116 @@ fn waldo_inside_waldo_three_deep() {
         assert!(t.term(&["screen", "-s", s]).out.lines().any(|l| l == want), "{s} did not get its line");
     }
 }
+
+// ---- PROTOCOL.md agrees with the host ----------------------------------------------
+
+const PROTOCOL: &str = include_str!("../PROTOCOL.md");
+
+/// The codes in the error table of PROTOCOL.md section 9.
+fn documented_errors() -> Vec<String> {
+    let section = PROTOCOL.split("\n## 9. Errors\n").nth(1).unwrap().split("\n## 10.").next().unwrap();
+    section
+        .lines()
+        .filter(|l| l.starts_with("| 4"))
+        .map(|l| l.split('`').nth(1).unwrap_or_else(|| panic!("no code in: {l}")).to_string())
+        .collect()
+}
+
+#[test]
+fn protocol_examples_are_json() {
+    let mut blocks = 0;
+    let mut rest = PROTOCOL;
+    while let Some(at) = rest.find("```json\n") {
+        let body = &rest[at + 8..];
+        let end = body.find("\n```").expect("an unclosed json block");
+        let text = &body[..end];
+        // A block is one object, or several with one on each line.
+        if serde_json::from_str::<Value>(text).is_err() {
+            for line in text.lines() {
+                serde_json::from_str::<Value>(line).unwrap_or_else(|e| panic!("not JSON ({e}):\n{text}"));
+            }
+        }
+        blocks += 1;
+        rest = &body[end..];
+    }
+    assert!(blocks >= 15, "only {blocks} json blocks were found");
+}
+
+#[test]
+fn protocol_lists_every_error_the_host_can_send() {
+    let documented = documented_errors();
+    assert!(documented.len() >= 20, "{documented:?}");
+    // Every code the sources send: the third argument after `self.error(`,
+    // the second of `Parsed::Bad(`, and the three an input item can fail with.
+    let host = include_str!("../src/bin/waldo-wrap/host.rs");
+    let http = include_str!("../src/bin/waldo-wrap/http.rs");
+    let mut sent: Vec<String> = vec!["bad_item".into(), "unknown_key".into(), "file_unreadable".into()];
+    for (source, call) in [(host, "self.error("), (http, "Parsed::Bad(")] {
+        for piece in source.split(call).skip(1) {
+            let head: String = piece.chars().take(400).collect();
+            let Some(open) = head.find('"') else { continue };
+            let code: String = head[open + 1..].chars().take_while(|c| *c != '"').collect();
+            if !code.is_empty() && code.chars().all(|c| c.is_ascii_lowercase() || c == '_') {
+                sent.push(code);
+            }
+        }
+    }
+    sent.sort();
+    sent.dedup();
+    for code in &sent {
+        assert!(documented.contains(code), "PROTOCOL.md section 9 does not list '{code}'");
+    }
+    for code in &documented {
+        assert!(sent.contains(code), "PROTOCOL.md lists '{code}', which the host never sends");
+    }
+}
+
+#[test]
+fn protocol_endpoints_and_parameters_are_as_documented() {
+    let t = T::new();
+    t.bash("pr");
+    let sock = t.session_dir("pr").join("sock");
+    let sock = sock.to_str().unwrap();
+    let get = |path: &str| raw_http(sock, &format!("GET {path} HTTP/1.1\r\nHost: waldo\r\nConnection: close\r\n\r\n"));
+    let post = |path: &str, body: &str| {
+        raw_http(sock, &format!("POST {path} HTTP/1.1\r\nHost: waldo\r\nConnection: close\r\nContent-Type: application/json\r\nContent-Length: {}\r\n\r\n{body}", body.len()))
+    };
+    let json = |response: &str| -> Value { serde_json::from_str(response.split("\r\n\r\n").nth(1).unwrap()).unwrap() };
+
+    // The endpoint table is the host's own list.
+    let listed = json(&get("/v1/nope"))["text"].as_str().unwrap().to_string();
+    let table = PROTOCOL.split("\n## 4. Endpoints\n").nth(1).unwrap().split("\n### 4.1").next().unwrap();
+    let mut rows = 0;
+    for line in table.lines().filter(|l| l.starts_with("| `")) {
+        let endpoint = line.split('`').nth(1).unwrap();
+        assert!(listed.contains(endpoint), "the host does not list '{endpoint}': {listed}");
+        rows += 1;
+    }
+    assert_eq!(rows, listed.matches("/v1/").count() - 1, "{listed}");
+
+    // Wait parameters are read from the query, the wait object, or the top
+    // level of the body (section 3.1).
+    for response in [
+        post("/v1/wait?until=match&pattern=%5E%5C%24%20%24", ""),
+        post("/v1/wait", r#"{"wait": {"until": "match", "pattern": "^\\$ $"}}"#),
+        post("/v1/wait", r#"{"until": "match", "pattern": "^\\$ $", "timeout_ms": "2000"}"#),
+    ] {
+        let v = json(&response);
+        assert_eq!(v["reason"], "match", "{response}");
+        assert_eq!(v["match"]["on_screen"], true);
+        assert_eq!(v["v"], 1);
+    }
+
+    // The status object has the documented fields (section 4.1).
+    let status = json(&get("/v1/status"));
+    for field in ["v", "session", "name", "argv", "cwd", "socket", "dest", "host_pid", "started", "uptime_ms", "cols", "rows", "gen", "child", "messages"] {
+        assert!(status.get(field).is_some(), "status has no '{field}': {status}");
+    }
+    assert_eq!(status.as_object().unwrap().len(), 15, "status has fields PROTOCOL.md does not list: {status}");
+
+    // Text on request, except for triggers and errors (section 3.5).
+    assert!(get("/v1/screen?format=text").contains("\r\n\r\n[pr none gen="));
+    assert!(get("/v1/triggers?format=text").contains("Content-Type: application/json"));
+    assert!(get("/v1/screen?until=never&format=text").contains("\"error\":\"unknown_until\""));
+    assert!(raw_http(sock, "PUT /v1/screen HTTP/1.1\r\nHost: waldo\r\nConnection: close\r\n\r\n").starts_with("HTTP/1.1 405 "));
+}

@@ -19,6 +19,11 @@ Linux programs:
 Sections 1 to 8 are the design. Section 9 is the language and emulator
 choice.
 
+`PROTOCOL.md` is the reference for the control API, the attach stream, the
+messages and the session directory: every request, response, field and
+error, with no reasoning. Where the two disagree, `PROTOCOL.md` is checked
+against the host by the tests and this file is not.
+
 ## 1. Process model
 
 ### 1.1 Startup sequence
@@ -112,19 +117,8 @@ the host answers any terminal queries, collects lines that scrolled off (section
 
 ### 1.4 Sessions on disk
 
-Each session has a directory:
-
-```
-$XDG_RUNTIME_DIR/waldo/<id>/
-  sock         control socket, mode 0600
-  lock         flock held by waldo-wrap for its whole life
-  meta.json    id, name, argv, cwd, child pid, host pid, start time, size,
-               destination
-  log          host log (never contains key payloads)
-  will.json    only if the will could not be delivered (section 5)
-```
-
-With the default destination the directory also holds `events.ndjson`, and it
+Each session has a directory holding its socket, its lock, `meta.json` and
+its log (`PROTOCOL.md` section 1 has the layout). With the default destination the directory also holds `events.ndjson`, and it
 stays after the session ends so the will can be read; `waldo-term gc` removes
 it later. With an explicit `--dest`, the host removes the directory when it
 exits cleanly after delivering the will.
@@ -166,7 +160,7 @@ When the child exits (pidfd readable), the host:
 3. Runs the match triggers one last time and sends the end of the stream
    (sections 3.2 and 3.4).
 4. Composes the exit message and delivers it to the destination as the last
-   message of the session (section 4.5).
+   message of the session (section 4).
 5. Answers every pending request with reason `exit`. The will goes first so
    that a client that sees `exit` can read it at once.
 6. With `--linger SECONDS`, keeps the socket open for that long and answers
@@ -191,7 +185,9 @@ not try to guarantee it.
 ## 2. Control API
 
 HTTP/1.1 over the unix socket. `waldo-term` is a thin client for it, and
-`curl --unix-socket` works without it.
+`curl --unix-socket` works without it. `PROTOCOL.md` is the reference: the
+endpoints, every request and response, and the errors. This section has the
+reasons.
 
 The API is the product and `waldo-term` is a convenience. The expected
 long-term client is a harness that talks to the socket directly, so every
@@ -200,46 +196,41 @@ argument parsing, text formatting, and help. The one thing a client does
 outside the API is read the will from the destination after a session has
 ended, since by then there is no host to ask.
 
-Accepted subset: `Content-Length` bodies only (chunked requests get 411),
-`Expect: 100-continue` is answered, bodies are capped at 1 MiB, one request per
-connection is fine and keep-alive is supported. Peers are checked with
-SO_PEERCRED and must have the host's uid.
+It is HTTP because every language has a client for it and curl is enough to
+try it. Only a small subset is served: `Content-Length` bodies up to 1 MiB,
+keep-alive, and `Expect: 100-continue`. Peers are checked with SO_PEERCRED
+and must have the host's uid.
 
-Rows and columns are 1-based. Columns count terminal cells, not characters, so
-a wide character occupies two.
-
-| Method and path | Purpose |
-|---|---|
-| `GET /v1/status` | Session metadata, child state, current `gen` |
-| `GET /v1/screen` | Current screen. Accepts the wait parameters below. `?format=png` and `?format=cells` are not built (section 6.3) |
-| `POST /v1/input` | Send input, then wait, then return the screen |
-| `POST /v1/wait` | Wait without sending input |
-| `GET /v1/output` | Rendered output so far, from the capped buffer: `?tail=N` lines |
-| `GET /v1/triggers` | List match triggers (section 3.2) |
-| `POST /v1/triggers` | Add one: `{"pattern": RE, "id": NAME, "mode": "edge" or "once"}`; only `pattern` is required |
-| `DELETE /v1/triggers/<id>` | Remove one |
-| `POST /v1/resize` | `{"cols": 100, "rows": 30}` |
-| `POST /v1/signal` | `{"signal": "SIGINT"}` to the child's process group, or `{"stop": true}` |
-| `GET /v1/attach` | Upgrade to the attach stream (section 7) |
+Every request that reads the screen can wait first, and every request that
+types returns the screen. One call is a whole step: type, wait for the right
+moment, look.
 
 ### 2.1 Input
 
-```json
-POST /v1/input
-{
-  "input": [
-    {"keys": "<Esc>ggO"},
-    {"text": "#include <stdio.h>"},
-    {"keys": "<Esc>:w<Enter>"}
-  ],
-  "wait": {"until": "settle"},
-  "timeout_ms": 10000
-}
-```
+Input is a list of items of three kinds, and not one string in one
+notation, because agents type a lot of `<` (C includes, HTML, shell
+redirects). `text` is never parsed, and `keys` is strict: an unrecognised
+`<name>` is an error, not literal text. Nothing is sent if any item of a
+request is bad.
 
-Items are written to the pty in order and contiguously: input from other
-clients is never interleaved inside one request. Signals and resizes go
-through the same queue, so they do not land inside a request either:
+- Keys are encoded when they are typed, for the terminal's modes at that
+  moment (application cursor keys, keypad mode, modifyOtherKeys, kitty
+  keyboard flags), which is why the encoder lives with the emulator.
+- A paste is asked for explicitly, and is bracketed only when the program
+  has turned that on: bracket markers sent to a program that has not
+  enabled them corrupt its input. Vim started with `-u NONE` turns the mode
+  on but does not recognise the markers, so a paste into it is mangled;
+  `vim --clean` is fine.
+- Each kind can take its content from a file. That is the intended route
+  for anything long, such as a source file to paste into an editor. The
+  host reads the file, which gives the caller read access to whatever the
+  host can read. That is no more than a caller with the host's uid already
+  has; see section 2.7 for what it means behind a bridge.
+
+**One queue.** Items are written to the pty in order and contiguously: input
+from other clients is never interleaved inside one request. Signals and
+resizes go through the same queue, so they do not land inside a request
+either:
 
 - A signal or resize takes effect after the requests queued before it, and
   after the program has taken in their last input (the screen has reacted
@@ -249,7 +240,7 @@ through the same queue, so they do not land inside a request either:
 - The exception: if the queue is stuck because the program is not reading
   its input and the terminal's buffer is full, signals and resizes are
   carried out at once. An interrupt is most needed exactly then.
-- Ending the session (`{"stop": true}`, `kill`) never waits.
+- Ending the session never waits.
 - A request is atomic in order, not all-or-nothing: if the program exits
   partway through, the rest is dropped. A request that times out is not
   cancelled; what it still has queued is typed afterwards, in one piece.
@@ -257,193 +248,88 @@ through the same queue, so they do not land inside a request either:
   report, for example) are written ahead of queued input and can fall
   between two items of a request.
 
-Input is a list of items of three kinds, and not one string in one
-notation, because agents type a lot of `<` (C includes, HTML, shell
-redirects). `text` is never parsed, and `keys` is strict:
+**Timing.** The host does not write everything at once, because programs
+read meaning into timing:
 
-- `text`: literal. Never parsed. A newline is sent as carriage return, as a
-  keyboard would.
-- `keys`: vim-style notation inside otherwise literal text. `<Esc>`, `<Enter>`,
-  `<Tab>`, `<BS>`, `<Del>`, `<Space>`, `<Up>` and the other arrows, `<Home>`,
-  `<End>`, `<PageUp>`, `<PageDown>`, `<F1>` to `<F12>`, modifiers as `<C-x>`,
-  `<M-x>`, `<S-Tab>`, `<C-S-Left>`, and `<lt>` for a literal `<`. An
-  unrecognised `<name>` is an error, not literal text. Keys are encoded
-  according to the terminal's current modes (application cursor keys, keypad
-  mode, modifyOtherKeys, kitty keyboard flags), which is why the encoder lives
-  with the emulator.
-- `paste`: sent as a bracketed paste if the program has enabled mode 2004,
-  otherwise as text. The payload is sanitised so it cannot close the bracket
-  early. Vim started with `-u NONE` turns the mode on but does not recognise
-  the markers, so a paste into it is mangled; `vim --clean` is fine.
-
-Each kind can take its content from a file instead: `{"text_file": PATH}`,
-`{"keys_file": PATH}`, `{"paste_file": PATH}`. This is the intended route for
-anything long, such as a source file to paste into an editor. The agent or its
-harness writes the file and the request names it.
-
-- The host reads the file, so the path must be absolute and readable by the
-  host's uid. `waldo-term` makes relative paths absolute before sending.
-- It must be a regular file of at most 1 MiB. Its content is used exactly as
-  is, so a trailing newline in a `text_file` presses Enter.
-- All files in a request are read before any byte is sent. An unreadable file
-  is a 400 `file_unreadable` and nothing is sent.
-- File items give the caller read access to whatever the host can read. That
-  is no more than a caller with the host's uid already has; see section 2.7
-  for what it means behind a bridge.
-
-A lone `<Esc>` is followed by a 30 ms pause before the next byte, unless the
-program has enabled the kitty keyboard protocol, so the program doesn't read
-`<Esc>` plus the next character as an Alt chord.
-
-Within one request, a key that follows text is held until the program has
-reacted to the text: the screen has changed since the text was written and
-has been still for 30 ms. The wait is at least 40 ms, and if the screen never
-reacts, as with a password prompt that echoes nothing, the key is sent after
-300 ms. A person never types text and a key in the same instant, and programs
-that detect a paste by timing take an Enter that arrives with the text for a
-line break inside it. This was found by running Claude Code inside waldo:
-text and an Enter sent together left the prompt in its input box with a
-blank line under it. A fixed 40 ms pause was not enough on a freshly started
-program; waiting for the reaction was. The cause was checked only in part
-against that program (version 2.1.322): it treats one input event of more
-than 800 characters as a paste and holds a Return that arrives during one,
-but where a short text and an Enter in one burst become a line break was not
-found.
-
-The first input of a session is held until the screen has settled for the
-first time, or until 2 s after the session started, whichever comes first.
-A shell echoes what arrives before its first prompt a second time: once by
-the terminal, and once by the shell when it draws its prompt. A program that
-draws nothing gets its first input at the 2 s mark at the latest.
-
-For curl, a body whose content type is not `application/json` is treated as one
-`keys` item, and `wait` and `timeout_ms` may be query parameters:
-
-```
-curl --unix-socket "$S" -d ':q!<Enter>' 'http://waldo/v1/input?until=settle'
-```
+- A lone `<Esc>` is followed by a 30 ms pause before the next byte, unless
+  the program has enabled the kitty keyboard protocol, so the program does
+  not read `<Esc>` plus the next character as an Alt chord.
+- Within one request, a key that follows text is held until the program has
+  reacted to the text: the screen has changed since the text was written
+  and has been still for 30 ms. The wait is at least 40 ms, and if the
+  screen never reacts, as with a password prompt that echoes nothing, the
+  key is sent after 300 ms. A person never types text and a key in the same
+  instant, and programs that detect a paste by timing take an Enter that
+  arrives with the text for a line break inside it. This was found by
+  running Claude Code inside waldo: text and an Enter sent together left the
+  prompt in its input box with a blank line under it. A fixed 40 ms pause
+  was not enough on a freshly started program; waiting for the reaction
+  was. The cause was checked only in part against that program (version
+  2.1.322): it treats one input event of more than 800 characters as a
+  paste and holds a Return that arrives during one, but where a short text
+  and an Enter in one burst become a line break was not found.
+- The first input of a session is held until the screen has settled for the
+  first time, or until 2 s after the session started, whichever comes
+  first. A shell echoes what arrives before its first prompt a second time:
+  once by the terminal, and once by the shell when it draws its prompt.
 
 ### 2.2 Waiting
 
-`wait.until` is one of:
+The wait conditions other than `settle` exist because settle is a guess
+(section 3.1): `match` for text that says the thing is done, `change` for
+"anything at all", `exit` for a program that runs to completion.
 
-| Value | Returns when |
-|---|---|
-| `settle` (default) | The screen is settled (section 3.1) |
-| `match` | `wait.pattern` matches a rendered line (section 3.2 rules) |
-| `change` | `gen` differs from `wait.since_gen`, or from its value when the request began if that is not given |
-| `exit` | The child has exited |
-| `none` | Immediately |
+- With input, `match` ignores text that was already on screen when the
+  request began, so a wait for the prompt after a command is not satisfied
+  by the prompt the command was typed at. Without input, text already on
+  screen counts.
+- Every request has a deadline. Reaching it is not an error: the response
+  is still 200 with the current screen and reason `timeout`, because the
+  screen is what the caller needs in order to decide what to do next.
+- A child exit ends any wait early, with reason `exit`.
 
-With input, `match` ignores text that was already on screen when the request
-began, so a wait for the prompt after a command is not satisfied by the
-prompt the command was typed at. Without input (`POST /v1/wait`), text
-already on screen counts.
+### 2.3 Responses
 
-Every request has a deadline: `timeout_ms`, default 10 000, maximum 600 000.
-On the deadline the response is still 200 with the current screen and
-`"reason": "timeout"`. A child exit ends any wait early with
-`"reason": "exit"`.
-
-### 2.3 Response
-
-```json
-{
-  "v": 1,
-  "session": "k3f9q2",
-  "reason": "settle",
-  "waited_ms": 212,
-  "interleaved": false,
-  "child": {"state": "running", "pid": 48211, "foreground": "vim"},
-  "screen": {
-    "gen": 41,
-    "cols": 120,
-    "rows": 30,
-    "cursor": {"row": 1, "col": 19, "visible": true},
-    "alt_screen": true,
-    "title": "main.c + - VIM",
-    "text": "#include <stdio.h>\n~\n~\n\n\"main.c\" 1L, 19B written"
-  }
-}
-```
-
-- `reason`: `settle`, `match`, `change`, `exit`, `none`, or `timeout`.
-- `gen` increases whenever the rendered screen changes (text, style or
-  cursor). Clients use it with `until: change` and to notice that nothing
-  happened. It is a count of changes to a hash of the visible cells, cursor,
-  title and size, recomputed after each batch of output.
-- `text` has trailing whitespace trimmed from each row and trailing blank rows
-  dropped. `rows` gives the real height.
-- `interleaved` is true if another client's input reached the pty during this
-  request. The text format shows it as the word `interleaved` in the status
-  line. Each request's input is typed whole, so it never means mixed-up
-  lines; it means the screen may hold more than the request caused, such as the echo of what the other client typed.
-- `?style=ansi` (or `"style": "ansi"` in a request body) returns `text` with
-  SGR colour and attribute escape sequences left in, and no other escapes.
-  Plain text cannot show which button or menu entry is selected; installers
-  and dialogs signal that only with colour, and an agent can read the codes.
-  The default is plain, because styled screens cost more tokens.
-- When `reason` is `match`, a `match` object is added with the fields of
-  section 4.3. When it is `exit`, an `exit` object with the fields of section
-  4.5, with `output` reduced to its tail.
-
-`Accept: text/plain` or `?format=text` returns one status line followed by the
-raw screen text, which is cheaper for an agent to read:
-
-```
-[k3f9q2 settle gen=41 120x30 cursor=1,19 alt running fg=vim]
-#include <stdio.h>
-~
-```
-
-`fg` is the terminal's foreground process, the `foreground` of the JSON.
-
-Errors use HTTP status codes and a body like
-`{"error": "unknown_key", "text": "unknown key name <Entr> at offset 4; use <lt> for a literal <"}`.
-The `error` values are snake_case and stable; `text` is for people.
+- `gen` counts changes to a hash of the visible cells, cursor, title and
+  size, recomputed after each batch of output. Clients use it with `until:
+  change` and to notice that nothing happened.
+- Screen text has trailing whitespace trimmed from each row and trailing
+  blank rows dropped. Width then costs almost nothing in tokens.
+- `interleaved` says another client's input reached the pty during the
+  request. Each request's input is typed whole, so it never means mixed-up
+  lines; it means the screen may hold more than the request caused, such as
+  the echo of what the other client typed.
+- Screens are plain by default, because styled ones cost more tokens.
+  `style=ansi` keeps the colour codes: installers and dialogs show which
+  button or menu entry is selected only with colour, and an agent can read
+  the codes (section 6.2).
+- The text format (one status line, then the raw screen) is cheaper for an
+  agent to read than JSON, so `waldo-term` prints it by default and the
+  host offers it too.
+- An error is a stable snake_case code and a sentence. The sentence is for
+  whoever reads it, and says what to do next.
 
 ### 2.4 waldo-term
 
-```
-waldo-term list
-waldo-term help   [TOPIC]
-waldo-term send   [-s ID] [--text S | --keys S | --paste S]... [--until U] [--timeout MS]
-waldo-term screen [-s ID] [--until U] [--json]
-waldo-term wait   [-s ID] --until match --pattern RE | --until exit | ...
-waldo-term output [-s ID] [--tail N]
-waldo-term match add [-s ID] [--id NAME] [--once] PATTERN
-waldo-term match rm [-s ID] NAME
-waldo-term match list [-s ID]
-waldo-term resize [-s ID] [--until none] COLSxROWS
-waldo-term attach [-s ID] [--drive] [--resize]
-waldo-term kill [ID]
-waldo-term signal [-s ID] NAME | --stop
-waldo-term gc [--all]
-```
+`waldo-term help commands` lists the commands, and `PROTOCOL.md` section 10
+says what the client does beyond sending a request and printing the answer.
+The choices worth recording:
 
-`waldo-term screencap` is not built (section 6.3).
-
-- `kill` sends the stop request of section 1.5, waits until the host has
-  gone, and prints one line saying how the program ended. It exits 0 if the
-  session is over when it returns, including when it had already ended. The
-  will is still written, so `output` works afterwards.
-
-- `-s` takes an id, a name, a unique prefix, or a socket path. With exactly one
-  live session it may be omitted.
-- `--text-file PATH`, `--keys-file PATH` and `--paste-file PATH` send file
-  items. `--text -`, `--keys -` and `--paste -` read from stdin, which keeps
+- `-s` may be omitted when exactly one session is live, which is the common
+  case for an agent.
+- `--text -`, `--keys -` and `--paste -` read from stdin, which keeps
   secrets out of `argv`.
-- Output is the text format by default.
-- Exit status: 0 if the wait condition was met, 124 on deadline, 3 if the child
-  exited before the condition, 4 if there is no such session, 2 for usage
-  errors, 1 for anything else. The screen is printed in the first three
-  cases.
-- A run-to-completion command may finish before the agent's next call. If the
-  session used the default destination, `waldo-term` finds the will there,
-  prints the exit details and exits 3; `output` prints the will's output and
-  exits 0. If it used an explicit `--dest`, the
-  session directory is gone, the agent gets status 4, and the will is wherever
-  it pointed `--dest`.
+- The exit status tells the caller's shell what happened without parsing:
+  0 if the wait condition was met, 124 on the deadline, 3 if the program
+  exited first, 4 if there is no such session.
+- A run-to-completion program may finish before the agent's next call. If
+  the session used the default destination, `waldo-term` finds the will
+  there, prints the exit details and exits 3; `output` prints the will's
+  output and exits 0. With an explicit `--dest` the session directory is
+  gone, the agent gets status 4, and the will is wherever `--dest` pointed.
+- `kill` sends the stop request, waits until the host has gone, and prints
+  one line saying how the program ended. The will is still written, so
+  `output` works afterwards.
 
 ### 2.5 Shell commands
 
@@ -611,7 +497,7 @@ point. A wait is answered once, so a repaint cannot make it fire twice.
 
 ### 3.3 Exit
 
-Fires exactly once, after the pty is drained. See section 4.5.
+Fires exactly once, after the pty is drained. See section 4.
 
 ### 3.4 Stream
 
@@ -630,92 +516,28 @@ for each resize, which `asciinema play` replays. If the file cannot be
 created the session does not start; if writing fails later the recording
 stops and the session carries on.
 
-## 4. Message schema
+## 4. Messages
 
-Asynchronous messages go to the destination as one JSON object each. Every
-message has this envelope:
+Asynchronous messages go to the destination as one JSON object each.
+`PROTOCOL.md` section 8 has the envelope and every field. The choices:
 
-| Field | Meaning |
-|---|---|
-| `v` | Schema version, 1 |
-| `session` | Session id |
-| `seq` | Starts at 0, increases by 1 per message, assigned when queued |
-| `trigger` | `hello`, `settle`, `match`, `stream`, `heartbeat` or `exit` |
-| `time` | Wall clock, RFC 3339 UTC |
-| `t_ms` | Milliseconds since the session started, monotonic |
-| `dropped` | Present when messages were dropped, or could not be delivered, since the previous one that arrived; the count |
-
-A gap in `seq` means messages were lost, and the next message that arrives
-says how many in `dropped`. A `heartbeat` message is the envelope alone.
-
-### 4.1 hello
-
-```json
-{"v":1,"session":"k3f9q2","seq":0,"trigger":"hello","time":"2026-11-17T23:41:07.120Z","t_ms":0,
- "name":null,"argv":["vim","main.c"],"cwd":"/home/u/proj","socket":"/run/user/1000/waldo/k3f9q2/sock",
- "cols":120,"rows":30,"host_pid":48200}
-```
-
-Sent before the child is spawned; it is the destination probe.
-
-### 4.2 settle
-
-```json
-{"v":1,"session":"k3f9q2","seq":7,"trigger":"settle","time":"2026-11-17T23:41:09.482Z","t_ms":2362,
- "screen":{"gen":41,"cols":120,"rows":30,"cursor":{"row":1,"col":19,"visible":true},"alt_screen":true,
-           "title":"main.c + - VIM","text":"#include <stdio.h>\n~\n~"}}
-```
-
-### 4.3 match
-
-```json
-{"v":1,"session":"k3f9q2","seq":12,"trigger":"match","time":"2026-11-17T23:41:15.003Z","t_ms":7883,
- "match":{"id":"pw","pattern":"[Pp]assword.*: $","text":"Password: ","groups":[],
-          "count":1,"line":57,"on_screen":true,"row":9,"col":1},
- "screen":{"gen":63,"cols":120,"rows":30,"cursor":{"row":9,"col":11,"visible":true},"alt_screen":false,
-           "title":"","text":"$ sudo make install\nPassword:"}}
-```
-
-`count` is how many times this trigger has fired. `line` is the absolute row
-number. `row` and `col` are present only when `on_screen` is true.
-
-### 4.4 stream
-
-```json
-{"v":1,"session":"k3f9q2","seq":20,"trigger":"stream","time":"2026-11-17T23:41:20.250Z","t_ms":13130,
- "from_line":118,"lines":["cc -c foo.c","cc -c bar.c","foo.c:12: warning: unused variable 'x'"]}
-```
-
-`from_line` is the number of the first line in `lines`, counting the
-session's output lines from 1. `skipped_lines`, when present, is how many
-lines just before `from_line` were not sent (section 3.4).
-
-### 4.5 exit (the will)
-
-```json
-{"v":1,"session":"k3f9q2","seq":31,"trigger":"exit","time":"2026-11-17T23:42:01.900Z","t_ms":54780,
- "exit_code":2,"signal":null,"core_dumped":false,
- "killed_by_waldo":false,"kill_reason":null,"spawn_error":null,"duration_ms":54612,
- "screen":{"gen":140,"cols":120,"rows":30,"cursor":{"row":24,"col":1,"visible":true},"alt_screen":false,
-           "title":"","text":"..."},
- "output":{"text":"$ make\ncc -c foo.c\n[... 2210 lines omitted ...]\nmake: *** [Makefile:8: all] Error 2",
-           "lines_total":2260,"truncated":true,"omitted_lines":2210}}
-```
-
-- Exactly one of `exit_code` and `signal` is non-null, unless `spawn_error` is
-  set. `signal` is a name such as `"SIGSEGV"`.
-- `kill_reason` is `request`, `host_signal` or `null`.
-- `output.text` is the rendered output: lines that scrolled off plus the final
-  primary screen, soft-wrapped lines joined. Carriage-return progress bars
-  collapse to their final state because the text is rendered, not raw. It is
-  capped (`--output-cap`, default 64 KiB), keeping the first quarter and the
-  last three quarters with a marker line between, so a will shows both the
-  command and its last errors and is never megabytes on one line. There is
-  no other copy: what the cap cuts is gone.
-- Output drawn on the alternate screen is not part of `output`; the final
-  `screen` shows what was last visible.
-
-The will is the last message the session sends to its destination.
+- **`seq` and `dropped`.** A gap in `seq` means messages were lost, and the
+  next message that arrives says how many. A receiver never has to guess.
+- **`hello`** is sent before the child is spawned, because it is also the
+  destination probe.
+- **`match` carries the screen**, so a receiver can act on it without
+  calling back.
+- **`stream` carries rendered lines, not bytes.** It is a `tail -f` of the
+  output. Raw bytes are what `--record` is for.
+- **The will's `output` is rendered, not raw:** lines that scrolled off plus
+  the final primary screen, with wrapped lines joined, so a carriage-return
+  progress bar collapses to its final state. It is capped by keeping the
+  first quarter and the last three quarters with a marker line between, so a
+  will shows both the command and its last errors and is never megabytes on
+  one line. There is no other copy: what the cap cuts is gone. Output drawn
+  on the alternate screen is not part of it; the final `screen` shows what
+  was last visible.
+- The will is the last message the session sends.
 
 ## 5. Destinations
 
@@ -725,55 +547,37 @@ agent with only a Bash tool can ignore it until the end; the will is its last
 line. By default only `hello` and `exit` are sent, so the file stays small.
 
 By default the host probes the destination before spawning the child and
-refuses to start if `hello` can't be delivered. `--no-probe` skips that: the
-host starts regardless and delivers `hello` when it can. Use it when the
-receiver comes up after the session does.
+refuses to start if `hello` can't be delivered, so a session never runs with
+nowhere to report. `--no-probe` skips that, for a receiver that comes up
+after the session does.
 
-| Scheme | Delivery | Probe |
-|---|---|---|
-| `file:PATH` | Append one line per message, one `write` each, `O_APPEND` | Open for append, write `hello` |
-| `unix:PATH` | Connect once, stream NDJSON | Connect, write `hello` |
-| `http://HOST[:PORT]/PATH` | POST each message, `Content-Type: application/json` | POST `hello`, require 2xx |
+The three schemes (`file:`, `unix:`, `http:`) and their delivery rules are
+in `PROTOCOL.md` section 8.7. The choices behind them:
 
-`https:` is out of scope; put a local proxy in front if needed.
-
-- `unix:` keeps the connection the probe opened for the whole session. If a
-  write fails, the message is lost and the next one connects again. Writes
-  time out after 5 s.
-- `http:` opens a connection for each message and reads only the status
-  line. That is slower than keeping one open, and it cannot go stale. An
-  IPv6 address is written in brackets. Connecting, writing and reading each
-  time out after 5 s.
-
-**Queue.** The delivery thread reads from a bounded queue (256 messages or
-8 MiB). When it is full:
-
-- a queued `settle` is replaced by a newer `settle`, which takes its place
-  and its `seq`; a `stream` message that follows another is merged into it;
-- otherwise the oldest `match` or `stream` message is dropped, then the
-  oldest `settle`, and counted in the next message's `dropped`;
-- `hello` and `exit` are never dropped.
-
-**Delivery guarantees.** At most once for `file:` and `unix:`. At least once
-for `http:`, which tries a failed message twice more, after 250 ms and after
-1 s, so receivers should de-duplicate on `(session, seq)`. A message that
-still fails is counted in `dropped`. The log says when delivery starts
-failing and when it works again, not once per message.
-
-**The will.** On delivery failure the host retries for up to 5 s. If it still
-can't deliver, it writes the will to `will.json` in the session directory and
-leaves the directory in place.
+- `https:` is out of scope; put a local proxy in front if needed.
+- `http:` opens a connection for each message. That is slower than keeping
+  one open, and it cannot go stale.
+- Delivery has its own thread and a bounded queue, so a slow or blocked
+  receiver can never stall the pty. When the queue is full, what is dropped
+  is what matters least: a waiting `settle` gives way to a newer one,
+  `stream` messages merge, then the oldest `match` or `stream` goes. `hello`
+  and `exit` are never dropped.
+- `file:` and `unix:` deliver at most once. `http:` retries, so it delivers
+  at least once, and receivers de-duplicate on `(session, seq)`.
+- The log says when delivery starts failing and when it works again, not
+  once per message.
+- If the will cannot be delivered, it is written to `will.json` in the
+  session directory, and the directory is left in place.
 
 **Detecting a dead host.** The host cannot announce its own SIGKILL or OOM
 kill. Receivers can tell by:
 
 - `unix:`: end of stream with no `exit` message.
 - `file:`, `http:`, or anyone else: the session directory still exists, its
-  `lock` is free, and it holds no `will.json`. A clean exit removes the
-  directory. `waldo-term list` reports this state as `dead`.
-- `http:` receivers with no filesystem access can ask for `--heartbeat SECONDS`
-  and treat silence as death. A `heartbeat` message is sent whenever that
-  long has passed without another message. It works with any destination.
+  `lock` is free, and it holds no `will.json`. `waldo-term list` reports
+  this state as `dead`.
+- `http:` receivers with no filesystem access can ask for `--heartbeat
+  SECONDS` and treat silence as death.
 
 ## 6. Screen and output model
 
@@ -918,13 +722,9 @@ every 16 ms and none while the program has a synchronized-output hold open.
 draws frames inside a viewport with a one-line status bar. It does not link
 the emulator; only the host does.
 
-The attach stream is an HTTP upgrade on the control socket (`GET /v1/attach`
-with `Upgrade: waldo-attach`) carrying one JSON object per line in both
-directions, so it can be read with a few lines of any language. A frame from
-the host carries the session and view sizes, the cursor, the title, how many
-requests are waiting, three input modes, and `lines`: pairs of row number and
-styled text, only for rows that changed. The viewer sends `viewport`,
-`resize`, `keys_hex` and `detach`.
+The attach stream is an HTTP upgrade on the control socket, carrying one
+JSON object per line in both directions, so it can be read with a few lines
+of any language (`PROTOCOL.md` section 7).
 
 When the session ends, the viewer leaves its screen, prints the will, and
 exits 3, as any other command does.

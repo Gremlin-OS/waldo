@@ -40,6 +40,7 @@
               ./Cargo.toml
               ./Cargo.lock
               ./build.rs
+              ./PROTOCOL.md
               ./src
               ./tests
             ];
