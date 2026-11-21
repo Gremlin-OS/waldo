@@ -868,9 +868,9 @@ or look at the session directory (section 1.3).
 3. It delivers the will.
 4. It answers every waiting request with reason `exit`.
 5. With `--linger`, it keeps the socket open for that long. `GET` requests
-   for status, screen, output and triggers are answered, each with reason
-   `exit` where they carry one. `POST /v1/signal` ends the lingering.
-   Anything else gets 409 `exited`.
+   for status, screen, output and triggers, and `POST /v1/wait`, are
+   answered, with reason `exit` where they carry one. `POST /v1/signal`
+   ends the lingering. Anything else gets 409 `exited`.
 6. It removes the socket and exits. After that there is nothing to connect
    to, and the will is the only record (section 1.4).
 
@@ -913,7 +913,7 @@ that says what to do next; its wording may change.
 | 409 | `too_many_triggers` | The session already has 32 |
 | 404 | `no_such_trigger` | Removing a trigger that does not exist |
 | 400 | `upgrade_required` | `/v1/attach` without `Upgrade: waldo-attach` |
-| 409 | `exited` | The program has exited and the session is lingering; only read-only requests are answered |
+| 409 | `exited` | The program has exited and the session is lingering; only requests that read or wait are answered |
 
 An error in an input item names the item: `input item 2: ...`. When a
 request is refused, nothing it carried has been typed.

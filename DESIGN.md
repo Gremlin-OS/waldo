@@ -164,8 +164,8 @@ When the child exits (pidfd readable), the host:
 5. Answers every pending request with reason `exit`. The will goes first so
    that a client that sees `exit` can read it at once.
 6. With `--linger SECONDS`, keeps the socket open for that long and answers
-   `GET` requests for the status, screen, output and triggers, each with
-   reason `exit`. Anything else gets 409 `exited`. A stop request or a signal
+   requests for the status, screen, output and triggers, and waits, each
+   with reason `exit`. Anything else gets 409 `exited`. A stop request or a signal
    to the host ends the linger early, which is what `waldo-term kill` does.
 7. Removes the socket, and with an explicit `--dest` the session directory,
    and exits.
@@ -776,7 +776,7 @@ attached, and images, which are shown as nothing.
 | Destination fails later | Queue fills, messages coalesce or drop with `dropped` counts; the pty is unaffected |
 | Destination unreachable at exit | Retry 5 s, then write `will.json` in the session directory and keep the directory |
 | Agent calls `waldo-term` after the session ended | Default destination: the will is read from it, status 3. Explicit `--dest`: status 4, and the will is at that destination |
-| A request arrives during `--linger` | Status, screen, output and triggers are answered with reason `exit`; anything else gets 409 `exited` |
+| A request arrives during `--linger` | Status, screen, wait, output and triggers are answered with reason `exit`; anything else gets 409 `exited` |
 | The `--record` file cannot be written | At startup: the session does not start. Later: the recording stops, the session continues, the log says so |
 | Child exits with output unread | Pty drained before the will is composed (section 1.5) |
 | Grandchild keeps the pty open after the child exits | Drain ends after 100 ms of silence; the will is sent; the grandchild is left alone and gets SIGHUP when the host exits |

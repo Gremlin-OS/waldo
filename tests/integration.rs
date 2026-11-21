@@ -1954,3 +1954,90 @@ fn protocol_endpoints_and_parameters_are_as_documented() {
     assert!(get("/v1/screen?until=never&format=text").contains("\"error\":\"unknown_until\""));
     assert!(raw_http(sock, "PUT /v1/screen HTTP/1.1\r\nHost: waldo\r\nConnection: close\r\n\r\n").starts_with("HTTP/1.1 405 "));
 }
+
+/// Every error in PROTOCOL.md section 9 is provoked over the socket, and
+/// comes back with the status and code the table gives. A code added to the
+/// table without a case here fails the test.
+#[test]
+fn every_documented_error_can_be_provoked() {
+    let t = T::new();
+    t.bash("er");
+    let sock = t.session_dir("er").join("sock");
+    let sock = sock.to_str().unwrap().to_string();
+    let before = t.term(&["screen", "-s", "er"]).out;
+
+    // What the table says: code -> status.
+    let section = PROTOCOL.split("\n## 9. Errors\n").nth(1).unwrap().split("\n## 10.").next().unwrap();
+    let table: Vec<(String, u16)> = section
+        .lines()
+        .filter(|l| l.starts_with("| 4"))
+        .map(|l| (l.split('`').nth(1).unwrap().to_string(), l[2..5].parse().unwrap()))
+        .collect();
+
+    let json = "Content-Type: application/json\r\n";
+    let post = |path: &str, body: &str| {
+        format!("POST {path} HTTP/1.1\r\nHost: waldo\r\nConnection: close\r\n{json}Content-Length: {}\r\n\r\n{body}", body.len())
+    };
+    let get = |path: &str| format!("GET {path} HTTP/1.1\r\nHost: waldo\r\nConnection: close\r\n\r\n");
+    let trigger = |body: &str| post("/v1/triggers", body);
+
+    // A session that has exited and is lingering, for `exited`.
+    let r = t.wrap(&["--detach", "--name", "lg", "--linger", "20", "--", "true"]);
+    assert_eq!(r.code, 0, "{}", r.err);
+    assert_eq!(t.term(&["wait", "-s", "lg", "--until", "exit"]).code, 0);
+    let lingering = t.session_dir("lg").join("sock").to_str().unwrap().to_string();
+
+    // Fill the session's triggers: one named, then up to the limit.
+    assert!(raw_http(&sock, &trigger(r#"{"pattern": "x", "id": "a"}"#)).starts_with("HTTP/1.1 200"));
+    for i in 0..31 {
+        assert!(raw_http(&sock, &trigger(&format!(r#"{{"pattern": "p{i}"}}"#))).starts_with("HTTP/1.1 200"));
+    }
+
+    let cases: Vec<(&str, &str, String)> = vec![
+        ("bad_request", &sock, "NOT HTTP AT ALL\r\n\r\n".into()),
+        ("length_required", &sock, "POST /v1/input HTTP/1.1\r\nHost: waldo\r\nTransfer-Encoding: chunked\r\n\r\n".into()),
+        ("body_too_large", &sock, "POST /v1/input HTTP/1.1\r\nHost: waldo\r\nContent-Length: 2000000\r\n\r\n".into()),
+        ("headers_too_large", &sock, format!("GET /v1/status HTTP/1.1\r\nX-Pad: {}", "a".repeat(70_000))),
+        ("not_found", &sock, get("/v1/nope")),
+        ("method_not_allowed", &sock, "PUT /v1/screen HTTP/1.1\r\nHost: waldo\r\nConnection: close\r\n\r\n".into()),
+        ("bad_json", &sock, post("/v1/wait", "[1, 2]")),
+        ("missing_input", &sock, post("/v1/input", r#"{"keys": "x"}"#)),
+        ("bad_item", &sock, post("/v1/input", r#"{"input": [{"text": 1}]}"#)),
+        ("unknown_key", &sock, post("/v1/input", r#"{"input": [{"text": "typed?"}, {"keys": "<Entr>"}]}"#)),
+        ("file_unreadable", &sock, post("/v1/input", r#"{"input": [{"text": "typed?"}, {"text_file": "not/absolute"}]}"#)),
+        ("unknown_until", &sock, post("/v1/wait", r#"{"until": "never"}"#)),
+        ("unknown_style", &sock, post("/v1/wait", r#"{"style": "neon"}"#)),
+        ("bad_timeout", &sock, post("/v1/wait", r#"{"timeout_ms": "soon"}"#)),
+        ("missing_pattern", &sock, post("/v1/wait", r#"{"until": "match"}"#)),
+        ("bad_pattern", &sock, post("/v1/wait", r#"{"until": "match", "pattern": "("}"#)),
+        ("bad_tail", &sock, get("/v1/output?tail=some")),
+        ("bad_size", &sock, post("/v1/resize", r#"{"cols": 0, "rows": 10}"#)),
+        ("bad_signal", &sock, post("/v1/signal", "{}")),
+        ("unknown_signal", &sock, post("/v1/signal", r#"{"signal": "SIGNOPE"}"#)),
+        ("unknown_mode", &sock, trigger(r#"{"pattern": "x", "mode": "level"}"#)),
+        ("bad_id", &sock, trigger(r#"{"pattern": "x", "id": "no spaces"}"#)),
+        ("trigger_exists", &sock, trigger(r#"{"pattern": "y", "id": "a"}"#)),
+        ("too_many_triggers", &sock, trigger(r#"{"pattern": "one too many"}"#)),
+        ("no_such_trigger", &sock, "DELETE /v1/triggers/nope HTTP/1.1\r\nHost: waldo\r\nConnection: close\r\n\r\n".into()),
+        ("upgrade_required", &sock, get("/v1/attach")),
+        ("exited", &lingering, post("/v1/input", r#"{"input": [{"text": "x"}]}"#)),
+    ];
+
+    for (code, socket, request) in &cases {
+        let want = table.iter().find(|(c, _)| c == code).unwrap_or_else(|| panic!("PROTOCOL.md does not list '{code}'")).1;
+        let response = raw_http(socket, request);
+        assert!(response.starts_with(&format!("HTTP/1.1 {want} ")), "'{code}' should be status {want}:\n{response}");
+        assert!(response.contains("Content-Type: application/json"), "{response}");
+        let body: Value = serde_json::from_str(response.split("\r\n\r\n").nth(1).unwrap_or("")).unwrap_or_else(|e| panic!("'{code}': the body is not JSON ({e}):\n{response}"));
+        assert_eq!(body["error"], *code, "{response}");
+        // The sentence says something, and it is not just the code.
+        assert!(body["text"].as_str().unwrap_or("").len() > 20, "{response}");
+    }
+    for (code, _) in &table {
+        assert!(cases.iter().any(|(c, _, _)| c == code), "no case provokes '{code}'");
+    }
+
+    // A refused request types nothing: the screen is as it was.
+    assert_eq!(t.term(&["screen", "-s", "er"]).out, before);
+    assert_eq!(t.term(&["kill", "lg"]).code, 0);
+}

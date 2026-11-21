@@ -1758,7 +1758,9 @@ impl Host {
             ("DELETE", "/v1/triggers/ID"),
         ];
         if self.lingering {
-            let read_only = req.method == "GET" && ["/v1/status", "/v1/screen", "/v1/output", "/v1/triggers"].contains(&req.path.as_str());
+            // A wait types nothing, so it counts as reading.
+            let read_only = (req.method == "GET" && ["/v1/status", "/v1/screen", "/v1/output", "/v1/triggers"].contains(&req.path.as_str()))
+                || (req.method == "POST" && req.path == "/v1/wait");
             if req.method == "POST" && req.path == "/v1/signal" {
                 // Whatever was asked, there is no program to signal; the
                 // caller wants the session gone.
@@ -1771,7 +1773,7 @@ impl Host {
                     &req,
                     409,
                     "exited",
-                    "the program has exited; the session only answers status, screen, output and triggers until it closes. 'waldo-term kill' closes it now",
+                    "the program has exited; the session only answers status, screen, wait, output and triggers until it closes. 'waldo-term kill' closes it now",
                 );
             }
         }
