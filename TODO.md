@@ -60,17 +60,26 @@ foreground. Still open:
    timeout the agent needs a second call to see what happened.
 4. **`run` types before it knows whether a shell is there.** Into htop,
    `echo hello` opened a process's environment view; into vim it edited
-   the buffer. The hint only comes at the timeout. `run` could refuse at
-   once when the foreground program is not the session's own and not a
-   known shell, at the price of refusing an unlisted shell started from
-   another one.
-5. **The `run` wrapper is on screen.** Without the shell's own marks, the
+   the buffer; into `less` it started a shell and tried to write a file.
+   The hint only comes at the timeout. Refusing by the foreground
+   program's name was built and taken out the same day (2026-11-21): it
+   also refuses a shell reached through `ssh`, `sudo`, `docker exec` or
+   tmux, where the local foreground program is not the shell, and it
+   passes a shell that is busy. The status line already says what is in
+   the foreground. If this is revisited, the shell's own prompt marks
+   (OSC 133) are real evidence of a prompt; a name is not.
+5. **The foreground name is missing when a pipeline's first program has
+   exited.** With `seq 1 100 | less` the status line shows `running` and
+   no `fg=`: the process group's leader is gone, and waldo reads the name
+   from the leader. It could take the name of another process in the
+   group.
+6. **The `run` wrapper is on screen.** Without the shell's own marks, the
    typed line `{ cmd` / `}; printf '\033]7770;waldo;...'` stays visible.
    Three players called it noise. Shell integration (OSC 133) avoids it.
-6. **A paste that ends in a newline leaves an empty last line in vim.**
+7. **A paste that ends in a newline leaves an empty last line in vim.**
    That is vim's doing, and correct, but both vim players tripped on it;
    `help` could say that a trailing newline in a paste is an Enter.
-7. **A shared session's `run` output can hold the other client's typing.**
+8. **A shared session's `run` output can hold the other client's typing.**
    While one agent's `run` was going, the other typed a command; the
    terminal's echo of it landed in the first one's output. The status
    line now says `interleaved`, but the output is not cleaned.
@@ -80,11 +89,11 @@ foreground. Still open:
    printed by an inner waldo-term appear on the outer screen and read
    like the outer one's, and `waldo-term` inside a session does not
    default to that session.
-8. **Text left on the shell's input line breaks `run`.** A stray `4` typed
+9. **Text left on the shell's input line breaks `run`.** A stray `4` typed
    into bash turned the wrapper into `4{ ...`, the end mark never ran,
    and the `run` sat until its 120 s timeout. `run` could clear the line
    first.
-9. **`output` is empty while a full-screen program is up.** It leaves out
+10. **`output` is empty while a full-screen program is up.** It leaves out
    the primary screen while the alternate screen is showing, so lines
    that have not scrolled off cannot be read until the program exits.
 

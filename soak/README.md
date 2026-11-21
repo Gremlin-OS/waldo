@@ -84,8 +84,20 @@ not repeatable line for line, so they are run by hand.
 | `shared-session.md` | 2 | `--shared --budget 60` | Two clients typing into one waldo session |
 | `nested.md` | 1 or 2 | `--budget 60` | waldo sessions started from, and attached to, inside waldo sessions |
 
-Programs tried by hand and not yet given a brief: `sl` (an animation that
-ignores Ctrl-C; `send` returns when the train has gone, `run` reports its
-exit status). Worth trying next: a pager (`less`, `man`), a fuzzy finder
-(`fzf`), a REPL (`python3`), a password prompt, and something that never
-stops drawing (`cmatrix`).
+Programs tried by hand and not given a brief:
+
+- `sl`: an animation that ignores Ctrl-C. `send` returns when the train
+  has gone; `run` waits for it and reports its exit status.
+- `less`: paging, search and quitting work. A `run` typed into it, on
+  purpose, started a shell and tried to write a file: `run` types whatever
+  is in the foreground, and only says so at its timeout.
+- `fzf`: a query, a move and Enter in one call pick the right item; the
+  styled screen shows the selected row.
+- `python3`: use `--paste` for a block. The REPL indents for you, so a
+  block sent as `--text` with its own indentation is indented twice.
+- A password prompt (`read -s`, Python's `getpass`): nothing is echoed, so
+  the Enter after the text waits its 300 ms limit; the password arrives
+  whole.
+- `cmatrix`: never stops drawing. `send` times out with the "never went
+  quiet" hint, `resize` answers after its 1 s cap, `wait --until change`
+  and quitting work, and the host uses about 1% of a CPU.
