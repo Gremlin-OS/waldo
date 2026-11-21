@@ -27,8 +27,6 @@ mod ffi {
     pub const OPT_USERDATA: c_int = 1;
     pub const OPT_WRITE_PTY: c_int = 2;
     pub const OPT_SCROLLBACK_MAX_BYTES: c_int = 28;
-    pub const OPT_UNKNOWN_SEQUENCE: c_int = 36;
-    pub const OPT_UNKNOWN_MAX_BYTES: c_int = 37;
     pub const OPT_RENDER_HOLD: c_int = 42;
     pub const OPT_SEMANTIC_PROMPT: c_int = 43;
 
@@ -44,12 +42,7 @@ mod ffi {
 
     pub const SCREEN_ALTERNATE: c_int = 1;
 
-    pub const BOUNDARY_OSC_END: u32 = 1 << 6;
-
-    pub const UNKNOWN_SEQUENCE_OSC: c_int = 1;
     pub const SEMANTIC_PROMPT_PROMPT_START: c_int = 1;
-    pub const SEMANTIC_PROMPT_OUTPUT_START: c_int = 3;
-    pub const SEMANTIC_PROMPT_COMMAND_END: c_int = 4;
 
     pub const CELL_DATA_CONTENT_TAG: c_int = 2;
     pub const CELL_DATA_WIDE: c_int = 3;
@@ -125,45 +118,6 @@ mod ffi {
     }
 
     #[repr(C)]
-    pub struct WriteStop {
-        pub size: usize,
-        pub consumed: usize,
-        pub reached: u32,
-        pub kind: c_int,
-        pub introducer: c_int,
-        pub end: c_int,
-        pub byte: u8,
-    }
-
-    #[repr(C)]
-    #[derive(Clone, Copy)]
-    pub struct UnknownString {
-        pub truncated: bool,
-        pub content: GString,
-    }
-
-    #[repr(C)]
-    #[derive(Clone, Copy)]
-    pub struct UnknownOsc {
-        pub truncated: bool,
-        pub content: GString,
-        pub terminator: c_int,
-    }
-
-    #[repr(C)]
-    pub union UnknownValue {
-        pub apc: UnknownString,
-        pub osc: UnknownOsc,
-        pub _padding: [u64; 16],
-    }
-
-    #[repr(C)]
-    pub struct UnknownSequence {
-        pub tag: c_int,
-        pub value: UnknownValue,
-    }
-
-    #[repr(C)]
     pub struct SemanticPrompt {
         pub kind: c_int,
         pub prompt_kind: c_int,
@@ -193,13 +147,6 @@ mod ffi {
             -> c_int;
         pub fn ghostty_terminal_get(terminal: Terminal, data: c_int, out: *mut c_void) -> c_int;
         pub fn ghostty_terminal_vt_write(terminal: Terminal, data: *const u8, len: usize);
-        pub fn ghostty_terminal_vt_write_until(
-            terminal: Terminal,
-            data: *const u8,
-            len: usize,
-            boundaries: u32,
-            out: *mut WriteStop,
-        ) -> c_int;
         pub fn ghostty_terminal_grid_ref(
             terminal: Terminal,
             point: Point,
@@ -412,19 +359,8 @@ pub struct Row {
 #[derive(Default)]
 struct Events {
     replies: Vec<u8>,
-    unknown_osc: Vec<Vec<u8>>,
     hold: bool,
     prompt_start: bool,
-    marks: Vec<Mark>,
-}
-
-/// A step of a command, as the shell reports it with OSC 133.
-#[derive(Clone, Copy, Debug, PartialEq)]
-pub enum Mark {
-    /// The command started; what follows is its output.
-    OutputStart,
-    /// The command finished, with its exit status if the shell gave one.
-    CommandEnd(Option<i32>),
 }
 
 pub struct Emu {
@@ -453,25 +389,6 @@ unsafe extern "C" fn on_write_pty(_t: ffi::Terminal, ud: *mut c_void, data: *con
     }
 }
 
-unsafe extern "C" fn on_unknown(
-    _t: ffi::Terminal,
-    ud: *mut c_void,
-    seq: *const ffi::UnknownSequence,
-) {
-    let ev = &mut *(ud as *mut Events);
-    if seq.is_null() || (*seq).tag != ffi::UNKNOWN_SEQUENCE_OSC {
-        return;
-    }
-    let osc = (*seq).value.osc;
-    if osc.truncated || osc.content.ptr.is_null() {
-        return;
-    }
-    let bytes = std::slice::from_raw_parts(osc.content.ptr, osc.content.len);
-    if ev.unknown_osc.len() < 64 {
-        ev.unknown_osc.push(bytes.to_vec());
-    }
-}
-
 unsafe extern "C" fn on_render_hold(_t: ffi::Terminal, ud: *mut c_void, held: bool) {
     let ev = &mut *(ud as *mut Events);
     ev.hold = held;
@@ -486,17 +403,8 @@ unsafe extern "C" fn on_semantic_prompt(
     if event.is_null() {
         return;
     }
-    let mark = match (*event).kind {
-        ffi::SEMANTIC_PROMPT_PROMPT_START => {
-            ev.prompt_start = true;
-            return;
-        }
-        ffi::SEMANTIC_PROMPT_OUTPUT_START => Mark::OutputStart,
-        ffi::SEMANTIC_PROMPT_COMMAND_END => Mark::CommandEnd((*event).has_exit_code.then_some((*event).exit_code)),
-        _ => return,
-    };
-    if ev.marks.len() < 64 {
-        ev.marks.push(mark);
+    if (*event).kind == ffi::SEMANTIC_PROMPT_PROMPT_START {
+        ev.prompt_start = true;
     }
 }
 
@@ -518,9 +426,6 @@ impl Emu {
             set(ffi::OPT_USERDATA, events as *const c_void)?;
             set(ffi::OPT_WRITE_PTY, on_write_pty as *const c_void)?;
             set(ffi::OPT_SCROLLBACK_MAX_BYTES, &scrollback_bytes as *const usize as *const c_void)?;
-            let unknown_max: usize = 2048;
-            set(ffi::OPT_UNKNOWN_MAX_BYTES, &unknown_max as *const usize as *const c_void)?;
-            set(ffi::OPT_UNKNOWN_SEQUENCE, on_unknown as *const c_void)?;
             set(ffi::OPT_RENDER_HOLD, on_render_hold as *const c_void)?;
             set(ffi::OPT_SEMANTIC_PROMPT, on_semantic_prompt as *const c_void)?;
 
@@ -548,35 +453,6 @@ impl Emu {
         unsafe { ffi::ghostty_terminal_vt_write(self.t, data.as_ptr(), data.len()) }
     }
 
-    /// Feed program output, stopping after the first byte that ends an OSC
-    /// sequence. Returns how many bytes were consumed and whether it stopped
-    /// at such an end.
-    pub fn feed_until_osc_end(&mut self, data: &[u8]) -> (usize, bool) {
-        if data.is_empty() {
-            return (0, false);
-        }
-        let mut stop: ffi::WriteStop = unsafe { std::mem::zeroed() };
-        stop.size = std::mem::size_of::<ffi::WriteStop>();
-        let r = unsafe {
-            ffi::ghostty_terminal_vt_write_until(
-                self.t,
-                data.as_ptr(),
-                data.len(),
-                ffi::BOUNDARY_OSC_END,
-                &mut stop,
-            )
-        };
-        if r == ffi::SUCCESS {
-            (stop.consumed.max(1).min(data.len()), true)
-        } else if stop.consumed == data.len() {
-            (data.len(), false)
-        } else {
-            // Not expected. Fall back to a plain write so no byte is lost.
-            self.feed(data);
-            (data.len(), false)
-        }
-    }
-
     fn events(&mut self) -> &mut Events {
         unsafe { &mut *self.events }
     }
@@ -586,20 +462,9 @@ impl Emu {
         std::mem::take(&mut self.events().replies)
     }
 
-    /// OSC sequences the emulator does not implement, without the leading
-    /// `ESC ]` and the terminator.
-    pub fn take_unknown_osc(&mut self) -> Vec<Vec<u8>> {
-        std::mem::take(&mut self.events().unknown_osc)
-    }
-
     /// Whether the program has a synchronized-output hold open (mode 2026).
     pub fn hold(&mut self) -> bool {
         self.events().hold
-    }
-
-    /// Command start and end marks (OSC 133) since last asked, in order.
-    pub fn take_marks(&mut self) -> Vec<Mark> {
-        std::mem::take(&mut self.events().marks)
     }
 
     /// Whether a shell prompt-start mark (OSC 133) arrived since last asked.
@@ -989,32 +854,6 @@ mod tests {
     }
 
     #[test]
-    fn private_osc_reaches_the_host() {
-        let mut e = emu();
-        e.feed(b"before\x1b]7770;waldo;abc123;2\x07after");
-        assert_eq!(e.take_unknown_osc(), vec![b"7770;waldo;abc123;2".to_vec()]);
-        // It draws nothing.
-        assert_eq!(e.row(Space::Active, 0, None).unwrap().text, "beforeafter");
-        // The ST terminator works too.
-        e.feed(b"\x1b]7770;x\x1b\\");
-        assert_eq!(e.take_unknown_osc(), vec![b"7770;x".to_vec()]);
-    }
-
-    #[test]
-    fn feed_stops_at_osc_end() {
-        let mut e = emu();
-        let data = b"one\x1b]7770;n;0\x07two";
-        let (n, stopped) = e.feed_until_osc_end(data);
-        assert!(stopped);
-        assert_eq!(&data[n..], b"two");
-        assert_eq!(e.take_unknown_osc().len(), 1);
-        assert_eq!(e.row(Space::Active, 0, None).unwrap().text, "one");
-        let (n2, stopped2) = e.feed_until_osc_end(&data[n..]);
-        assert_eq!((n2, stopped2), (3, false));
-        assert_eq!(e.row(Space::Active, 0, None).unwrap().text, "onetwo");
-    }
-
-    #[test]
     fn synchronized_output_hold() {
         let mut e = emu();
         assert!(!e.hold());
@@ -1031,14 +870,6 @@ mod tests {
         e.feed(b"\x1b]133;A\x07$ ");
         assert!(e.take_prompt_start());
         assert!(!e.take_prompt_start());
-    }
-
-    #[test]
-    fn command_marks_carry_the_exit_status() {
-        let mut e = emu();
-        e.feed(b"\x1b]133;A\x07$ ls\r\n\x1b]133;C\x07out\r\n\x1b]133;D;3\x07\x1b]133;D\x07");
-        assert_eq!(e.take_marks(), [Mark::OutputStart, Mark::CommandEnd(Some(3)), Mark::CommandEnd(None)]);
-        assert!(e.take_marks().is_empty());
     }
 
     #[test]

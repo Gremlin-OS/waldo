@@ -21,18 +21,16 @@ time the screen came back unchanged after input.
 ## Variant B: NetHack started from a shell
 
 1. `W wrap --detach --name sh -- bash --norc --noprofile`, and IMMEDIATELY,
-   with no wait in between, `W run -s sh 'echo first; uname -s'`. Note what
-   it printed and whether any line on the screen is there twice.
-2. Two or three more runs: one that fails (`ls /nonexistent`), one with many
-   lines (`seq 1 40`). Check output and exit status.
+   with no wait in between, `W send -s sh --text 'echo first; uname -s'
+   --keys '<Enter>'`. Note what it printed and whether any line on the
+   screen is there twice.
+2. Two or three more commands in the shell: one that fails (`ls
+   /nonexistent`), one with many lines (`seq 1 40`). Check output and exit
+   status.
 3. `W send -s sh --text 'nethack -u {NAME}' --keys '<Enter>'`. Copy any
    `hint:` line. From then on, note the call number and text of every hint.
 4. Play, as in variant A.
-5. Once, mid-game, on purpose: `W run -s sh --timeout 4000 'echo hello'`.
-   This types a command line into NetHack and should time out. Copy the
-   whole response. Look at the screen, clean up (Escape usually helps),
-   carry on.
-6. With about 10 calls left: quit the game back to the shell prompt
-   (`#quit`, answer its questions). Then `W run -s sh 'echo back'` must
-   work. Then `W send -s sh --text 'exit' --keys '<Enter>' --until exit`,
+5. With about 10 calls left: quit the game back to the shell prompt
+   (`#quit`, answer its questions). Copy any hint on the way out. Then run
+   `echo back` in the shell. Then `W send -s sh --text 'exit' --keys '<Enter>' --until exit`,
    `W list`, `W gc --all`.

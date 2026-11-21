@@ -21,7 +21,6 @@ const EXIT_OTHER: i32 = 1;
 const EXIT_USAGE: i32 = 2;
 const EXIT_CHILD_EXITED: i32 = 3;
 const EXIT_NO_SESSION: i32 = 4;
-const EXIT_RUN_FAILED: i32 = 5;
 const EXIT_TIMEOUT: i32 = 124;
 
 fn die(code: i32, msg: &str) -> ! {
@@ -44,7 +43,6 @@ struct Opts {
     json: bool,
     items: Vec<Value>,
     tail: Option<u64>,
-    shell: Option<String>,
     stop: bool,
     all: bool,
     older_than: Option<i64>,
@@ -118,7 +116,6 @@ fn parse_opts(cmd: &str, args: &[String], allowed: &[&str], positional: bool) ->
                     o.older_than = Some(parse_ms(&format!("{v}s")).map(|ms| (ms / 1000) as i64).unwrap_or_else(|| usage("--older-than takes seconds")));
                 }
                 "--tail" => o.tail = Some(value().parse().unwrap_or_else(|_| usage("--tail takes a number of lines"))),
-                "--shell" => o.shell = Some(value()),
                 "--text" | "--keys" | "--paste" => {
                     let mut v = value();
                     if v == "-" {
@@ -302,10 +299,6 @@ fn finish(value: &Value, as_json: bool, wanted_exit: bool) -> ! {
     let code = match value.get("reason").and_then(|r| r.as_str()).unwrap_or("") {
         "timeout" => EXIT_TIMEOUT,
         "exit" if !wanted_exit => EXIT_CHILD_EXITED,
-        "done" => match value.get("command_exit_code").and_then(|c| c.as_i64()) {
-            Some(0) => EXIT_OK,
-            _ => EXIT_RUN_FAILED,
-        },
         _ => EXIT_OK,
     };
     std::process::exit(code);
@@ -387,23 +380,6 @@ fn cmd_wait(args: &[String]) -> ! {
     let (_, status, value) = call(o.session.as_deref(), "POST", "/v1/wait", Some(&body), o.json, ended_status);
     check_status(status, &value);
     finish(&value, o.json, wanted_exit(&o));
-}
-
-fn cmd_run(args: &[String]) -> ! {
-    let o = parse_opts("run", args, &["--session", "--timeout", "--shell", "--json"], true);
-    if o.rest.is_empty() {
-        usage("'run' needs a command, such as: waldo-term run 'make test'");
-    }
-    let mut body = json!({"command": o.rest.join(" ")});
-    if let Some(t) = o.timeout_ms {
-        body["timeout_ms"] = t.into();
-    }
-    if let Some(s) = &o.shell {
-        body["shell"] = s.clone().into();
-    }
-    let (_, status, value) = call(o.session.as_deref(), "POST", "/v1/run", Some(&body), o.json, EXIT_CHILD_EXITED);
-    check_status(status, &value);
-    finish(&value, o.json, false);
 }
 
 fn cmd_output(args: &[String]) -> ! {
@@ -692,7 +668,7 @@ fn cmd_help(args: &[String]) -> ! {
         None => print!("{}", help::GUIDE),
         Some(t) => match help::topic(t) {
             Some(text) => print!("{text}"),
-            None => usage(&format!("no help topic '{t}'; topics: keys, wait, run, messages, exit-status, commands")),
+            None => usage(&format!("no help topic '{t}'; topics: keys, wait, shell, messages, exit-status, commands")),
         },
     }
     std::process::exit(EXIT_OK);
@@ -715,7 +691,7 @@ fn main() {
         "send" => cmd_send(rest),
         "screen" => cmd_screen(rest),
         "wait" => cmd_wait(rest),
-        "run" => cmd_run(rest),
+        "run" => die(EXIT_USAGE, "there is no 'run' command; to run a shell command and learn how it ended, see: waldo-term help shell"),
         "output" => cmd_output(rest),
         "resize" => cmd_resize(rest),
         "signal" => cmd_signal(rest),

@@ -17,9 +17,10 @@ report when something was tmux's shared focus and not waldo.
 ## Every agent
 
 1. `W wrap --detach --name t --size {SIZE} -- bash --norc --noprofile`.
-   The host then types `tm new -s arena`. The others wait until `W run -s t
-   'tm has-session -t arena && echo up'` prints `up` (retry every 5 s, at
-   most 6 times), then type `tm attach -t arena`.
+   The host then types `tm new -s arena`. The others wait until `W send -s t
+   --text 'tm has-session -t arena && echo up' --keys '<Enter>'` shows a
+   line `up` (retry every 5 s, at most 6 times), then type `tm attach -t
+   arena`.
 2. `W match add -s t --id fin '^ALL DONE'`.
 3. Roll call: type `echo {NAME} here`, then `W wait -s t --until match
    --pattern '^OTHER here' --timeout 90000` for each of the others. Quote
@@ -36,13 +37,13 @@ report when something was tmux's shared focus and not waldo.
 ## The end, which must not depend on one agent's pace
 
 - The others: `W wait -s t --until match --pattern '^ALL DONE' --timeout
-  300000`, then `W match list -s t`, detach with `--keys '<C-b>d'`, `W run
-  -s t 'echo detached'`, exit the shell with `--until exit`, `W list`, `W
+  300000`, then `W match list -s t`, detach with `--keys '<C-b>d'`, run
+  `echo detached` in the shell, exit the shell with `--until exit`, `W list`, `W
   gc --all`. Then type nothing more.
 - The host: do NOT end the session on a timer. Wait until all three
   `NAME finished` lines have appeared (`W wait --until match` for each,
   with a 5 minute timeout), then type `echo ALL DONE`, wait 30 s, detach,
-  `W run -s t 'tm kill-server; echo cleaned'`, exit, `W list`, `W gc
+  run `tm kill-server; echo cleaned` in the shell, exit, `W list`, `W gc
   --all`. If a `finished` line never comes, say so and end anyway.
 
 After the run, check the four files in the shared work directory yourself.

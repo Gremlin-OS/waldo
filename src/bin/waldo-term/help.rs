@@ -10,8 +10,9 @@ Start a program in a session. This returns at once; the program keeps running:
 It prints the session id, the control socket, and 'dest', the file that gets
 the session's messages. The last message is the will: exit status and output.
 
-Run a shell command and get its output and exit status:
-  $ waldo-term run -s demo 'echo hello; ls /'
+In a shell, run a command and learn how it ended: put a marker after it
+and wait for the marker (more in: waldo-term help shell):
+  $ waldo-term send -s demo --text 'ls /; echo \"rc=$?\"' --keys '<Enter>' --until match --pattern '^rc=[0-9]+$'
 
 Type into the program and see the screen. --text is literal; --keys takes
 key names such as <Enter>, <Esc>, <Tab>, <C-c>, <Up>:
@@ -36,15 +37,15 @@ End the session, see what is left, and clean up:
 
 Each command prints one status line, such as
   [demo settle gen=7 120x30 cursor=3,3 running fg=bash]
-then the screen (or the output, for run), then sometimes a line starting
+then the screen, then sometimes a line starting
 with 'hint:' that says what probably went wrong and what to do. The word
 'interleaved' in the status line means someone else typed into the session
 during your request, so not everything shown is your doing.
 
 Exit status: 0 ok, 124 timed out, 3 the program exited, 4 no such session,
-5 a run command failed, 2 bad usage.
+2 bad usage.
 
-More: waldo-term help keys | wait | run | messages | exit-status | commands
+More: waldo-term help keys | wait | shell | messages | exit-status | commands
 ";
 
 pub const COMMANDS: &str = "\
@@ -52,15 +53,13 @@ waldo-term commands. -s ID picks the session (an id, a unique prefix of one,
 or a socket path); with exactly one live session it can be left out.
 
   list                      sessions and their state
-  run COMMAND               run a shell command; print its output and exit status
-      [--timeout MS] [--shell sh|fish]
   send                      type input, wait, print the screen
       --text S | --keys S | --paste S           (repeatable, sent in order)
       --text-file P | --keys-file P | --paste-file P
       [--until U] [--pattern RE] [--timeout MS]
   screen                    print the screen  [--until U] [--pattern RE] [--timeout MS]
   wait                      wait, then print the screen
-      --until settle|match|change|exit|done [--pattern RE] [--timeout MS]
+      --until settle|match|change|exit [--pattern RE] [--timeout MS]
   output [--tail N]         what the program has printed so far
   resize COLSxROWS          change the terminal size, then print the screen once the
                             program has redrawn (--until none: at once)
@@ -75,7 +74,7 @@ or a socket path); with exactly one live session it can be left out.
   kill [ID]                 end the session and wait until it has ended
   signal NAME               send a signal to the program (--stop is what kill sends)
   gc [--all]                remove ended sessions (--all: regardless of age)
-  help [TOPIC]              keys, wait, run, messages, exit-status, commands
+  help [TOPIC]              keys, wait, shell, messages, exit-status, commands
 
 Any command that prints a screen takes --json for the full response, and
 --style ansi to keep colour codes in the screen text. Programs often mark the
@@ -135,7 +134,6 @@ Commands that print the screen wait first. --until says for what:
            'Password: ' can be matched: --pattern 'assword: $'
   change   the screen differs from when the command started
   exit     the program has exited
-  done     the command started by 'run' has finished
   none     (default for screen) do not wait
 
 --timeout MS sets the deadline: default 10000, at most 600000. On the
@@ -143,8 +141,7 @@ deadline the screen is still printed, the reason is 'timeout', and the exit
 status is 124. If the program exits first, the reason is 'exit' and the
 status is 3.
 
-To learn when a shell command has finished, use 'waldo-term run', or
---until match on its expected output or on the prompt.
+To learn when a shell command has finished, and how, see: waldo-term help shell
 
 examples:
   $ waldo-wrap --detach --name wait-demo -- bash
@@ -153,28 +150,37 @@ examples:
   $ waldo-term send -s wait-demo --text 'exit 0' --keys '<Enter>' --until exit
 ";
 
-pub const RUN: &str = "\
-waldo-term run COMMAND types COMMAND into a shell session, waits until it has
-finished, and prints what it printed and its exit status:
+pub const SHELL: &str = "\
+Running a command in a shell session, and knowing when it finished and how.
 
-  [demo done exit=2 4.1s gen=212 120x30 cursor=24,3 running fg=bash]
-  cc -c foo.c
-  foo.c:12: error: expected ';' before 'return'
+A screen that has gone still does not mean a command has finished: a
+compiler that is silent for a second looks the same. Put a marker after the
+command and wait for the marker:
 
-The exit status of waldo-term is 0 if COMMAND exited 0, and 5 if it did not.
+  waldo-term send -s demo --text 'make test; echo \"rc=$?\"' --keys '<Enter>' \\
+      --until match --pattern '^rc=[0-9]+$' --timeout 120000
 
-- The session's program must be a shell (sh, bash or zsh; --shell fish for
-  fish) sitting at its prompt.
-- --timeout MS: default 120000. On the deadline the command is still running;
-  pick it up later with: waldo-term wait --until done
-- One run at a time per session. To stop a running command: --keys '<C-c>'.
-- For a program that asks questions, use send and --until match instead.
+The screen that comes back shows the command's output and then the marker
+with its exit status.
+
+- Pick a marker the output will not contain. If the command prints a line
+  that matches the pattern, the wait returns early.
+- $? is the status of the last command on the line.
+- --timeout MS: the default is 10000, so give a long command more.
+- If the output is longer than the screen, 'waldo-term output --tail N'
+  prints the last N lines of everything the session has printed.
+- Each newline in --text is Enter, so one send can carry several commands.
+- fg= in the status line names the program that has the terminal: the
+  shell at its prompt, the command while one is running. A shell builtin,
+  or a shell reached through ssh, does not show there; the marker does.
+- To stop a running command: waldo-term send --keys '<C-c>'
 
 examples:
-  $ waldo-wrap --detach --name run-demo -- bash
-  $ waldo-term run -s run-demo 'cd /tmp && pwd'
-  $ waldo-term run -s run-demo --timeout 5000 'sleep 1; echo slept'
-  $ waldo-term kill run-demo
+  $ waldo-wrap --detach --name shell-demo -- bash
+  $ waldo-term send -s shell-demo --text 'cd /tmp && pwd; echo \"rc=$?\"' --keys '<Enter>' --until match --pattern '^rc=0$'
+  $ waldo-term send -s shell-demo --text 'sleep 1; ls /nonexistent; echo \"rc=$?\"' --keys '<Enter>' --until match --pattern '^rc=[1-9]' --timeout 5000
+  $ waldo-term output -s shell-demo --tail 5
+  $ waldo-term kill shell-demo
 ";
 
 pub const MESSAGES: &str = "\
@@ -221,7 +227,7 @@ examples:
   $ waldo-term output -s msg-demo
   $ waldo-wrap --detach --name match-demo --dest file:$HOME/waldo-match-demo.ndjson -- bash
   $ waldo-term match add -s match-demo --id done '^finished'
-  $ waldo-term run -s match-demo 'echo finished'
+  $ waldo-term send -s match-demo --text 'echo finished' --keys '<Enter>'
   $ waldo-term match list -s match-demo
   $ waldo-term match rm -s match-demo done
   $ waldo-term kill match-demo
@@ -236,7 +242,6 @@ waldo-term exit status:
   3    the program exited before the condition was met, or had already
        exited; its exit details are printed ('output' still exits 0)
   4    no such session, or the session died without leaving a will
-  5    'run': the command finished with a non-zero exit status
   2    bad usage, or a request the session refused (such as an unknown key)
   1    anything else
 
@@ -248,7 +253,7 @@ pub fn topic(name: &str) -> Option<&'static str> {
     Some(match name {
         "keys" | "input" => KEYS,
         "wait" => WAIT,
-        "run" => RUN,
+        "shell" | "run" => SHELL,
         "messages" | "will" => MESSAGES,
         "exit-status" | "exit" | "status" => EXIT_STATUS,
         "commands" => COMMANDS,

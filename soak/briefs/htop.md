@@ -33,17 +33,14 @@ appears, press <Esc> at once.
 
 ## Variant B: htop started from a shell
 
-1. `W wrap --detach --name sh -- bash --norc --noprofile`, `W run -s sh
-   'echo ready'`, `W run -s sh 'sleep 31337 & echo started'`.
+1. `W wrap --detach --name sh -- bash --norc --noprofile`. In the shell run
+   `echo ready`, then `sleep 31337 & echo started`.
 2. `W send -s sh --text 'htop' --keys '<Enter>'`. Copy the status line and
    any hint. From then on note every hint with its call number.
 3. One call each: filter (`--keys '<F4>' --text '31337'`, then `<Enter>`,
    then clear with `<F4><Esc>`), sort menu, tree view, help, scrolling.
-4. On purpose: `W run -s sh --timeout 3000 'echo hello'` while htop is up.
-   Copy the whole response; `W screen -s sh`; press <Esc> if a menu is open
-   (remember the safety rule).
-5. `W resize -s sh 90x25`, then 120x30: quote status lines.
-6. `W send -s sh --keys 'q'`; back at the prompt, `W run -s sh 'echo back;
-   kill %1'` must work.
-7. `W send -s sh --text 'exit' --keys '<Enter>' --until exit`, `W list`,
+4. `W resize -s sh 90x25`, then 120x30: quote status lines.
+5. `W send -s sh --keys 'q'`. Copy any hint. Back at the prompt, run `echo
+   back; kill %1` in the shell.
+6. `W send -s sh --text 'exit' --keys '<Enter>' --until exit`, `W list`,
    `W gc --all`.

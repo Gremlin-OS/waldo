@@ -15,7 +15,7 @@
 # It prints the arena directory and each agent's wrapper. The wrapper, called
 # W in the briefs, runs waldo-term (or waldo-wrap, as `W wrap ...`), logs
 # every call to AGENT/log with its time and exit status, and counts calls
-# that type (send, run), refusing them past the budget.
+# that type (send), refusing them past the budget.
 #
 # Nothing is ever deleted: every run gets a new directory.
 set -eu
@@ -63,7 +63,7 @@ bin=waldo-term
 if [ "\$1" = wrap ]; then bin=waldo-wrap; shift; fi
 n=\$(cat \$D/count 2>/dev/null || echo 0)
 typing=no
-if [ \$bin = waldo-term ] && { [ "\$1" = send ] || [ "\$1" = run ]; }; then typing=yes; fi
+if [ \$bin = waldo-term ] && [ "\$1" = send ]; then typing=yes; fi
 if [ \$typing = yes ] && [ \$n -ge \$BUDGET ]; then
   echo "budget used up: \$BUDGET typing calls made. Stop and write your report." >&2
   exit 99

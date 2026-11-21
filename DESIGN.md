@@ -71,8 +71,8 @@ connections. Timers are the epoll timeout: each turn of the loop works out
 the nearest moment at which something can happen (a deadline, a settle
 window closing, a paused key, a trigger or stream message falling due) and
 sleeps until then. A timer is set only for something that time alone can
-bring about. Waiting for a program's first output, or for a command that has
-not finished, sets none, so an idle host uses no CPU. All pty and
+bring about. Waiting for a program's first output sets none, so an idle host
+uses no CPU. All pty and
 socket I/O is non-blocking. Input for the child sits in a queue and is written
 as the pty accepts it, while the loop keeps reading output; writing input with
 a blocking call can deadlock against a child that is itself blocked writing
@@ -214,7 +214,6 @@ a wide character occupies two.
 | `GET /v1/screen` | Current screen. Accepts the wait parameters below. `?format=png` and `?format=cells` are not built (section 6.3) |
 | `POST /v1/input` | Send input, then wait, then return the screen |
 | `POST /v1/wait` | Wait without sending input |
-| `POST /v1/run` | Run a shell command and wait for it to finish (section 2.5) |
 | `GET /v1/output` | Rendered output so far, from the capped buffer: `?tail=N` lines |
 | `GET /v1/triggers` | List match triggers (section 3.2) |
 | `POST /v1/triggers` | Add one: `{"pattern": RE, "id": NAME, "mode": "edge" or "once"}`; only `pattern` is required |
@@ -334,7 +333,6 @@ curl --unix-socket "$S" -d ':q!<Enter>' 'http://waldo/v1/input?until=settle'
 | `match` | `wait.pattern` matches a rendered line (section 3.2 rules) |
 | `change` | `gen` differs from `wait.since_gen`, or from its value when the request began if that is not given |
 | `exit` | The child has exited |
-| `done` | The command started by `run` has finished (section 2.5) |
 | `none` | Immediately |
 
 With input, `match` ignores text that was already on screen when the request
@@ -369,7 +367,7 @@ On the deadline the response is still 200 with the current screen and
 }
 ```
 
-- `reason`: `settle`, `match`, `change`, `exit`, `done`, `none`, or `timeout`.
+- `reason`: `settle`, `match`, `change`, `exit`, `none`, or `timeout`.
 - `gen` increases whenever the rendered screen changes (text, style or
   cursor). Clients use it with `until: change` and to notice that nothing
   happened. It is a count of changes to a hash of the visible cells, cursor,
@@ -379,8 +377,7 @@ On the deadline the response is still 200 with the current screen and
 - `interleaved` is true if another client's input reached the pty during this
   request. The text format shows it as the word `interleaved` in the status
   line. Each request's input is typed whole, so it never means mixed-up
-  lines; it means the screen, and a `run`'s output, may hold more than the
-  request caused, such as the echo of what the other client typed.
+  lines; it means the screen may hold more than the request caused, such as the echo of what the other client typed.
 - `?style=ansi` (or `"style": "ansi"` in a request body) returns `text` with
   SGR colour and attribute escape sequences left in, and no other escapes.
   Plain text cannot show which button or menu entry is selected; installers
@@ -410,7 +407,6 @@ The `error` values are snake_case and stable; `text` is for people.
 ```
 waldo-term list
 waldo-term help   [TOPIC]
-waldo-term run    [-s ID] [--timeout MS] [--shell sh|fish] COMMAND
 waldo-term send   [-s ID] [--text S | --keys S | --paste S]... [--until U] [--timeout MS]
 waldo-term screen [-s ID] [--until U] [--json]
 waldo-term wait   [-s ID] --until match --pattern RE | --until exit | ...
@@ -439,9 +435,9 @@ waldo-term gc [--all]
   secrets out of `argv`.
 - Output is the text format by default.
 - Exit status: 0 if the wait condition was met, 124 on deadline, 3 if the child
-  exited before the condition, 4 if there is no such session, 5 if a `run`
-  command finished with a non-zero status, 2 for usage errors, 1 for anything
-  else. The screen is printed in the first three cases and for 5.
+  exited before the condition, 4 if there is no such session, 2 for usage
+  errors, 1 for anything else. The screen is printed in the first three
+  cases.
 - A run-to-completion command may finish before the agent's next call. If the
   session used the default destination, `waldo-term` finds the will there,
   prints the exit details and exits 3; `output` prints the will's output and
@@ -449,60 +445,40 @@ waldo-term gc [--all]
   session directory is gone, the agent gets status 4, and the will is wherever
   it pointed `--dest`.
 
-### 2.5 Run: a shell command, start to finish
+### 2.5 Shell commands
 
-Settle cannot tell a finished command from a quiet one. `run` can. It is for a
-session whose program is a shell sitting at its prompt.
+Settle cannot tell a finished command from a quiet one, and a screen does not
+carry an exit status. Waldo has no special command for this. The caller puts
+a marker after the command and waits for the marker:
 
 ```
-$ waldo-term run -s sh 'make test'
-[sh done exit=2 4.1s gen=212 120x30 cursor=24,3 running]
-cc -c foo.c
-foo.c:12: error: expected ';' before 'return'
-make: *** [Makefile:8: foo.o] Error 1
+waldo-term send -s sh --text 'make test; echo "rc=$?"' --keys '<Enter>' \
+    --until match --pattern '^rc=[0-9]+$' --timeout 120000
 ```
 
-- `POST /v1/run` with `{"command": "make test", "timeout_ms": 120000}`. The
-  default deadline is 120 s, longer than for other requests.
-- The host types the command followed by a sentinel: a `printf` of a private
-  OSC escape sequence carrying `$?` and a one-time nonce. The sequence draws
-  nothing; the emulator hands it to the host, which then knows the command
-  finished and with what status. What is typed is `{ COMMAND`, then on a new
-  line `}; printf` of the mark: the group stops a command that ends in `&`
-  or a comment from swallowing the mark.
-- If the shell reports the end of each command itself, with OSC 133 marks
-  that carry the exit status, the host uses those and types the command
-  alone. It does so once it has seen such a mark in the session, and only
-  for a one-line command, because each line of several ends with a mark of
-  its own. The output then starts where the shell's output-start mark was.
-- Once the end is known, `run` waits for the screen to settle, so the
-  response shows the new prompt.
-- The response has `"reason": "done"`, `command_exit_code`, the command's
-  `output` (the rendered lines between the command and its end, capped head
-  and tail like the will's), and the screen. The echoed sentinel is removed
-  from `output`; it remains visible on the screen line where it was typed.
-- On the deadline the command is still running. The response says `timeout`
-  with the output so far, and `waldo-term wait --until done` picks it up
-  again.
-- An interrupt ends the command. A shell that is interrupted drops the rest
-  of the line it was given, and the end mark with it. So once an interrupt
-  has been sent (Ctrl-C through `send`, or `signal SIGINT`), the command
-  counts as ended when the screen has settled with the shell in the
-  foreground again, with exit code 130. A command that ignores the
-  interrupt keeps the foreground and ends in the usual way.
-- One `run` at a time per session; a second gets 409 `run_in_progress`.
-  A run that has ended but is still waiting for the screen to settle is
-  answered at once when the next `run` arrives, so each caller gets its
-  own result.
-- The line is sent as a paste when the shell has enabled bracketed paste, so
-  tabs and newlines in the command are taken literally.
-- It assumes `;` and `$?`, which holds for sh, bash and zsh. `--shell fish`
-  uses `$status`. If the foreground program is not a shell at its prompt the
-  result is whatever typing that line into it does. `run` cannot check that
-  for certain. It notes the foreground program when it types. A shell
-  either finishes the command or puts something else in the foreground, so
-  if the same program is still there at the deadline, and its name is not a
-  known shell's, the timeout carries a hint saying so.
+- The screen in the response shows the command's output and then the marker
+  with its exit status. Output longer than the screen is in `GET /v1/output`.
+- The marker should be something the output will not contain, or the wait
+  returns early.
+- `foreground` in every response (`fg=` in the text format) names the
+  program that owns the terminal: the shell at its prompt, the command while
+  one is running. A shell builtin, or a shell reached through ssh, does not
+  show there; the marker does.
+- `waldo-term help shell` teaches this.
+
+There was a `run` command that did this itself. It typed the command inside
+a wrapper that printed an invisible mark, or used the shell's own OSC 133
+marks when it had seen them, and returned the output and the exit status. It
+was removed on 2026-11-21:
+
+- Agents given the same nine shell tasks without it got them all right, in
+  as many calls and tokens as agents that had it, and two of them worked out
+  the marker by themselves.
+- It was the only command that typed something the caller did not write.
+  Most of the open problems, and the two worst bugs found by the soak runs,
+  came from that: a wrapper typed into a program that was not a shell, text
+  left on the input line, an interrupt that lost the mark, and one run at a
+  time per session.
 
 ### 2.6 Help and guidance
 
@@ -513,7 +489,7 @@ These are requirements, not polish.
   a command, send keys, wait for a pattern, read the will. Every example is a
   complete command that works as written.
 - `waldo-term help TOPIC` covers `keys` (the notation and every key name),
-  `wait`, `run`, `messages` and `exit-status`. `waldo-wrap --help` and each
+  `wait`, `shell`, `messages` and `exit-status`. `waldo-wrap --help` and each
   subcommand's `--help` end with two or three examples.
 - Every error's `text` says what to do next, as the `unknown_key` message
   does.
@@ -522,7 +498,7 @@ These are requirements, not polish.
   - A settle that returns while the shell has a foreground job that this
     request's input started (the terminal's foreground process group is
     not the child's own, and not what it was before the input was sent):
-    `hint: 'make' is still running; settle only means the screen went quiet. Use --until match, or waldo-term run.`
+    `hint: 'make' is still running; settle only means the screen went quiet. To wait for it to end, see 'waldo-term help shell'.`
     Later requests to the same program carry no hint: by then it is the
     thing being driven.
   - The mirror case: the program the input was sent to has left the
@@ -534,9 +510,6 @@ These are requirements, not polish.
     a request that sends input, and to use `wait --until match` instead.
   - A wait for `exit` that times out: the hint names the foreground program
     and says that `exit` means the session's own program.
-  - A `run` that times out after typing into something that is not a shell.
-    That run is also given up, so the next `run` is not refused:
-    `hint: run typed the command while 'vim' was in the foreground, and it still is; that does not look like a shell, and run needs a shell prompt. This run has been given up. ...`
   - A timeout while the screen was still changing:
     `hint: the screen never went quiet; wait for specific text with --until match.`
   - Unparsed text that looks like key notation sent as `text`:
@@ -1003,7 +976,6 @@ attached, and images, which are shown as nothing.
 | Destination fails later | Queue fills, messages coalesce or drop with `dropped` counts; the pty is unaffected |
 | Destination unreachable at exit | Retry 5 s, then write `will.json` in the session directory and keep the directory |
 | Agent calls `waldo-term` after the session ended | Default destination: the will is read from it, status 3. Explicit `--dest`: status 4, and the will is at that destination |
-| `run` used when the foreground program is not a shell | The command line is typed into whatever is there. The sentinel never arrives and the request times out, with a hint that names the program |
 | A request arrives during `--linger` | Status, screen, output and triggers are answered with reason `exit`; anything else gets 409 `exited` |
 | The `--record` file cannot be written | At startup: the session does not start. Later: the recording stops, the session continues, the log says so |
 | Child exits with output unread | Pty drained before the will is composed (section 1.5) |
@@ -1146,5 +1118,4 @@ destination, an exit message with rendered full output, and regex triggers on
 rendered lines including scrolled-off ones. Their settle heuristics are all a
 fixed quiet window (250 ms in tui-test) or a text wait; none uses mode 2026 as
 a frame boundary. zmx and tmux both use a sentinel appended to the command to
-detect completion; `waldo-term run` (section 2.5) does the same with a sentinel
-that draws nothing.
+detect completion; waldo leaves that to the caller (section 2.5).

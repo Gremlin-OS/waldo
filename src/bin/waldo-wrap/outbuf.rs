@@ -99,6 +99,7 @@ impl OutBuf {
 }
 
 /// Cap a list of lines the same way the buffer does.
+#[cfg(test)]
 pub fn cap_lines(lines: Vec<String>, cap: usize) -> Value {
     let mut b = OutBuf::new(cap);
     for l in lines {

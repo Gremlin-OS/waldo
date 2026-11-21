@@ -10,13 +10,12 @@ It is two Linux programs:
   emulator, and serves a control API on a unix socket. One process per
   wrapped program; there is no daemon.
 - `waldo-term` is the client: it sends keys, prints screens, waits for
-  conditions, runs shell commands, and attaches a person to a session.
+  conditions, and attaches a person to a session.
 
 ## A first session
 
 ```sh
 waldo-wrap --detach --name demo -- bash        # start; returns at once
-waldo-term run -s demo 'echo hello; ls /'      # a shell command: output and exit status
 waldo-term send -s demo --text 'vim notes.txt' --keys '<Enter>'
 waldo-term send -s demo --keys 'i' --text 'some text' --keys '<Esc>:wq<Enter>'
 waldo-term screen -s demo                      # look without typing
@@ -43,8 +42,9 @@ commands` lists every option, and `waldo-wrap --help` covers the host.
   encoded the way the program's current terminal modes call for.
 - **Waiting** is part of every request: until the screen goes still, until a
   line matches a pattern, until the screen changes, until the program exits.
-- **`run`** types a shell command and returns its output and exit status,
-  which a quiet screen alone cannot tell you.
+- **Shell commands** need no special support: put a marker after the
+  command and wait for it (`waldo-term help shell`). A quiet screen alone
+  cannot tell you that a command has finished, or how.
 - **Messages** go to a destination: a file, a unix socket, or an HTTP
   endpoint. The last one is the will, with how the program ended and
   everything it printed. On request there are also messages for pattern

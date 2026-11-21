@@ -5,10 +5,10 @@
 //! timeout. Nothing here blocks on the pty or on a client.
 
 use crate::dest::{Delivery, Dest, Kind};
-use crate::emu::{Emu, Mark, Row, Space, Tracked, MOD_CTRL};
+use crate::emu::{Emu, Row, Space, Tracked};
 use crate::http::{self, Parsed, Request};
 use crate::keys::{self, Tok};
-use crate::outbuf::{cap_lines, OutBuf};
+use crate::outbuf::OutBuf;
 use crate::record::Recorder;
 use crate::sys::{self, Child, Epoll, ExitStatus};
 use regex_lite::Regex;
@@ -37,7 +37,6 @@ const T_FIRST_CONN: u64 = 100;
 const CHUNK: usize = 4096;
 const READ_BATCH: usize = 64 << 10;
 const DEFAULT_TIMEOUT_MS: u64 = 10_000;
-const RUN_TIMEOUT_MS: u64 = 120_000;
 const MAX_TIMEOUT_MS: u64 = 600_000;
 const PROMPT_QUIET_MS: u64 = 40;
 const ESC_PAUSE: Duration = Duration::from_millis(30);
@@ -72,8 +71,6 @@ const MATCH_CHARS: usize = 4096;
 const STREAM_EVERY: Duration = Duration::from_millis(250);
 /// Lines waiting for the next stream message; beyond this the oldest are skipped.
 const STREAM_BUF_BYTES: usize = 512 << 10;
-/// The private OSC number `run` uses for its end-of-command mark.
-const SENTINEL_PREFIX: &str = "7770;waldo;";
 
 pub const MIN_COLS: u16 = 2;
 pub const MAX_COLS: u16 = 500;
@@ -107,9 +104,6 @@ enum QKind {
     Bytes(Vec<u8>),
     Key { key: i32, mods: u16, text: Option<char>, is_esc: bool },
     Paste(Vec<u8>),
-    /// A command line from `run`: a paste if the shell takes bracketed
-    /// pastes when the line reaches the front, typed otherwise.
-    Line(String),
     /// A signal for the program. Not input, but it takes its turn in the
     /// queue so that it never lands in the middle of a request's input.
     Signal(i32),
@@ -151,7 +145,6 @@ enum Until {
     Change(u64),
     Exit,
     None,
-    Done,
 }
 
 struct MatchInfo {
@@ -169,7 +162,6 @@ enum Reason {
     Exit,
     None,
     Timeout,
-    Done,
 }
 
 impl Reason {
@@ -181,7 +173,6 @@ impl Reason {
             Reason::Exit => "exit",
             Reason::None => "none",
             Reason::Timeout => "timeout",
-            Reason::Done => "done",
         }
     }
 }
@@ -223,35 +214,6 @@ struct Trigger {
     /// Matches already reported: the line's absolute row and the matched
     /// text. One is forgotten when it is absent at a settle point.
     known: Vec<(u64, String)>,
-}
-
-struct RunResult {
-    code: i64,
-    output: Value,
-    ms: u64,
-}
-
-struct Run {
-    nonce: String,
-    /// The end of the typed line, as the shell echoes it.
-    echo_tail: String,
-    tracked: Option<Tracked>,
-    started: Instant,
-    finished: Option<RunResult>,
-    /// The end is found from the shell's own OSC 133 marks; no sentinel
-    /// was typed.
-    by_marks: bool,
-    /// With `by_marks`: the shell has said the command started.
-    output_started: bool,
-    /// The foreground process group when the command was typed, and its
-    /// name, if the name is not a shell's.
-    not_shell: Option<(libc::pid_t, String)>,
-    /// The foreground process group when the command was typed: the
-    /// shell's, if it was typed at a prompt.
-    typed_at: Option<libc::pid_t>,
-    /// An interrupt was sent while the command was going. A shell that is
-    /// interrupted drops the rest of the line, end mark included.
-    interrupted: bool,
 }
 
 struct Conn {
@@ -336,10 +298,6 @@ pub struct Host {
     conns: HashMap<u64, Conn>,
     next_conn: u64,
     waits: Vec<Wait>,
-    run: Option<Run>,
-    /// The shell has reported a command's end and exit status with OSC 133,
-    /// so `run` can rely on that instead of typing a sentinel.
-    shell_marks: bool,
     record: Option<Recorder>,
     /// The program has exited and the will is delivered; only read-only
     /// requests are answered (`--linger`).
@@ -434,8 +392,6 @@ impl Host {
             conns: HashMap::new(),
             next_conn: T_FIRST_CONN,
             waits: Vec::new(),
-            run: None,
-            shell_marks: false,
             record,
             lingering: false,
             linger_stop: false,
@@ -482,7 +438,6 @@ impl Host {
             // Triggers first, so a match is on its way to the destination
             // before a request that saw the same screen is answered.
             self.evaluate_triggers(false);
-            self.end_interrupted_run();
             self.evaluate_waits();
             self.service_attach();
             if self.ready_to_finish() {
@@ -501,21 +456,12 @@ impl Host {
             }
         };
         // A timer is set only for something that can then happen, or the
-        // loop would spin: waiting for the first output, or for a command
-        // that has not finished, has no time to wait for.
+        // loop would spin: waiting for the first output has no time to
+        // wait for.
         let settle_timer = self.settle_timer(now);
-        let run_finished = matches!(&self.run, Some(r) if r.finished.is_some());
-        // An interrupted run ends at the next settle, if the shell is back
-        // by then. Only a settle still to come is worth a timer.
-        let run_interrupted = matches!(&self.run, Some(r) if r.interrupted) && settle_timer.map(|t| t > now).unwrap_or(false);
         for w in &self.waits {
             consider(w.deadline);
-            let on_settle = match w.until {
-                Until::Settle => true,
-                Until::Done => run_finished || run_interrupted,
-                _ => false,
-            };
-            if let Some(t) = settle_timer.filter(|_| on_settle) {
+            if let Some(t) = settle_timer.filter(|_| w.until == Until::Settle) {
                 consider(t);
             }
         }
@@ -602,17 +548,7 @@ impl Host {
     }
 
     fn process_chunk(&mut self, data: &[u8]) {
-        let mut off = 0;
-        while off < data.len() {
-            let (n, stopped) = self.emu.feed_until_osc_end(&data[off..]);
-            off += n.max(1);
-            if stopped {
-                self.handle_unknown_osc();
-                self.handle_marks();
-            }
-        }
-        self.handle_unknown_osc();
-        self.handle_marks();
+        self.emu.feed(data);
         let replies = self.emu.take_replies();
         if self.exit_status.is_none() {
             self.replies.extend_from_slice(&replies);
@@ -628,76 +564,6 @@ impl Host {
             self.prompt_seen = true;
         }
         self.collect();
-    }
-
-    fn handle_unknown_osc(&mut self) {
-        for osc in self.emu.take_unknown_osc() {
-            let Ok(s) = std::str::from_utf8(&osc) else { continue };
-            let Some(rest) = s.strip_prefix(SENTINEL_PREFIX) else { continue };
-            let Some((code, nonce)) = rest.split_once(';') else { continue };
-            let is_current = matches!(&self.run, Some(r) if r.finished.is_none() && r.nonce == nonce);
-            if !is_current {
-                continue;
-            }
-            let output = self.run_output();
-            if let Some(run) = self.run.as_mut() {
-                run.finished = Some(RunResult {
-                    code: code.trim().parse().unwrap_or(-1),
-                    output,
-                    ms: ms_since(run.started),
-                });
-                run.tracked = None;
-            }
-        }
-    }
-
-    /// A `run` whose command was interrupted ends when the screen has
-    /// settled with the shell in the foreground again. Its end mark is not
-    /// coming: an interrupted shell drops the rest of the line it was given.
-    fn end_interrupted_run(&mut self) {
-        let Some(run) = self.run.as_ref().filter(|r| r.interrupted && r.finished.is_none()) else { return };
-        if run.typed_at.is_none() || sys::foreground_pgrp(self.master) != run.typed_at || !self.settled(Instant::now()) {
-            return;
-        }
-        let output = self.run_output();
-        if let Some(run) = self.run.as_mut() {
-            run.finished = Some(RunResult { code: 130, output, ms: ms_since(run.started) });
-            run.tracked = None;
-        }
-    }
-
-    /// The shell's own command marks (OSC 133). They end a `run` that typed
-    /// no sentinel.
-    fn handle_marks(&mut self) {
-        for mark in self.emu.take_marks() {
-            let waiting = matches!(&self.run, Some(r) if r.by_marks && r.finished.is_none());
-            let started = self.run.as_ref().map(|r| r.output_started).unwrap_or(false);
-            match mark {
-                Mark::OutputStart => {
-                    if waiting && !started {
-                        // The output begins where the cursor is now.
-                        let (_, cy) = self.emu.cursor();
-                        let tracked = if self.emu.alt_screen() { None } else { self.emu.track(Space::Active, cy as u32) };
-                        if let Some(run) = self.run.as_mut() {
-                            run.output_started = true;
-                            run.tracked = tracked;
-                        }
-                    }
-                }
-                Mark::CommandEnd(code) => {
-                    if code.is_some() {
-                        self.shell_marks = true;
-                    }
-                    if waiting && started {
-                        let output = self.run_output();
-                        if let Some(run) = self.run.as_mut() {
-                            run.finished = Some(RunResult { code: code.map(i64::from).unwrap_or(-1), output, ms: ms_since(run.started) });
-                            run.tracked = None;
-                        }
-                    }
-                }
-            }
-        }
     }
 
     /// Write to the recording, if there is one. A recording that cannot be
@@ -857,54 +723,6 @@ impl Host {
         lines
     }
 
-    /// What the command started by `run` has printed so far.
-    fn run_output(&self) -> Value {
-        let Some(run) = self.run.as_ref() else { return Value::Null };
-        if self.emu.alt_screen() {
-            return cap_lines(Vec::new(), self.cfg.output_cap);
-        }
-        let sb = self.emu.scrollback_rows() as u32;
-        let (_, cy) = self.emu.cursor();
-        let end = sb + cy as u32;
-        let (start, lost) = match run.tracked.as_ref().and_then(|t| self.emu.tracked_row(t)) {
-            Some(y) => (y, false),
-            None => (0, true),
-        };
-        let mut lines: Vec<String> = Vec::new();
-        let mut acc = String::new();
-        let mut y = start;
-        while y <= end {
-            let Some(row) = self.emu.row(Space::Screen, y, None) else { break };
-            acc.push_str(&row.text);
-            if !row.wrap || y == end {
-                lines.push(trimmed(&std::mem::take(&mut acc)).to_string());
-            }
-            y += 1;
-        }
-        // The first lines are the echo of what was typed, ending with the
-        // line that carries the mark's arguments as typed. The terminal may
-        // echo the line once itself and the shell again when it redraws, so
-        // take the last such line.
-        // With the shell's own marks the lines start at the output itself.
-        if !run.by_marks {
-            let head = lines.len().min(200);
-            let echo_end = lines[..head]
-                .iter()
-                .rposition(|l| l.contains(&run.echo_tail))
-                .or_else(|| lines[..head].iter().position(|l| l.contains(&run.nonce)));
-            if let Some(i) = echo_end {
-                lines.drain(..=i);
-            }
-        }
-        while lines.last().map(|l| l.is_empty()).unwrap_or(false) {
-            lines.pop();
-        }
-        if lost {
-            lines.insert(0, "[... output lost ...]".into());
-        }
-        cap_lines(lines, self.cfg.output_cap)
-    }
-
     // ---- input -----------------------------------------------------------
 
     fn pump_input(&mut self) {
@@ -955,7 +773,6 @@ impl Host {
             }
             let absorbed = self.input_absorbed();
             let Some(front) = self.queue.front_mut() else { break };
-            let mut interrupt = false;
             if !self.typed {
                 let ready = self.drawn && self.last_change.elapsed() >= Duration::from_millis(self.cfg.quiet_ms);
                 if !ready && Instant::now() < self.start + FIRST_DRAW_MAX {
@@ -981,17 +798,10 @@ impl Host {
                         bytes = keys::legacy(mods, text);
                     }
                     front.pause_after = is_esc && self.emu.kitty_keyboard_flags() == 0;
-                    if mods & MOD_CTRL != 0 && text == Some('c') {
-                        interrupt = true;
-                    }
                     front.kind = QKind::Bytes(bytes);
                 }
                 QKind::Paste(data) => {
                     let bytes = self.emu.encode_paste(data);
-                    front.kind = QKind::Bytes(bytes);
-                }
-                QKind::Line(line) => {
-                    let bytes = if self.emu.dec_mode(2004) { self.emu.encode_paste(line.as_bytes()) } else { text_bytes(line) };
                     front.kind = QKind::Bytes(bytes);
                 }
                 QKind::Signal(_) | QKind::Resize { .. } => unreachable!(),
@@ -1000,11 +810,6 @@ impl Host {
             if front.off < bytes.len() {
                 match sys::write(self.master, &bytes[front.off..]) {
                     Ok(Some(n)) => {
-                        if interrupt || bytes[front.off..front.off + n].contains(&3) {
-                            if let Some(run) = self.run.as_mut() {
-                                run.interrupted = true;
-                            }
-                        }
                         front.off += n;
                         let owner = front.owner;
                         self.last_input = Instant::now();
@@ -1077,14 +882,7 @@ impl Host {
     /// Carry out a queued signal or resize.
     fn apply_action(&mut self, item: QItem) {
         match item.kind {
-            QKind::Signal(sig) => {
-                self.signal_child(sig);
-                if sig == libc::SIGINT {
-                    if let Some(run) = self.run.as_mut() {
-                        run.interrupted = true;
-                    }
-                }
-            }
+            QKind::Signal(sig) => self.signal_child(sig),
             QKind::Resize { cols, rows, why } => {
                 let before = (self.emu.cols(), self.emu.rows());
                 if why == Resize::Explicit || before != (cols, rows) {
@@ -1452,7 +1250,6 @@ impl Host {
         let now = Instant::now();
         let settled = self.settled(now);
         let lines = if self.waits.iter().any(|w| w.until == Until::Match) { self.visible_lines() } else { Vec::new() };
-        let run_finished = matches!(&self.run, Some(r) if r.finished.is_some());
         let mut waits = std::mem::take(&mut self.waits);
         let mut keep = Vec::with_capacity(waits.len());
         for mut w in waits.drain(..) {
@@ -1461,7 +1258,6 @@ impl Host {
                 Until::None if !self.action_pending(w.req_id) => Some(Reason::None),
                 Until::Settle if settled => Some(Reason::Settle),
                 Until::Change(g) if self.gen != g => Some(Reason::Change),
-                Until::Done if run_finished && settled => Some(Reason::Done),
                 Until::Match => self.check_match(&mut w, &lines).map(Reason::Match),
                 _ => None,
             };
@@ -1514,19 +1310,6 @@ impl Host {
         resp.insert("child".into(), self.child_json());
         resp.insert("screen".into(), self.screen_json(w.ansi));
 
-        // A `run` that ran out of time after being typed into something
-        // that is not a shell: the program in front then is still in front
-        // now. Its end mark will never come, so it is given up below.
-        let typed_into = match (&reason, w.until) {
-            (Reason::Timeout, Until::Done) => self
-                .run
-                .as_ref()
-                .filter(|r| r.finished.is_none())
-                .and_then(|r| r.not_shell.clone())
-                .filter(|(pg, _)| sys::foreground_pgrp(self.master) == Some(*pg))
-                .map(|(_, name)| name),
-            _ => None,
-        };
         let mut hint = w.hint.clone();
         match &reason {
             Reason::Match(m) => {
@@ -1558,7 +1341,7 @@ impl Host {
                     if let Some(pg) = fg.filter(|pg| *pg != self.child.pid && Some(*pg) != w.fg_before) {
                         let name = sys::process_name(pg).unwrap_or_else(|| "a command".into());
                         hint = Some(format!(
-                            "'{name}' is still running; settle only means the screen went quiet. Use --until match, or waldo-term run."
+                            "'{name}' is still running; settle only means the screen went quiet. To wait for it to end, see 'waldo-term help shell'."
                         ));
                     } else if let Some(was) = w.fg_name_before.as_ref().filter(|_| fg == Some(self.child.pid)) {
                         // The mirror case: the program the input was meant
@@ -1576,17 +1359,6 @@ impl Host {
                     Until::Settle if self.last_change.elapsed() < Duration::from_secs(2) => {
                         Some("the screen never went quiet; wait for specific text with --until match.".into())
                     }
-                    // A shell would have started the command or finished it.
-                    // The same program still in front, under a name that is
-                    // not a shell's, was most likely typed into.
-                    Until::Done => match typed_into.as_ref() {
-                        Some(name) => Some(format!(
-                            "run typed the command while '{name}' was in the foreground, and it still is; that does not look like a shell, and run needs a shell prompt. This run has been given up. See what the typing did with 'waldo-term screen'."
-                        )),
-                        None => Some(
-                            "the command is still running; wait for it with 'waldo-term wait --until done', or interrupt it with 'waldo-term send --keys <C-c>'.".into(),
-                        ),
-                    },
                     Until::Match if !w.known.is_empty() => Some(
                         "the pattern matches text that was on screen before the input was sent, and nothing new matched it; a request that sends input waits for a new match. To accept text that is already there, use 'waldo-term wait --until match'.".into(),
                     ),
@@ -1602,23 +1374,6 @@ impl Host {
                 };
             }
             _ => {}
-        }
-        if w.until == Until::Done {
-            match (&reason, self.run.as_ref().and_then(|r| r.finished.as_ref())) {
-                (Reason::Done, Some(fin)) => {
-                    resp.insert("command_exit_code".into(), fin.code.into());
-                    resp.insert("command_ms".into(), fin.ms.into());
-                    resp.insert("output".into(), fin.output.clone());
-                }
-                _ => {
-                    let ms = self.run.as_ref().map(|r| ms_since(r.started)).unwrap_or(0);
-                    resp.insert("command_ms".into(), ms.into());
-                    resp.insert("output".into(), self.run_output());
-                }
-            }
-        }
-        if typed_into.is_some() {
-            self.run = None;
         }
         if let Some(h) = hint {
             resp.insert("hint".into(), h.into());
@@ -1994,7 +1749,6 @@ impl Host {
             ("GET", "/v1/screen"),
             ("POST", "/v1/input"),
             ("POST", "/v1/wait"),
-            ("POST", "/v1/run"),
             ("GET", "/v1/output"),
             ("POST", "/v1/resize"),
             ("POST", "/v1/signal"),
@@ -2026,7 +1780,6 @@ impl Host {
             ("GET", "/v1/screen") => self.handle_wait(id, &req, Until::None, None, None),
             ("POST", "/v1/wait") => self.handle_wait(id, &req, Until::Settle, None, None),
             ("POST", "/v1/input") => self.handle_input(id, &req),
-            ("POST", "/v1/run") => self.handle_run(id, &req),
             ("GET", "/v1/output") => self.handle_output(id, &req),
             ("POST", "/v1/resize") => self.handle_resize(id, &req),
             ("POST", "/v1/signal") => self.handle_signal(id, &req),
@@ -2084,7 +1837,6 @@ impl Host {
             "rows": self.emu.rows(),
             "gen": self.gen,
             "child": self.child_json(),
-            "run_in_progress": matches!(&self.run, Some(r) if r.finished.is_none()),
             "messages": {
                 "settle": self.cfg.on_settle,
                 "stream": self.cfg.on_stream,
@@ -2121,7 +1873,6 @@ impl Host {
             Some("match") => Until::Match,
             Some("exit") => Until::Exit,
             Some("none") => Until::None,
-            Some("done") => Until::Done,
             Some("change") => match field("since_gen").as_ref().and_then(as_u64) {
                 Some(g) => Until::Change(g),
                 None => Until::Change(self.gen),
@@ -2132,7 +1883,7 @@ impl Host {
                     req,
                     400,
                     "unknown_until",
-                    &format!("unknown wait condition '{other}'; use settle, match, change, exit, none or done"),
+                    &format!("unknown wait condition '{other}'; use settle, match, change, exit or none"),
                 );
             }
         };
@@ -2143,7 +1894,7 @@ impl Host {
                 return self.error(id, req, 400, "unknown_style", &format!("unknown style '{other}'; use plain or ansi"));
             }
         };
-        let default_timeout = if until == Until::Done { RUN_TIMEOUT_MS } else { DEFAULT_TIMEOUT_MS };
+        let default_timeout = DEFAULT_TIMEOUT_MS;
         let timeout_ms = match field("timeout_ms").or_else(|| field("timeout")) {
             None => default_timeout,
             Some(v) => match as_u64(&v) {
@@ -2166,15 +1917,6 @@ impl Host {
                 Ok(re) => pattern = Some((re, p)),
                 Err(e) => return self.error(id, req, 400, "bad_pattern", &format!("the pattern is not a valid regular expression: {e}")),
             }
-        }
-        if until == Until::Done && self.run.is_none() {
-            return self.error(
-                id,
-                req,
-                400,
-                "no_run",
-                "until=done waits for a command started with run, and none has been started; use 'waldo-term run COMMAND'",
-            );
         }
 
         let now = Instant::now();
@@ -2307,78 +2049,6 @@ impl Host {
         }
     }
 
-    fn handle_run(&mut self, id: u64, req: &Request) {
-        let Some(body) = self.body_json(id, req) else { return };
-        let Some(command) = body.get("command").and_then(|c| c.as_str()).filter(|c| !c.trim().is_empty()) else {
-            return self.error(id, req, 400, "missing_command", "the body needs a \"command\", such as {\"command\": \"make test\"}");
-        };
-        self.end_interrupted_run();
-        if matches!(&self.run, Some(r) if r.finished.is_none()) {
-            return self.error(
-                id,
-                req,
-                409,
-                "run_in_progress",
-                "a command started by run is still going; wait for it with 'waldo-term wait --until done', or interrupt it with 'waldo-term send --keys <C-c>'",
-            );
-        }
-        // The run before this one may have ended with its answer still
-        // waiting for the screen to settle. Whoever waits for it is answered
-        // now, with its own result, before this run takes its place.
-        for w in std::mem::take(&mut self.waits) {
-            if w.until == Until::Done {
-                self.respond_wait(w, Reason::Done);
-            } else {
-                self.waits.push(w);
-            }
-        }
-        let shell = body.get("shell").and_then(|s| s.as_str()).unwrap_or("sh");
-        let nonce = util::random_id(10);
-        // The command is wrapped in a group so that a trailing `&` or comment
-        // cannot swallow the mark that follows it. The mark is a private OSC
-        // sequence, which draws nothing; the emulator hands it to the host.
-        let (open, close, status) = match shell {
-            "sh" | "bash" | "zsh" => ("{ ", "}", "\"$?\""),
-            "fish" => ("begin; ", "end", "$status"),
-            other => {
-                return self.error(id, req, 400, "unknown_shell", &format!("unknown shell '{other}'; use sh (also for bash and zsh) or fish"));
-            }
-        };
-        let echo_tail = format!("{status} {nonce}");
-        // A shell that reports the end of each command itself (OSC 133)
-        // needs no sentinel: the command is typed as it is. Only for one
-        // line, because each line of several ends with a mark of its own.
-        let by_marks = self.shell_marks && !command.contains('\n');
-        let line = if by_marks {
-            command.to_string()
-        } else {
-            format!("{open}{command}\n{close}; printf '\\033]{SENTINEL_PREFIX}%s;%s\\007' {echo_tail}")
-        };
-        let (_, cy) = self.emu.cursor();
-        // With marks, the output's first row is known when the shell says
-        // the command has started.
-        let tracked = if by_marks || self.emu.alt_screen() { None } else { self.emu.track(Space::Active, cy as u32) };
-        let typed_at = sys::foreground_pgrp(self.master);
-        // Remembered for the hint if the command never ends.
-        let not_shell =
-            sys::foreground_pgrp(self.master).and_then(|pg| Some((pg, sys::process_name(pg)?))).filter(|(_, name)| !is_shell(name));
-        self.run =
-            Some(Run { nonce, echo_tail, tracked, started: Instant::now(), finished: None, by_marks, output_started: false, not_shell, typed_at, interrupted: false });
-
-        let req_id = self.next_req;
-        self.next_req += 1;
-        // As a paste where the shell supports it, so tabs and newlines in the
-        // command are taken literally; otherwise typed.
-        self.queue.push_back(QItem { owner: req_id, kind: QKind::Line(line), off: 0, pause_after: false, pause_before: false });
-        self.queue.push_back(QItem { owner: req_id, kind: QKind::Bytes(b"\r".to_vec()), off: 0, pause_after: false, pause_before: false });
-
-        let mut wait_body = json!({"wait": {"until": "done"}});
-        if let Some(t) = body.get("timeout_ms") {
-            wait_body["timeout_ms"] = t.clone();
-        }
-        self.handle_wait(id, req, Until::Done, Some(wait_body), Some((req_id, None)));
-    }
-
     fn handle_output(&mut self, id: u64, req: &Request) {
         let tail = match req.query_get("tail") {
             None => None,
@@ -2456,14 +2126,6 @@ impl Host {
 
 fn owner_has_input(queue: &VecDeque<QItem>, owner: u64) -> bool {
     queue.iter().any(|q| q.owner == owner)
-}
-
-/// Whether a process name is a shell's, as far as `run` can tell.
-fn is_shell(name: &str) -> bool {
-    // Nix wraps some programs as `.NAME-wrapped`.
-    let name = name.strip_prefix('.').and_then(|n| n.strip_suffix("-wrapped")).unwrap_or(name);
-    ["sh", "bash", "zsh", "fish", "dash", "ksh", "mksh", "ash", "busybox", "csh", "tcsh", "nu", "xonsh", "elvish", "pwsh"]
-        .contains(&name.trim_start_matches('-'))
 }
 
 /// Literal text as a keyboard would send it: Enter is a carriage return.

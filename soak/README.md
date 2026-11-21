@@ -7,8 +7,7 @@ There are two kinds.
 
 ## 1. The scripted hammer
 
-Four clients on one session, 50 sends and 25 runs each. Every line must be
-typed whole and every run must get its own answer.
+Four clients on one session, 50 sends each. Every line must be typed whole.
 
 ```sh
 nix develop -c cargo test --test integration -- --test-threads=1 --ignored soak
@@ -61,7 +60,7 @@ not repeatable line for line, so they are run by hand.
 ### Rules that the briefs rely on
 
 - The agent uses only its wrapper, `W`. Every call is logged, and calls that
-  type (`send`, `run`) are counted and refused past the budget. The budget
+  type (`send`) are counted and refused past the budget. The budget
   is in calls, and the wrapper enforces it; a budget stated only in words
   gets overrun.
 - The wrapper prints the screen exactly as waldo gives it.
@@ -86,10 +85,10 @@ not repeatable line for line, so they are run by hand.
 Programs tried by hand and not given a brief:
 
 - `sl`: an animation that ignores Ctrl-C. `send` returns when the train
-  has gone; `run` waits for it and reports its exit status.
-- `less`: paging, search and quitting work. A `run` typed into it, on
-  purpose, started a shell and tried to write a file: `run` types whatever
-  is in the foreground, and only says so at its timeout.
+  has gone.
+- `less`: paging, search and quitting work. A shell command line typed into
+  it by mistake started a shell and tried to write a file. Look at `fg=`
+  before typing a command.
 - `fzf`: a query, a move and Enter in one call pick the right item; the
   styled screen shows the selected row.
 - `python3`: use `--paste` for a block. The REPL indents for you, so a

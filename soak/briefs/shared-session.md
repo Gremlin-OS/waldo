@@ -10,7 +10,9 @@ into it, or run `gc`.
 
 Tell both: `--json` prints the raw response, which has `"interleaved"`. In
 the text form the status line carries the word `interleaved`. It means
-someone else typed into the session during your request.
+someone else typed into the session during your request. Both of you type
+into one shell, so use markers with your own name in them (`{ME}rc=`), or
+you will match each other's.
 
 1. `W screen -s pool`. Type `echo {ME} here`; `W wait -s pool --until match
    --pattern '^{OTHER} here' --timeout 120000`.
@@ -20,16 +22,17 @@ someone else typed into the session during your request.
 3. `W output -s pool`: every line with `{ME}-` or `{OTHER}-` must be exactly
    `$ echo NAME-N-end` or `NAME-N-end`. Quote any that is mixed, cut or
    doubled.
-4. Eight runs, one call each: `W run -s pool 'echo {ME}-run-N'`. Only one
-   run can be going per session; retry a `run_in_progress` refusal once
-   after a second. For each: answered or refused, and was the output
-   exactly your own line? An answer carrying the other agent's output is a
-   serious bug: quote it in full.
-5. Five separate runs appending `{ME} 1` to `{ME} 5` to {ME}.txt, then `cat
-   {ME}.txt; wc -l {ME}.txt`.
-6. A slow run while the other keeps typing: `W run -s pool --timeout 15000
-   'sleep 4; echo {ME} slept'`. Did the other agent's typing show up in
-   your output? Did the status line say `interleaved`?
+4. Eight commands with a marker, one call each: `W send -s pool --text
+   'echo {ME}-cmd-N; echo "{ME}rcN=$?"' --keys '<Enter>' --until match
+   --pattern '^{ME}rcN=0$'`. For each: did the wait return on your own
+   marker, and was your line `{ME}-cmd-N` just above it?
+5. Five separate sends appending `{ME} 1` to `{ME} 5` to {ME}.txt, then run
+   `cat {ME}.txt; wc -l {ME}.txt` in the shell.
+6. A slow command while the other keeps typing: `sleep 4; echo {ME} slept`,
+   with a marker and `--timeout 15000`. Did the other agent's typing show up
+   on your screen before your marker? Did the status line say
+   `interleaved`? Was their typing held until your command finished, or
+   mixed into it?
 7. While the other agent is typing a long request, send `W signal -s pool
    SIGINT` once and `W resize -s pool 110x28` once. Note how long each took
    to answer, and check afterwards that no command line of either agent was
@@ -45,6 +48,6 @@ someone else typed into the session during your request.
      it prints and its exit status; then `W screen -s pool` and `W send -s
      pool --text 'echo too late' --keys '<Enter>'`, and copy those too.
 
-Agents rarely overlap their runs by chance. The scripted hammer (see the
-README) is the real test of concurrent runs; this one is for what two
-agents make of sharing.
+Agents rarely overlap by chance. The scripted hammer (see the README) is
+the real test of concurrent typing; this one is for what two agents make of
+sharing.

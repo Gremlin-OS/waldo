@@ -85,6 +85,24 @@ impl T {
         assert_eq!(r.code, 0, "bash did not show its prompt:\n{}\n{}", r.out, r.err);
     }
 
+    /// Run a shell command in a session the way `waldo-term help shell` says:
+    /// a marker after it, and a wait for the marker. Returns the command's
+    /// exit status as `code` and what it printed as `out`.
+    fn sh(&self, name: &str, cmd: &str) -> Ran {
+        let mark = format!("rc{}", COUNTER.fetch_add(1, Ordering::SeqCst));
+        let typed = format!("{cmd}; echo \"{mark}=$?\"");
+        let pattern = format!("^{mark}=[0-9]+$");
+        let r = self.term(&["send", "-s", name, "--text", &typed, "--keys", "<Enter>", "--until", "match", "--pattern", &pattern, "--timeout", "30000"]);
+        assert_eq!(r.code, 0, "the command did not finish: {cmd}\n{}\n{}", r.out, r.err);
+        let all = self.term(&["output", "-s", name]).out;
+        let lines: Vec<&str> = all.lines().collect();
+        let end = lines.iter().rposition(|l| l.starts_with(&format!("{mark}="))).unwrap_or_else(|| panic!("no marker in the output:\n{all}"));
+        let echo = format!("echo \"{mark}=$?\"");
+        let start = lines[..end].iter().rposition(|l| l.contains(&echo)).map(|i| i + 1).unwrap_or(0);
+        let code = lines[end][mark.len() + 1..].parse().unwrap();
+        Ran { code, out: lines[start..end].join("\n"), err: String::new() }
+    }
+
     fn session_dir(&self, name: &str) -> PathBuf {
         self.base.join(name)
     }
@@ -322,70 +340,6 @@ fn key_names_in_text_get_a_hint() {
 // ---- run ---------------------------------------------------------------------------
 
 #[test]
-fn run_reports_output_and_status() {
-    let t = T::new();
-    t.bash("r1");
-
-    let r = t.term(&["run", "-s", "r1", "echo one; echo two"]);
-    assert_eq!(r.code, 0, "{}\n{}", r.out, r.err);
-    assert!(status_line(&r.out).starts_with("[r1 done exit=0 "), "{}", r.out);
-    assert_eq!(r.out.lines().skip(1).collect::<Vec<_>>(), vec!["one", "two"]);
-
-    let r = t.term(&["run", "-s", "r1", "echo oops >&2; exit_with() { return 3; }; exit_with"]);
-    assert_eq!(r.code, 5, "{}\n{}", r.out, r.err);
-    assert!(status_line(&r.out).starts_with("[r1 done exit=3 "), "{}", r.out);
-    assert_eq!(r.out.lines().nth(1), Some("oops"));
-
-    // Silent for much longer than the settle window: run still waits.
-    let began = Instant::now();
-    let (code, v) = t.json(&["run", "-s", "r1", "sleep 1.2; echo late"]);
-    assert_eq!(code, 0);
-    assert!(began.elapsed() >= Duration::from_millis(1200));
-    assert_eq!(v["reason"], "done");
-    assert_eq!(v["command_exit_code"], 0);
-    assert_eq!(v["output"]["text"], "late");
-    assert!(v["command_ms"].as_u64().unwrap() >= 1200);
-
-    // A trailing comment or `&` does not swallow the end mark.
-    let r = t.term(&["run", "-s", "r1", "echo commented # not this"]);
-    assert_eq!(r.code, 0, "{}", r.out);
-    assert_eq!(r.out.lines().nth(1), Some("commented"));
-
-    // Several lines.
-    let r = t.term(&["run", "-s", "r1", "for i in 1 2 3; do\n  echo n$i\ndone"]);
-    assert_eq!(r.code, 0, "{}", r.out);
-    assert_eq!(r.out.lines().skip(1).collect::<Vec<_>>(), vec!["n1", "n2", "n3"]);
-
-    // More output than the screen holds.
-    let (code, v) = t.json(&["run", "-s", "r1", "seq 1 300"]);
-    assert_eq!(code, 0);
-    let text = v["output"]["text"].as_str().unwrap();
-    assert_eq!(text.lines().count(), 300);
-    assert!(text.starts_with("1\n2\n") && text.ends_with("299\n300"));
-    assert_eq!(v["output"]["lines_total"], 300);
-}
-
-#[test]
-fn run_timeout_then_wait_until_done() {
-    let t = T::new();
-    t.bash("r2");
-    let r = t.term(&["run", "-s", "r2", "--timeout", "300", "sleep 1.5; echo finally"]);
-    assert_eq!(r.code, 124, "{}\n{}", r.out, r.err);
-    assert!(status_line(&r.out).starts_with("[r2 timeout "), "{}", r.out);
-    assert!(r.out.contains("hint: the command is still running"), "{}", r.out);
-
-    // A second run is refused while the first is going.
-    let r = t.term(&["run", "-s", "r2", "echo no"]);
-    assert_eq!(r.code, 1);
-    assert!(r.err.contains("run_in_progress"), "{}", r.err);
-
-    let r = t.term(&["wait", "-s", "r2", "--until", "done"]);
-    assert_eq!(r.code, 0, "{}\n{}", r.out, r.err);
-    assert!(status_line(&r.out).starts_with("[r2 done exit=0 "), "{}", r.out);
-    assert_eq!(r.out.lines().nth(1), Some("finally"));
-}
-
-#[test]
 fn settle_during_a_silent_job_carries_a_hint() {
     let t = T::new();
     t.bash("h1");
@@ -393,7 +347,7 @@ fn settle_during_a_silent_job_carries_a_hint() {
     assert_eq!(r.code, 0);
     assert!(status_line(&r.out).contains("settle") && status_line(&r.out).contains("fg=sleep"), "{}", r.out);
     assert!(
-        r.out.contains("hint: 'sleep' is still running; settle only means the screen went quiet. Use --until match, or waldo-term run."),
+        r.out.contains("hint: 'sleep' is still running; settle only means the screen went quiet. To wait for it to end, see 'waldo-term help shell'."),
         "{}",
         r.out
     );
@@ -710,8 +664,8 @@ fn resize_reaches_the_program() {
     let r = t.term(&["resize", "-s", "rs", "132x40"]);
     assert_eq!(r.code, 0, "{}", r.err);
     assert!(status_line(&r.out).contains("132x40"), "{}", r.out);
-    let r = t.term(&["run", "-s", "rs", "stty size"]);
-    assert_eq!(r.out.lines().nth(1), Some("40 132"), "{}", r.out);
+    let r = t.sh("rs", "stty size");
+    assert_eq!(r.out, "40 132", "{}", r.out);
     let r = t.term(&["resize", "-s", "rs", "0x10"]);
     assert_eq!(r.code, 2);
     assert!(r.err.contains("bad_size"), "{}", r.err);
@@ -782,7 +736,7 @@ fn plain_http_as_curl_would_send_it() {
     let mut both = String::new();
     s.read_to_string(&mut both).unwrap();
     assert_eq!(both.matches("HTTP/1.1 200 OK").count(), 2, "{both}");
-    assert!(both.contains("\"run_in_progress\":false") && both.contains("\"reason\":\"none\""), "{both}");
+    assert!(both.contains("\"gen\":") && both.contains("\"reason\":\"none\""), "{both}");
 
     // Errors are a code and a sentence.
     let resp = raw_http(socket, "GET /v1/nothing HTTP/1.1\r\nHost: waldo\r\nConnection: close\r\n\r\n");
@@ -817,7 +771,7 @@ fn every_help_example_runs_as_written() {
     let bin_dir = std::path::Path::new(WRAP).parent().unwrap();
     let path = format!("{}:{}", bin_dir.display(), std::env::var("PATH").unwrap_or_default());
     let mut ran = 0;
-    for topic in ["", "keys", "wait", "run", "messages", "commands", "exit-status"] {
+    for topic in ["", "keys", "wait", "shell", "messages", "commands", "exit-status"] {
         let args: Vec<&str> = if topic.is_empty() { vec!["help"] } else { vec!["help", topic] };
         let help = t.term(&args);
         assert_eq!(help.code, 0, "help {topic}: {}", help.err);
@@ -886,7 +840,7 @@ fn settle_waits_for_the_first_output() {
 fn styled_screen_keeps_colour_codes() {
     let t = T::new();
     t.bash("sy");
-    let r = t.term(&["run", "-s", "sy", r"printf '\033[7mSELECTED\033[0m plain \033[1;32mgreen\033[0m\n'"]);
+    let r = t.sh("sy", r"printf '\033[7mSELECTED\033[0m plain \033[1;32mgreen\033[0m\n'");
     assert_eq!(r.code, 0, "{}", r.out);
     // Plain by default: no escape characters at all.
     let plain = t.term(&["screen", "-s", "sy"]);
@@ -932,7 +886,7 @@ fn attach_shows_the_session_and_is_view_only() {
     assert!(v.out.contains("waldo a  60x10") && v.out.contains("view only") && v.out.contains("Ctrl-] detach"), "{}", v.out);
 
     // What happens in the session shows up in the viewer.
-    assert_eq!(t.term(&["run", "-s", "a", "echo seen-by-viewer"]).code, 0);
+    assert_eq!(t.sh("a", "echo seen-by-viewer").code, 0);
     let v = t.term(&["wait", "-s", "v", "--until", "match", "--pattern", "^seen-by-viewer$"]);
     assert_eq!(v.code, 0, "{}", v.out);
 
@@ -965,7 +919,7 @@ fn attach_shows_colour_and_reports_agent_requests() {
     assert_eq!(r.code, 0, "{}", r.err);
     assert_eq!(t.term(&["wait", "-s", "a", "--until", "match", "--pattern", r"^\$ $"]).code, 0);
     t.attach("v", "100x20", "a", &[]);
-    assert_eq!(t.term(&["run", "-s", "a", r"printf '\033[1;31mRED\033[0m\n'"]).code, 0);
+    assert_eq!(t.sh("a", r"printf '\033[1;31mRED\033[0m\n'").code, 0);
     assert_eq!(t.term(&["wait", "-s", "v", "--until", "match", "--pattern", "^RED$"]).code, 0);
     // The viewer's terminal received the colour, not just the letters.
     let v = t.term(&["screen", "-s", "v", "--style", "ansi"]);
@@ -988,7 +942,7 @@ fn attach_to_a_larger_session_is_cropped_and_never_resizes_it() {
     assert!(status_line(&t.term(&["screen", "-s", "a"]).out).contains("120x30"));
     // The cropped view follows the cursor: fill the session's screen and the
     // newest line is still visible to the viewer.
-    assert_eq!(t.term(&["run", "-s", "a", "seq 1 40; echo bottom-line"]).code, 0);
+    assert_eq!(t.sh("a", "seq 1 40; echo bottom-line").code, 0);
     let v = t.term(&["wait", "-s", "v", "--until", "match", "--pattern", "^bottom-line$"]);
     assert_eq!(v.code, 0, "{}", v.out);
 }
@@ -1002,7 +956,7 @@ fn attach_resize_takes_the_viewers_size_and_gives_it_back() {
     t.attach("v", "100x20", "a", &["--resize"]);
     let v = t.term(&["wait", "-s", "v", "--until", "match", "--pattern", "waldo a  100x19"]);
     assert_eq!(v.code, 0, "{}", v.out);
-    assert_eq!(t.term(&["run", "-s", "a", "stty size"]).out.lines().nth(1), Some("19 100"));
+    assert_eq!(t.sh("a", "stty size").out, "19 100");
     assert_eq!(t.term(&["send", "-s", "v", "--keys", "<C-]>", "--until", "exit"]).code, 0);
     let end = Instant::now() + Duration::from_secs(5);
     while !status_line(&t.term(&["screen", "-s", "a"]).out).contains("60x10") {
@@ -1149,7 +1103,7 @@ fn a_match_trigger_fires_once_per_appearance() {
     assert!(r.out.contains("added trigger fin (edge)"), "{}", r.out);
     assert!(r.out.contains("events.ndjson"), "{}", r.out);
 
-    assert_eq!(t.term(&["run", "-s", "mt", "echo finished 7"]).code, 0);
+    assert_eq!(t.sh("mt", "echo finished 7").code, 0);
     let got = of_kind(&events_when(&events, |e| !of_kind(e, "match").is_empty()), "match");
     let m = &got[0]["match"];
     assert_eq!(m["id"], "fin");
@@ -1161,10 +1115,10 @@ fn a_match_trigger_fires_once_per_appearance() {
     assert!(got[0]["screen"]["text"].as_str().unwrap().contains("finished 7"));
 
     // The line stays on screen through more commands and settles: no repeat.
-    assert_eq!(t.term(&["run", "-s", "mt", "true"]).code, 0);
-    assert_eq!(t.term(&["run", "-s", "mt", "echo other"]).code, 0);
+    assert_eq!(t.sh("mt", "true").code, 0);
+    assert_eq!(t.sh("mt", "echo other").code, 0);
     // A second appearance is a second match.
-    assert_eq!(t.term(&["run", "-s", "mt", "echo finished 8"]).code, 0);
+    assert_eq!(t.sh("mt", "echo finished 8").code, 0);
     let all = events_when(&events, |e| of_kind(e, "match").len() >= 2);
     let got = of_kind(&all, "match");
     assert_eq!(got.len(), 2, "{got:?}");
@@ -1181,7 +1135,7 @@ fn a_match_trigger_fires_once_per_appearance() {
     let r = t.term(&["match", "rm", "-s", "mt", "fin"]);
     assert_eq!(r.code, 0, "{}", r.err);
     assert!(r.out.contains("removed trigger fin after 2 matches"), "{}", r.out);
-    assert_eq!(t.term(&["run", "-s", "mt", "echo finished 9; seq 1 100"]).code, 0);
+    assert_eq!(t.sh("mt", "echo finished 9; seq 1 100").code, 0);
     assert!(t.term(&["match", "list", "-s", "mt"]).out.contains("no triggers"));
     t.term(&["kill", "mt"]);
     assert_eq!(of_kind(&read_events(&events), "match").len(), 2);
@@ -1194,12 +1148,12 @@ fn matches_that_scroll_away_are_not_reported_twice() {
     let events = t.session_dir("ms").join("events.ndjson");
     assert_eq!(t.term(&["match", "add", "-s", "ms", "--id", "x", "^mark$"]).code, 0);
     // Seen on screen first, then pushed off by 200 lines.
-    assert_eq!(t.term(&["run", "-s", "ms", "echo mark"]).code, 0);
+    assert_eq!(t.sh("ms", "echo mark").code, 0);
     events_when(&events, |e| of_kind(e, "match").len() == 1);
-    assert_eq!(t.term(&["run", "-s", "ms", "seq 1 200"]).code, 0);
+    assert_eq!(t.sh("ms", "seq 1 200").code, 0);
     // Never rests on screen: line 77 of 5000 goes straight past.
     assert_eq!(t.term(&["match", "add", "-s", "ms", "--id", "y", "^n77$"]).code, 0);
-    assert_eq!(t.term(&["run", "-s", "ms", "for i in $(seq 1 5000); do echo n$i; done"]).code, 0);
+    assert_eq!(t.sh("ms", "for i in $(seq 1 5000); do echo n$i; done").code, 0);
     let all = events_when(&events, |e| of_kind(e, "match").len() >= 2);
     t.term(&["kill", "ms"]);
     let got = of_kind(&read_events(&events), "match");
@@ -1214,14 +1168,14 @@ fn a_once_trigger_removes_itself_and_text_on_screen_counts() {
     let t = T::new();
     t.bash("mo");
     let events = t.session_dir("mo").join("events.ndjson");
-    assert_eq!(t.term(&["run", "-s", "mo", "echo already here"]).code, 0);
+    assert_eq!(t.sh("mo", "echo already here").code, 0);
     // Text that is on screen when the trigger is added is a match.
     let r = t.term(&["match", "add", "-s", "mo", "--once", "already"]);
     assert_eq!(r.code, 0, "{}", r.err);
     assert!(r.out.contains("added trigger t1 (once)"), "{}", r.out);
     events_when(&events, |e| of_kind(e, "match").len() == 1);
     assert!(t.term(&["match", "list", "-s", "mo"]).out.contains("no triggers"));
-    assert_eq!(t.term(&["run", "-s", "mo", "echo already again"]).code, 0);
+    assert_eq!(t.sh("mo", "echo already again").code, 0);
     t.term(&["kill", "mo"]);
     let got = of_kind(&read_events(&events), "match");
     assert_eq!(got.len(), 1, "{got:?}");
@@ -1441,8 +1395,8 @@ fn http_destination_that_refuses_stops_the_session_from_starting() {
     assert!(r.err.contains("proxy"), "{}", r.err);
 }
 
-/// The host sleeps while nothing happens. It used to spin for the whole of
-/// a `run` whose command printed nothing.
+/// The host sleeps while nothing happens: a wait on a command that prints
+/// nothing costs no CPU.
 #[test]
 fn the_host_is_idle_while_a_command_is_quiet() {
     let t = T::new();
@@ -1457,7 +1411,7 @@ fn the_host_is_idle_while_a_command_is_quiet() {
     };
     assert_eq!(t.term(&["match", "add", "-s", "idle", "never-printed"]).code, 0);
     let before = ticks();
-    assert_eq!(t.term(&["run", "-s", "idle", "sleep 2"]).code, 0);
+    assert_eq!(t.sh("idle", "sleep 2").code, 0);
     let used = ticks() - before;
     // Ticks are 10 ms. Spinning would use about 200.
     assert!(used < 30, "the host used {used} ticks of CPU during a quiet 2 s command");
@@ -1554,41 +1508,6 @@ fn linger_ends_by_itself() {
     assert!(took >= Duration::from_secs(1) && took < Duration::from_secs(4), "{took:?}");
 }
 
-#[test]
-fn run_uses_the_shells_own_marks_when_it_has_them() {
-    let t = T::new();
-    t.bash("mk");
-    // Without marks the sentinel is typed, and shows on screen.
-    let setup = r#"PS0='\e]133;C\a'; PROMPT_COMMAND='printf "\033]133;D;%s\007" "$?"'"#;
-    let (code, v) = t.json(&["run", "-s", "mk", setup]);
-    assert_eq!(code, 0, "{v}");
-    assert!(v["screen"]["text"].as_str().unwrap().contains("7770;waldo"), "{v}");
-
-    // Now the shell reports each command's end itself: nothing extra is typed.
-    let (code, v) = t.json(&["run", "-s", "mk", "echo marked; (exit 3)"]);
-    assert_eq!(code, 5, "{v}");
-    assert_eq!(v["reason"], "done");
-    assert_eq!(v["command_exit_code"], 3);
-    assert_eq!(v["output"]["text"], "marked");
-    let screen = v["screen"]["text"].as_str().unwrap();
-    assert_eq!(screen.matches("7770;waldo").count(), 1, "{screen}");
-    assert!(screen.contains("$ echo marked; (exit 3)\nmarked\n$"), "{screen}");
-
-    let (code, v) = t.json(&["run", "-s", "mk", "seq 1 3"]);
-    assert_eq!(code, 0, "{v}");
-    assert_eq!(v["output"]["text"], "1\n2\n3");
-    // No output at all.
-    let (code, v) = t.json(&["run", "-s", "mk", "true"]);
-    assert_eq!(code, 0, "{v}");
-    assert_eq!(v["output"]["text"], "");
-
-    // Several lines would end with a mark each, so they still get the sentinel.
-    let (code, v) = t.json(&["run", "-s", "mk", "echo a\necho b; false"]);
-    assert_eq!(code, 5, "{v}");
-    assert_eq!(v["command_exit_code"], 1);
-    assert_eq!(v["output"]["text"], "a\nb");
-}
-
 // ---- found by using it ---------------------------------------------------------------
 
 #[test]
@@ -1627,78 +1546,16 @@ fn gc_says_what_is_still_running() {
 #[test]
 fn the_first_input_waits_for_the_first_prompt() {
     let t = T::new();
-    // No wait for the prompt: the command arrives while bash is starting.
-    t.start("fp", &["bash", "--norc", "--noprofile"]);
-    let r = t.term(&["run", "-s", "fp", "echo early"]);
-    assert_eq!(r.code, 0, "{}\n{}", r.out, r.err);
-    assert_eq!(r.out.lines().nth(1), Some("early"), "{}", r.out);
-    let screen = t.term(&["screen", "-s", "fp"]).out;
-    // Typed before the prompt, the line would be there twice: once echoed by
-    // the terminal and once by the shell.
-    assert_eq!(screen.matches("echo early").count(), 1, "{screen}");
-    assert!(screen.lines().nth(1).unwrap_or("").starts_with("$ "), "{screen}");
-
-    // The same holds for send: it is the session's first input that waits.
+    // No wait for the prompt: the input arrives while bash is starting.
+    // Typed before the prompt, the line would be there twice: once echoed
+    // by the terminal and once by the shell.
     t.start("fs", &["bash", "--norc", "--noprofile"]);
     let r = t.term(&["send", "-s", "fs", "--text", "echo sent", "--keys", "<Enter>"]);
     assert_eq!(r.code, 0, "{}\n{}", r.out, r.err);
     assert_eq!(r.out.lines().skip(1).collect::<Vec<_>>(), vec!["$ echo sent", "sent", "$"], "{}", r.out);
 }
 
-#[test]
-fn run_into_something_that_is_not_a_shell_says_so() {
-    let t = T::new();
-    // `cat` draws nothing, so run gives up waiting for a prompt and types.
-    t.start("ns", &["cat"]);
-    let began = Instant::now();
-    let r = t.term(&["run", "-s", "ns", "--timeout", "3000", "echo hi"]);
-    assert_eq!(r.code, 124, "{}\n{}", r.out, r.err);
-    assert!(began.elapsed() >= Duration::from_secs(3));
-    let screen = t.term(&["screen", "-s", "ns"]).out;
-    assert!(screen.contains("echo hi"), "the line was never typed:\n{screen}");
-    assert!(r.out.contains("hint: run typed the command while 'cat' was in the foreground"), "{}", r.out);
-
-    // A command that is only slow, in a real shell, keeps the usual hint.
-    t.bash("sl");
-    let r = t.term(&["run", "-s", "sl", "--timeout", "300", "sleep 1"]);
-    assert_eq!(r.code, 124);
-    assert!(r.out.contains("hint: the command is still running"), "{}", r.out);
-
-    // So does a shell whose name is not one waldo knows: it started the
-    // command, so something else is in the foreground now.
-    let bash = String::from_utf8(Command::new("sh").args(["-c", "command -v bash"]).output().unwrap().stdout).unwrap();
-    std::os::unix::fs::symlink(bash.trim(), t.work.join("oddsh")).unwrap();
-    t.start("od", &["./oddsh", "--norc", "--noprofile"]);
-    assert_eq!(t.term(&["wait", "-s", "od", "--until", "match", "--pattern", r"^\$ $"]).code, 0);
-    let (_, v) = t.json(&["screen", "-s", "od"]);
-    assert_eq!(v["child"]["foreground"], "oddsh");
-    let r = t.term(&["run", "-s", "od", "--timeout", "300", "sleep 1"]);
-    assert_eq!(r.code, 124);
-    assert!(r.out.contains("hint: the command is still running"), "{}", r.out);
-}
-
 // ---- found by the soak runs (soak/README.md) ----------------------------------------
-
-#[test]
-fn a_run_typed_into_a_program_is_given_up() {
-    let t = T::new();
-    t.bash("gu");
-    assert_eq!(t.term(&["send", "-s", "gu", "--text", "cat", "--keys", "<Enter>"]).code, 0);
-    let r = t.term(&["run", "-s", "gu", "--timeout", "600", "echo lost"]);
-    assert_eq!(r.code, 124, "{}\n{}", r.out, r.err);
-    assert!(r.out.contains("while 'cat' was in the foreground") && r.out.contains("This run has been given up"), "{}", r.out);
-    // Back at the shell, run works again: the lost one does not block it.
-    let r = t.term(&["send", "-s", "gu", "--keys", "<C-c>", "--until", "match", "--pattern", r"^\$ $"]);
-    assert_eq!(r.code, 0, "{}", r.out);
-    let r = t.term(&["run", "-s", "gu", "echo back"]);
-    assert_eq!(r.code, 0, "{}\n{}", r.out, r.err);
-    assert_eq!(r.out.lines().nth(1), Some("back"), "{}", r.out);
-    // A command that is only slow is not given up.
-    let r = t.term(&["run", "-s", "gu", "--timeout", "300", "sleep 1; echo slow"]);
-    assert_eq!(r.code, 124);
-    let r = t.term(&["wait", "-s", "gu", "--until", "done"]);
-    assert_eq!(r.out.lines().nth(1), Some("slow"), "{}", r.out);
-}
 
 #[test]
 fn resize_waits_for_the_program_to_redraw() {
@@ -1741,52 +1598,6 @@ fn timeout_hints_say_why() {
 }
 
 #[test]
-fn an_interrupted_run_ends_and_does_not_block_the_next() {
-    let t = T::new();
-    t.bash("ir");
-    // Ctrl-C makes the shell drop the rest of the line, end mark included.
-    let r = t.term(&["run", "-s", "ir", "--timeout", "400", "echo before; sleep 30"]);
-    assert_eq!(r.code, 124, "{}\n{}", r.out, r.err);
-    assert_eq!(t.term(&["send", "-s", "ir", "--keys", "<C-c>"]).code, 0);
-    let r = t.term(&["wait", "-s", "ir", "--until", "done", "--timeout", "3000"]);
-    assert!(status_line(&r.out).starts_with("[ir done exit=130 "), "{}\n{}", r.out, r.err);
-    assert_eq!(r.out.lines().nth(1), Some("before"), "{}", r.out);
-    let r = t.term(&["run", "-s", "ir", "echo after"]);
-    assert_eq!(r.code, 0, "{}\n{}", r.out, r.err);
-    assert_eq!(r.out.lines().nth(1), Some("after"), "{}", r.out);
-
-    // The same at a continuation prompt, where no command ever started.
-    let r = t.term(&["run", "-s", "ir", "--timeout", "400", "echo 'unclosed"]);
-    assert_eq!(r.code, 124, "{}\n{}", r.out, r.err);
-    assert_eq!(t.term(&["send", "-s", "ir", "--keys", "<C-c>"]).code, 0);
-    let r = t.term(&["run", "-s", "ir", "echo again"]);
-    assert_eq!(r.code, 0, "{}\n{}", r.out, r.err);
-    assert_eq!(r.out.lines().nth(1), Some("again"), "{}", r.out);
-
-    // A request already waiting for the command is answered when a signal
-    // interrupts it.
-    let r = t.term(&["run", "-s", "ir", "--timeout", "300", "sleep 30"]);
-    assert_eq!(r.code, 124);
-    let waiter = {
-        let mut c = t.command(TERM);
-        c.args(["wait", "-s", "ir", "--until", "done", "--timeout", "5000"]);
-        std::thread::spawn(move || T::finish(c.output().unwrap()))
-    };
-    std::thread::sleep(Duration::from_millis(300));
-    assert_eq!(t.term(&["signal", "-s", "ir", "SIGINT"]).code, 0);
-    let r = waiter.join().unwrap();
-    assert!(status_line(&r.out).starts_with("[ir done exit=130 "), "{}\n{}", r.out, r.err);
-
-    // A command that ignores the interrupt carries on and ends as usual.
-    let r = t.term(&["run", "-s", "ir", "--timeout", "300", "(trap '' INT; sleep 1.5; echo survived)"]);
-    assert_eq!(r.code, 124);
-    assert_eq!(t.term(&["send", "-s", "ir", "--keys", "<C-c>"]).code, 0);
-    let r = t.term(&["wait", "-s", "ir", "--until", "done", "--timeout", "5000"]);
-    assert!(status_line(&r.out).starts_with("[ir done exit=0 "), "{}\n{}", r.out, r.err);
-    assert!(r.out.contains("survived"), "{}", r.out);
-}
-
-#[test]
 fn a_program_that_leaves_the_foreground_is_named() {
     let t = T::new();
     t.bash("lf");
@@ -1806,45 +1617,6 @@ fn a_program_that_leaves_the_foreground_is_named() {
 }
 
 // ---- several clients on one session --------------------------------------------------
-
-/// Four clients each make `per_client` runs on one session at once.
-fn concurrent_runs(per_client: usize) {
-    let t = T::new();
-    t.bash("cr");
-    let workers: Vec<_> = ["a", "b", "c", "d"]
-        .into_iter()
-        .map(|p| {
-            let cmds: Vec<Command> = (1..=per_client)
-                .map(|i| {
-                    let mut c = t.command(TERM);
-                    c.args(["run", "-s", "cr", &format!("echo {p}-{i}-end")]);
-                    c
-                })
-                .collect();
-            std::thread::spawn(move || {
-                cmds.into_iter().enumerate().map(|(i, mut c)| (format!("{p}-{}-end", i + 1), T::finish(c.output().unwrap()))).collect::<Vec<_>>()
-            })
-        })
-        .collect();
-    let mut answered = 0;
-    for w in workers {
-        for (want, r) in w.join().unwrap() {
-            if r.code == 0 {
-                // One run at a time, but an answer is never another run's.
-                assert_eq!(r.out.lines().nth(1), Some(want.as_str()), "{}", r.out);
-                answered += 1;
-            } else {
-                assert!(r.err.contains("run_in_progress"), "{} / {}", r.out, r.err);
-            }
-        }
-    }
-    assert!(answered >= 4, "only {answered} runs were answered");
-}
-
-#[test]
-fn concurrent_runs_each_get_their_own_answer() {
-    concurrent_runs(8);
-}
 
 /// Four clients each send `per_client` commands to one session at once.
 fn concurrent_sends(per_client: usize) {
@@ -1899,7 +1671,6 @@ fn concurrent_sends_are_typed_whole() {
 #[ignore = "soak test; run with --ignored"]
 fn soak_hammer_one_session() {
     concurrent_sends(50);
-    concurrent_runs(25);
 }
 
 #[test]
@@ -1959,50 +1730,6 @@ fn a_signal_does_not_wait_for_a_program_that_is_not_reading() {
 // ---- waldo inside waldo ---------------------------------------------------------------
 
 #[test]
-fn waldo_inside_waldo_three_deep() {
-    let t = T::new();
-    t.bash("n1");
-    // Only n1 is addressed from outside. It starts n2, and n2 starts n3.
-    let r = t.term(&["run", "-s", "n1", &format!("{WRAP} --detach --name n2 --size 100x28 -- bash --norc --noprofile")]);
-    assert_eq!(r.code, 0, "{}\n{}", r.out, r.err);
-    assert_eq!(r.out.lines().nth(1), Some("session=n2"), "{}", r.out);
-    let r = t.term(&["run", "-s", "n1", &format!("{TERM} run -s n2 '{WRAP} --detach --name n3 --size 80x20 -- bash --norc --noprofile'")]);
-    assert_eq!(r.code, 0, "{}\n{}", r.out, r.err);
-    assert!(r.out.lines().nth(1).unwrap_or("").starts_with("[n2 done exit=0 "), "{}", r.out);
-    assert_eq!(r.out.lines().nth(2), Some("session=n3"), "{}", r.out);
-
-    // A command at the bottom, through both layers: one status line per
-    // layer, and the output once.
-    let deep = format!("{TERM} run -s n2 \"{TERM} run -s n3 'echo deep; echo \\$WALDO_SESSION'\"");
-    let r = t.term(&["run", "-s", "n1", &deep]);
-    assert_eq!(r.code, 0, "{}\n{}", r.out, r.err);
-    let lines: Vec<&str> = r.out.lines().collect();
-    assert!(lines[0].starts_with("[n1 done exit=0 "), "{}", r.out);
-    assert!(lines[1].starts_with("[n2 done exit=0 ") && lines[1].contains(" 100x28 "), "{}", r.out);
-    assert!(lines[2].starts_with("[n3 done exit=0 ") && lines[2].contains(" 80x20 "), "{}", r.out);
-    assert_eq!(&lines[3..], ["deep", "n3"], "{}", r.out);
-
-    // A failure at the bottom: the bottom reports the command's own status,
-    // and each layer above reports that the command it ran failed.
-    let failing = format!("{TERM} run -s n2 \"{TERM} run -s n3 'exit_with() {{ return 7; }}; exit_with'\"");
-    let r = t.term(&["run", "-s", "n1", &failing]);
-    assert_eq!(r.code, 5, "{}\n{}", r.out, r.err);
-    let lines: Vec<&str> = r.out.lines().collect();
-    assert!(lines[0].starts_with("[n1 done exit=5 "), "{}", r.out);
-    assert!(lines[1].starts_with("[n2 done exit=5 "), "{}", r.out);
-    assert!(lines[2].starts_with("[n3 done exit=7 "), "{}", r.out);
-
-    // Three workers at once from one session: each answer is whole.
-    let fan = format!("for s in n2 n3; do {TERM} run -s $s \"echo hello from $s\" & done; wait");
-    let r = t.term(&["run", "-s", "n1", &fan]);
-    assert_eq!(r.code, 0, "{}\n{}", r.out, r.err);
-    for s in ["n2", "n3"] {
-        let at = r.out.lines().position(|l| l.starts_with(&format!("[{s} done exit=0 "))).unwrap_or_else(|| panic!("no answer from {s}:\n{}", r.out));
-        assert_eq!(r.out.lines().nth(at + 1), Some(format!("hello from {s}").as_str()), "{}", r.out);
-    }
-}
-
-#[test]
 fn typing_reaches_the_bottom_of_two_attaches() {
     let t = T::new();
     for (name, size) in [("b1", "120x32"), ("b2", "100x26"), ("b3", "80x20")] {
@@ -2037,4 +1764,80 @@ fn typing_reaches_the_bottom_of_two_attaches() {
     // Detach at the top: its own shell again.
     let r = t.term(&["send", "-s", "b1", "--keys", "<C-]>", "--until", "match", "--pattern", "^detached from 'b2'"]);
     assert_eq!(r.code, 0, "{}\n{}", r.out, r.err);
+}
+
+// ---- shell commands: a marker, not a special command --------------------------------
+
+#[test]
+fn a_marker_tells_when_a_command_ended_and_how() {
+    let t = T::new();
+    t.bash("mk");
+    let r = t.sh("mk", "echo one; echo two");
+    assert_eq!((r.code, r.out.as_str()), (0, "one\ntwo"));
+    let r = t.sh("mk", "echo oops >&2; exit_with() { return 3; }; exit_with");
+    assert_eq!((r.code, r.out.as_str()), (3, "oops"));
+
+    // Silent for much longer than the settle window: the wait is for the
+    // marker, not for a quiet screen.
+    let began = Instant::now();
+    let r = t.sh("mk", "sleep 1.2; echo late");
+    assert!(began.elapsed() >= Duration::from_millis(1200));
+    assert_eq!((r.code, r.out.as_str()), (0, "late"));
+
+    // Several lines in one send.
+    let r = t.sh("mk", "for i in 1 2 3; do\n  echo n$i\ndone");
+    assert_eq!((r.code, r.out.as_str()), (0, "n1\nn2\nn3"));
+
+    // More output than the screen holds: `output` has it all.
+    let r = t.sh("mk", "seq 1 300");
+    assert_eq!(r.out.lines().count(), 300);
+    assert!(r.out.starts_with("1\n2\n") && r.out.ends_with("299\n300"), "{}", r.out);
+
+    // A command that is interrupted never prints its marker. The wait runs
+    // out, and the shell is usable again.
+    let r = t.term(&["send", "-s", "mk", "--text", "sleep 30; echo \"never=$?\"", "--keys", "<Enter>", "--until", "match", "--pattern", "^never=", "--timeout", "500"]);
+    assert_eq!(r.code, 124, "{}\n{}", r.out, r.err);
+    assert!(status_line(&r.out).contains("fg=sleep"), "{}", r.out);
+    assert_eq!(t.term(&["send", "-s", "mk", "--keys", "<C-c>"]).code, 0);
+    assert_eq!(t.sh("mk", "echo after").out, "after");
+}
+
+// ---- waldo inside waldo ---------------------------------------------------------------
+
+#[test]
+fn waldo_inside_waldo_three_deep() {
+    let t = T::new();
+    t.bash("n1");
+    // Only n1 is addressed from outside. It starts n2, and n2 starts n3.
+    let r = t.sh("n1", &format!("{WRAP} --detach --name n2 --size 100x28 -- bash --norc --noprofile"));
+    assert_eq!(r.code, 0, "{}", r.out);
+    assert_eq!(r.out.lines().next(), Some("session=n2"), "{}", r.out);
+    let start3 = format!(
+        "{TERM} send -s n2 --text '{WRAP} --detach --name n3 --size 80x20 -- bash --norc --noprofile' --keys '<Enter>' --until match --pattern '^session=n3$'"
+    );
+    let r = t.sh("n1", &start3);
+    assert_eq!(r.code, 0, "{}", r.out);
+    assert!(r.out.lines().next().unwrap_or("").starts_with("[n2 match ") && r.out.contains(" 100x28 "), "{}", r.out);
+
+    // A command at the bottom, typed through both layers: each layer prints
+    // the screen of the one below, with its status line.
+    let deep = format!(
+        "{TERM} send -s n2 --text \"{TERM} send -s n3 --text 'echo deep-\\$WALDO_SESSION' --keys '<Enter>' --until match --pattern '^deep-n3'\" --keys '<Enter>' --until match --pattern '^deep-n3'"
+    );
+    let r = t.sh("n1", &deep);
+    assert_eq!(r.code, 0, "{}", r.out);
+    assert!(r.out.lines().next().unwrap_or("").starts_with("[n2 match "), "{}", r.out);
+    assert!(r.out.lines().any(|l| l.starts_with("[n3 match ") && l.contains(" 80x20 ")), "{}", r.out);
+    assert!(r.out.lines().any(|l| l == "deep-n3"), "{}", r.out);
+    assert!(t.term(&["screen", "-s", "n3"]).out.lines().any(|l| l == "deep-n3"));
+
+    // Two sessions driven at once from the third: each gets its own line.
+    let fan = format!(
+        "for s in n2 n3; do {TERM} send -s $s --text \"echo hello-from-$s\" --keys '<Enter>' --until match --pattern \"^hello-from-$s\" > /dev/null & done; wait"
+    );
+    assert_eq!(t.sh("n1", &fan).code, 0);
+    for s in ["n2", "n3"] {
+        let want = format!("hello-from-{s}");
+        assert!(t.term(&["screen", "-s", s]).out.lines().any(|l| l == want), "{s} did not get its line");
+    }
 }

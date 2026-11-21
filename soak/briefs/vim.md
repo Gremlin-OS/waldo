@@ -8,7 +8,7 @@ with one unless you want it.
 
 One session: `W wrap --detach --name sh -- bash --norc --noprofile`. Start
 vim with `W send -s sh --text 'vim --clean FILE' --keys '<Enter>'`; check
-results with `W run -s sh 'cat -A FILE'` after each `:wq`.
+results by running `cat -A FILE` in the shell after each `:wq`.
 
 1. a.txt, one call: `--keys 'i' --text $'alpha\nbeta gamma\ndelta' --keys
    '<Esc>:wq<Enter>'`. Does `<Esc>` followed at once by `:wq<Enter>` work?
@@ -26,11 +26,9 @@ results with `W run -s sh 'cat -A FILE'` after each `:wq`.
    makes appear.
 8. `W resize -s sh 80x20` and back; quote the status lines; is vim's bottom
    line on the last row in each response?
-9. On purpose: (a) `W run -s sh --timeout 3000 'echo hello'` with vim in
-   normal mode; copy the response; repair with `<Esc>:q!<Enter>`; then `W
-   run -s sh 'echo back'` must work. (b) `--text '<Esc>'` in insert mode;
-   copy the hint. (c) Start `W run -s sh --timeout 2000 'sleep 30'`, press
-   `<C-c>`, then `W run -s sh 'echo after'` must work.
+9. On purpose: (a) `--text '<Esc>'` in insert mode; copy the hint. (b) At
+   the shell, start `sleep 30` with a marker and `--timeout 2000`, press
+   `<C-c>`, then run `echo after` in the shell.
 10. A single line of 300 characters; `wc -c` must agree.
 11. `W send -s sh --text 'exit' --keys '<Enter>' --until exit`, `W list`,
     `W gc --all`.
