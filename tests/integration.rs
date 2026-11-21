@@ -1,6 +1,6 @@
 //! Integration tests: real programs in real ptys, driven through the two
-//! binaries. The list follows DESIGN.md section 12. The programs (bash, vim,
-//! coreutils) come from nixpkgs through the flake.
+//! binaries. The programs (bash, vim, coreutils) come from nixpkgs through
+//! the flake.
 
 use serde_json::Value;
 use std::io::{Read, Write};
@@ -1679,7 +1679,7 @@ fn run_into_something_that_is_not_a_shell_says_so() {
     assert!(r.out.contains("hint: the command is still running"), "{}", r.out);
 }
 
-// ---- found by the NetHack stress test of 2026-11-21 ---------------------------------
+// ---- found by the soak runs (soak/README.md) ----------------------------------------
 
 #[test]
 fn a_run_typed_into_a_program_is_given_up() {

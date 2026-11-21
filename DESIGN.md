@@ -1,8 +1,8 @@
 # Waldo design
 
-Status, 2026-11-20: this document describes what is built, except where a
-section starts with "Not built". Section 12 lists what exists, what does not,
-and what is tested less than it should be.
+This document describes what is built, except where a section starts with
+"Not built". `TODO.md` lists what is open and what is tested less than it
+should be.
 
 Waldo lets an LLM agent (or a human) operate interactive terminal programs
 through messages instead of a keyboard. The model to keep in mind: it is a
@@ -17,9 +17,7 @@ Linux programs:
   waits for conditions, and attaches a human to a session.
 
 Sections 1 to 8 are the design. Section 9 is the language and emulator
-choice. Section 10 lists where this departs from the original brief. Section
-11 records what was verified and what was not. Section 12 is the status, and
-section 13 keeps what was learned while building and using it.
+choice.
 
 ## 1. Process model
 
@@ -260,7 +258,9 @@ through the same queue, so they do not land inside a request either:
   report, for example) are written ahead of queued input and can fall
   between two items of a request.
 
-Three item kinds:
+Input is a list of items of three kinds, and not one string in one
+notation, because agents type a lot of `<` (C includes, HTML, shell
+redirects). `text` is never parsed, and `keys` is strict:
 
 - `text`: literal. Never parsed. A newline is sent as carriage return, as a
   keyboard would.
@@ -274,7 +274,8 @@ Three item kinds:
   with the emulator.
 - `paste`: sent as a bracketed paste if the program has enabled mode 2004,
   otherwise as text. The payload is sanitised so it cannot close the bracket
-  early.
+  early. Vim started with `-u NONE` turns the mode on but does not recognise
+  the markers, so a paste into it is mangled; `vim --clean` is fine.
 
 Each kind can take its content from a file instead: `{"text_file": PATH}`,
 `{"keys_file": PATH}`, `{"paste_file": PATH}`. This is the intended route for
@@ -301,7 +302,14 @@ has been still for 30 ms. The wait is at least 40 ms, and if the screen never
 reacts, as with a password prompt that echoes nothing, the key is sent after
 300 ms. A person never types text and a key in the same instant, and programs
 that detect a paste by timing take an Enter that arrives with the text for a
-line break inside it (section 13 has how this was found).
+line break inside it. This was found by running Claude Code inside waldo:
+text and an Enter sent together left the prompt in its input box with a
+blank line under it. A fixed 40 ms pause was not enough on a freshly started
+program; waiting for the reaction was. The cause was checked only in part
+against that program (version 2.1.322): it treats one input event of more
+than 800 characters as a paste and holds a Return that arrives during one,
+but where a short text and an Enter in one burst become a line break was not
+found.
 
 The first input of a session is held until the screen has settled for the
 first time, or until 2 s after the session started, whichever comes first.
@@ -395,8 +403,7 @@ raw screen text, which is cheaper for an agent to read:
 
 Errors use HTTP status codes and a body like
 `{"error": "unknown_key", "text": "unknown key name <Entr> at offset 4; use <lt> for a literal <"}`.
-The `error` values are snake_case and stable; `text` is for people. This
-matches Gizmo's reply convention.
+The `error` values are snake_case and stable; `text` is for people.
 
 ### 2.4 waldo-term
 
@@ -511,7 +518,7 @@ These are requirements, not polish.
 - Every error's `text` says what to do next, as the `unknown_key` message
   does.
 - Responses carry a `hint` when the host can see a likely mistake. The text
-  format prints it as a last line starting with `hint:`. The first hints:
+  format prints it as a last line starting with `hint:`. The hints:
   - A settle that returns while the shell has a foreground job that this
     request's input started (the terminal's foreground process group is
     not the child's own, and not what it was before the input was sent):
@@ -729,8 +736,9 @@ lines just before `from_line` were not sent (section 3.4).
   primary screen, soft-wrapped lines joined. Carriage-return progress bars
   collapse to their final state because the text is rendered, not raw. It is
   capped (`--output-cap`, default 64 KiB), keeping the first quarter and the
-  last three quarters with a marker line between. There is no other copy:
-  what the cap cuts is gone.
+  last three quarters with a marker line between, so a will shows both the
+  command and its last errors and is never megabytes on one line. There is
+  no other copy: what the cap cuts is gone.
 - Output drawn on the alternate screen is not part of `output`; the final
   `screen` shows what was last visible.
 
@@ -841,9 +849,10 @@ prints is sent in a `Waldo-Status` response header.
   or TrueType font that the host reads, as it does for file items. A monospace
   font is vendored and compiled into `waldo-wrap` as the default. Characters
   the font lacks are drawn as a box.
-- Rendering uses a font-parsing and rasterising crate and a PNG crate (section
-  9.2), with no dependency on a display, fontconfig or system font paths, none
-  of which can be assumed on NixOS or in a sandbox.
+- Rendering uses a font-parsing and rasterising crate and a PNG crate
+  (`ab_glyph` and `png` are the candidates; neither has been evaluated),
+  with no dependency on a display, fontconfig or system font paths, none of
+  which can be assumed on NixOS or in a sandbox.
 - The image is `cols` by `rows` cells at the font's cell size times `scale`.
   It shows text, foreground and background colours, bold, italic, underline,
   reverse video, wide characters, the cursor, and images the program has
@@ -1024,7 +1033,7 @@ Security notes:
 
 ## 9. Language and emulator core
 
-### 9.1 Recommendation
+### 9.1 The choice
 
 **Rust, with libghostty-vt 1.0.x as the emulator, through its C ABI.**
 
@@ -1037,18 +1046,13 @@ Security notes:
   encoder that follows the terminal's modes including the kitty protocol,
   bracketed-paste encoding with sanitising, reflow on resize, tracked grid
   references, and a formatter that emits escape sequences for attach.
-- Bind to the C header directly with a small hand-written FFI layer for the
-  roughly thirty functions used. The community Rust crate (`libghostty-vt`
-  0.2.2 on crates.io) predates 1.0 and its 1.0-compatible version is
-  unreleased; the C ABI is the stable surface, so depend on that.
-- Vendor the 1.0.1 release source and link it statically (section 9.2).
-  nixpkgs still carries a pre-1.0 snapshot.
+- The binding is a small hand-written FFI layer over the C header, for the
+  roughly thirty functions used. The C ABI is the stable surface.
+- The 1.0.1 release source is vendored and linked statically (section 9.2).
 - Rust gives direct C calls, a fork that works before any thread exists, and
   control of the event loop and signal mask, with a linear-time regex engine
   available as a dependency-free crate. No async runtime: one epoll loop and
   one delivery thread.
-  `--detach` forks before any thread exists, which an async runtime would make
-  awkward.
 
 ### 9.2 Dependencies
 
@@ -1063,10 +1067,8 @@ where the alternative is writing and securing our own parser or rasteriser.
 | `regex-lite` | Crate | Linear-time regex for match triggers. No dependencies of its own, unlike `regex` |
 | `serde`, `serde_json` | Crates | JSON for the API and messages |
 | `httparse` | Crate | Parsing HTTP requests and responses |
-| `ab_glyph` | Crate, not added yet | Reading an OpenType or TrueType font and rasterising glyphs for `screencap` |
-| `png` | Crate, not added yet | Writing the PNG |
 
-At run time the binaries need only glibc.
+At run time the binaries need only glibc and libgcc.
 
 **Vendoring libghostty-vt.** The release tarball (4.5 MB, 26 MB unpacked) and
 the tarball of its own five build dependencies are committed under `vendor/`
@@ -1075,14 +1077,12 @@ no network, and survives upstream moving its hosting. The library is built
 static and safety-checked (`ReleaseSafe`), so a bug in it stops the session
 with a message instead of corrupting memory.
 
-SIMD stays on. The plan was to turn it off to keep C++ out of the build, but
-in 1.0.1 the no-SIMD library is built without libc and exports stub `calloc`
-and `free` functions; linked statically into a program that uses a shared
-glibc, the stubs replace the real ones and the program's own allocations
-fail. The SIMD build links libc and has no stubs. Its C++ (simdutf, in the source tarball, and
-Highway, in the dependency tarball) is compiled
-by Zig itself without the C++ standard library, so it adds no build tool and
-no run-time library.
+SIMD stays on. In 1.0.1 the no-SIMD library is built without libc and
+exports stub `calloc` and `free` functions; linked statically into a program
+that uses a shared glibc, the stubs replace the real ones and the program's
+own allocations fail. The SIMD build links libc and has no stubs. Its C++
+(simdutf and Highway) is compiled by Zig itself without the C++ standard
+library, so it adds no build tool and no run-time library.
 
 **Crates** are pinned by `Cargo.lock` and fetched by hash in the Nix build.
 They are not committed to the repository.
@@ -1093,12 +1093,6 @@ They are not committed to the repository.
   and its own sockets. A full HTTP server crate would bring an async runtime
   or a thread pool, and both conflict with forking for `--detach` and with a
   single loop that owns the pty.
-- `ab_glyph` parses the font and rasterises outlines, which is all a grid of
-  terminal cells needs. Text shaping is not needed: each cell is drawn on its
-  own.
-- The rendering crates are linked into the host, because drawing is an API
-  call (section 6.3). Rendering runs on its own thread with panics caught, so
-  a font bug costs one request, not the session.
 
 **What we still write ourselves:** the FFI declarations for the thirty or so
 library functions used, by hand against the stable C header (no `bindgen`,
@@ -1108,11 +1102,11 @@ No async runtime and no test framework beyond the standard one.
 
 ### 9.3 Risks of this choice
 
-- 1.0 is eleven days old. Bugs are being reported and fixed, including one
-  after 1.0.1 where resizing with the viewport scrolled fails an internal
-  integrity check, and an earlier one in a downstream project where a
-  column-halving resize aborted the process. Resize and reflow are the area to
-  test hardest.
+- The library is young: 1.0.0 is from 2026-11-06. Resize and reflow are
+  where its bugs have been reported, including one after 1.0.1 where
+  resizing with the viewport scrolled fails an internal integrity check.
+  That one cannot happen here, since the host never scrolls the viewport,
+  but resize is the area to test hardest.
 - A Zig toolchain (0.17.x) is needed to build the library. It comes from
   nixpkgs and is the one build dependency we cannot vendor sensibly.
 - The Ghostty project has said it will move off GitHub, with no destination
@@ -1146,199 +1140,3 @@ fixed quiet window (250 ms in tui-test) or a text wait; none uses mode 2026 as
 a frame boundary. zmx and tmux both use a sentinel appended to the command to
 detect completion; `waldo-term run` (section 2.5) does the same with a sentinel
 that draws nothing.
-
-## 10. Departures from the brief, for review
-
-Each is a change to a decision in the brief or an answer to one of its open
-questions. Items 1 to 4 were settled in review on 2026-11-17; 5 to 7 are still
-open.
-
-1. **Input is a list of `text`, `keys` and `paste` items**, not one string with
-   vim notation throughout. Agents type a lot of `<` (C includes, HTML, shell
-   redirects), and a notation where `<stdio.h>` is either a silent literal or
-   an error on every such line is a recurring failure. `keys` keeps the
-   notation, strictly. Settled: each kind can also name a file to read from,
-   which is the route for long content.
-2. **Paste is explicit**, not triggered by a newline in the text, and is
-   bracketed only when the program asked for it. Sending the bracket markers to
-   a program that hasn't enabled them corrupts its input. Settled, with
-   `paste_file`.
-3. **Every session has a destination.** Settled: if `--dest` is not given the
-   host picks a file in the session directory and reports it at startup,
-   along with the socket. `--no-probe` skips the startup delivery check.
-4. **The will goes to the destination as the last message**, as in the brief,
-   with a file in the session directory only when delivery fails. Settled. I
-   had proposed always writing it to the session directory and keeping a
-   spool of full output there; both are withdrawn.
-5. **No TCP listener.** Settled: the brief's opt-in localhost listener with a
-   token is dropped. Our own clients use the unix socket, and socat or ssh
-   bridges it for anything else.
-6. **`stream` carries committed rendered lines**, not bytes. Settled. Added in
-   the same review: `waldo-term screencap` writes the screen to a PNG
-   (section 6.3).
-7. **Styled screens on request.** Settled: no derived `highlights` list.
-   Screens are plain by default and `style=ansi` keeps the colour codes for
-   the agent to read.
-8. HTTP on the control socket: yes, with the stated subset. The attach stream
-   is an upgrade on the same socket.
-9. Settle: quiet window, plus the 2026 hold, plus OSC 133 as an accelerator.
-   Explicit `match`, `change` and `exit` waits for the cases settle gets wrong.
-10. Attach re-renders, is view-only by default, and never resizes the session
-    unless asked.
-11. `TERM=xterm-256color` with query answering; no custom terminfo.
-12. Liveness by `flock`, discovery by directory listing, short ids.
-13. Full output is capped by keeping the head and the tail, not just one end,
-    so a will is never megabytes of JSON on one line and still shows both the
-    command and its last errors.
-14. The pty drain is bounded by time as well as by EIO, for the surviving
-    grandchild case.
-
-## 11. What was verified, and what wasn't
-
-Verified on this machine (NixOS, kernel 6.18):
-
-- libghostty-vt 1.0.1 builds from the upstream flake
-  (`github:ghostty-org/ghostty/vt-1.0.1#libghostty-vt`) and yields a shared
-  library, a static library and pkg-config files. A C program links against it.
-- Fed vim's real startup bytes, the library answered both cursor-position
-  queries and the DA2 query through the write-back callback. It did not answer
-  the OSC 10 and 11 colour queries by default; vim does not wait for those.
-- Row wrap flags and the unwrap formatter option work: a 51-character line on a
-  20-column terminal comes back as three rows or as one line.
-- A tracked reference followed its row into scrollback, survived a reflowing
-  resize and a round trip through the alternate screen, and reported "no value"
-  after a 400 000-line flood pruned it. Section 6.5 depends on exactly this.
-- Vim under `xterm-256color` emits, before drawing: two cursor-position
-  queries, DA2, OSC 10 and 11 queries, and enables modifyOtherKeys and
-  bracketed paste. Bash only enables bracketed paste.
-- Added 2026-11-20: the library builds from the two vendored tarballs inside
-  the Nix sandbox, which has no network, as a static safety-checked library.
-  The whole test suite passes against it and `waldo-wrap` needs only glibc
-  and libgcc at run time. The no-SIMD variant also builds, but breaks the
-  program it is linked into (section 9.2).
-- By the tests, since the first build: the key encoder; the paste encoder,
-  which does sanitise; the mode 2026 hold callback; the OSC 133 callbacks
-  for prompt start, output start and command end with its exit status; that
-  an unknown private OSC reaches the host and draws nothing, which `run`'s
-  sentinel depends on; that DA1 and DSR 5n are answered; and that the Nix
-  sandbox has a usable pty and a loopback interface.
-
-Not verified:
-
-- Image support. That the core implements Kitty graphics and not Sixel comes
-  from reading its 1.0.1 source and headers; no image was sent through it.
-  The Sixel translation is an idea, not a tested approach: it depends on
-  filtering the byte stream ahead of the emulator and on the two protocols'
-  cursor behaviour being close enough to map.
-- That `ab_glyph` and `png`, the crates section 9.2 names for PNG capture,
-  are current and maintained. They are not dependencies yet. Which font to
-  vendor is also undecided.
-- Reading `/proc/<pid>/syscall` of the foreground process to detect "blocked
-  waiting for input" as a stronger settle signal. My probe was refused by the
-  kernel's ptrace policy because the reader was not the target's ancestor;
-  `waldo-wrap` would be. Worth one more spike before relying on it, and it is
-  not part of this design.
-- Gizmo's agent loop and CLI: about half the file was read directly. The
-  conventions adopted here (snake_case keys, `error` codes with a `text`
-  sentence, NDJSON) come from the part that was.
-
-## 12. Status
-
-As of 2026-11-20. `nix flake check` builds the emulator from the vendored
-tarballs, builds both binaries, runs clippy with warnings as errors, and runs
-the unit and integration tests in the Nix sandbox against bash, vim and
-coreutils from nixpkgs. `TODO.md` is the working list of what is open.
-
-**Built:** everything in sections 1 to 5 and 7; of section 6, screen text,
-styled screens and the output buffer.
-
-**Not built:**
-
-- PNG capture, `format=cells` and `waldo-term screencap` (section 6.3).
-- Images (section 6.4).
-- `--token-file` (section 2.7). Not planned until bridged use is common.
-- In attach: mouse input, scrolling back, mirroring the kitty keyboard
-  protocol and modifyOtherKeys to the viewer's terminal, and a border when
-  the viewer is larger than the session.
-
-**What the integration tests cover**, all with real programs in real ptys:
-
-- vim: open, insert text containing `<`, write, quit.
-- `run` in bash: success, failure, a command silent for longer than the
-  settle window, a timeout picked up again with `until: done`, and a shell
-  that emits OSC 133 marks.
-- Every example printed by `waldo-term help`, executed as written.
-- Waits: match on a prompt, a prompt with echo off, lines that scroll past, a
-  screen that never settles, a program that has not drawn yet.
-- The will: output capped head and tail, wrapped lines joined, a program
-  killed by a signal, a background process left holding the pty, SIGTERM and
-  SIGKILL of the host.
-- Resize, including a soak that resizes through eight sizes during 100 000
-  lines of output.
-- Styled screens; attach, run inside a second waldo session so the test
-  reads what a person would see.
-- Match triggers: once per appearance, lines that scroll away, `once`, a
-  repaint between settles, the refusals.
-- `settle` and `stream` messages; `unix:` and `http:` destinations with a
-  receiver in the test; heartbeat; `--record`; `--linger`.
-- That the host uses no CPU while a command is quiet.
-
-**Tested less than it should be:**
-
-- `run --shell fish` is implemented and has never been run.
-- aarch64 is declared in the flake and has never been built.
-- Attach: holding frames during a synchronized update, and marking a request
-  `interleaved` when a person types during it, have no test. The detach keys
-  were exercised through a waldo session and once by a person; colour and
-  redraw quality in a real terminal were never reported back.
-- Whether a crash sets `core_dumped` depends on the machine's core limit and
-  core pattern, so the test asserts the signal and only that the flag is
-  present.
-- The queue's behaviour when full is unit tested. No test makes a real
-  receiver slow enough to fill it.
-- `http:` retries, and `unix:` reconnecting after a failed write, have no
-  test.
-
-## 13. Findings from building and using it
-
-Kept because they explain choices above, or because an agent will meet them.
-
-- **The no-SIMD emulator build breaks its host program** (section 9.2).
-  Found on 2026-11-20 when the first test to allocate died with "memory
-  allocation of 504 bytes failed".
-- **The host used to spin.** A wait for settle set a timer for the moment
-  the screen would count as settled, even when that also depended on the
-  program drawing something, or on a `run` command finishing. The timer was
-  already in the past, so the loop never slept: a quiet three-second `run`
-  cost 2.8 s of CPU. Fixed on 2026-11-20 (section 1.2), with a test.
-- **A key after text has to wait for the program** (section 2.1). Found by
-  running Claude Code inside waldo. `--text PROMPT --keys '<Enter>'` left the
-  prompt sitting in its input box with a blank line under it: the text and
-  the Enter arrived together, and the program took the Enter for part of a
-  paste. A fixed pause was tried first and was not enough: 40 ms worked on a
-  program that had been running for a while and failed on the first input
-  after it started. On fresh starts a 40 ms gap failed and gaps of 170 ms
-  and more worked; waiting for the reaction worked on four fresh starts out
-  of four. The explanation is that the program goes by what arrives in one
-  burst, not by a clock. That was checked in part against the installed
-  program (version 2.1.322, on 2026-11-21): its input box treats one input
-  event of more than 800 characters as a paste, and holds a Return that
-  arrives while a paste is being handled. Where a short text and an Enter
-  in one burst become a line break was not found. The test uses a small
-  program that is busy for a while after reading and counts input that
-  arrived meanwhile as part of the same burst. It fails without the wait.
-- **Colour carries meaning.** `htop` marks the selected entry of its sort
-  menu with colour alone, which is why styled screens exist (section 6.2).
-- **Settle has to wait for the first text** (section 3.1). `top` sets the
-  terminal up well before its first frame, so output alone is not a sign
-  that the program has drawn.
-- **Vim started with `-u NONE`** turns bracketed paste on but does not
-  recognise the paste markers, so a paste into it is mangled. `vim --clean`
-  is fine. Waldo does what the terminal protocol says; the program is at
-  fault, but an agent will meet it.
-- **Input typed before a shell has drawn its first prompt is echoed twice**:
-  once by the terminal and once by the shell when it starts. It is harmless,
-  but confusing on screen, so the first input of a session waits for the
-  first settle (section 2.1).
-- **The upstream resize bug** of section 9.3 (resizing while the viewport is
-  scrolled) cannot happen here, since the host never scrolls the viewport.

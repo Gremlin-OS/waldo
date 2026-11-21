@@ -1,8 +1,7 @@
 # Soak tests
 
 Tests that are too slow, too costly or too open-ended for `nix flake check`.
-They found most of the bugs fixed on 2026-11-21; `TODO.md` has what they
-found and left open.
+`TODO.md` has what they found and left open.
 
 There are two kinds.
 
