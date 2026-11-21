@@ -80,3 +80,5 @@ It runs on Linux only.
 
 - `DESIGN.md`: how it works and why, and what is not built yet.
 - `TODO.md`: the open work.
+- `soak/README.md`: the slow tests, run by hand: a scripted hammer, and
+  subagents driving real programs.

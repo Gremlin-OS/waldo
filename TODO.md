@@ -28,6 +28,8 @@ not from the design.
 
 ## Found by the stress tests of 2026-11-21
 
+How to run them again is in `soak/README.md`.
+
 Sixteen subagents (eight Sonnet, eight Haiku) drove NetHack 5.0.0, htop
 3.5.3, vim 9.2, one shared tmux 3.8 session, one shared waldo session, and
 waldo sessions started from inside waldo sessions: 836 logged calls in

@@ -1809,14 +1809,14 @@ fn a_program_that_leaves_the_foreground_is_named() {
 
 // ---- several clients on one session --------------------------------------------------
 
-#[test]
-fn concurrent_runs_each_get_their_own_answer() {
+/// Four clients each make `per_client` runs on one session at once.
+fn concurrent_runs(per_client: usize) {
     let t = T::new();
     t.bash("cr");
     let workers: Vec<_> = ["a", "b", "c", "d"]
         .into_iter()
         .map(|p| {
-            let cmds: Vec<Command> = (1..=8)
+            let cmds: Vec<Command> = (1..=per_client)
                 .map(|i| {
                     let mut c = t.command(TERM);
                     c.args(["run", "-s", "cr", &format!("echo {p}-{i}-end")]);
@@ -1844,13 +1844,18 @@ fn concurrent_runs_each_get_their_own_answer() {
 }
 
 #[test]
-fn concurrent_sends_are_typed_whole() {
+fn concurrent_runs_each_get_their_own_answer() {
+    concurrent_runs(8);
+}
+
+/// Four clients each send `per_client` commands to one session at once.
+fn concurrent_sends(per_client: usize) {
     let t = T::new();
     t.bash("cs");
     let workers: Vec<_> = ["a", "b", "c", "d"]
         .into_iter()
         .map(|p| {
-            let cmds: Vec<Command> = (1..=8)
+            let cmds: Vec<Command> = (1..=per_client)
                 .map(|i| {
                     let mut c = t.command(TERM);
                     c.args(["send", "-s", "cs", "--json", "--text", &format!("echo {p}-{i}-end"), "--keys", "<Enter>"]);
@@ -1877,12 +1882,26 @@ fn concurrent_sends_are_typed_whole() {
     let mut printed: Vec<&str> = out.lines().filter(|l| l.ends_with("-end") && !l.starts_with('$')).collect();
     typed.sort_unstable();
     printed.sort_unstable();
-    let mut want: Vec<String> = ["a", "b", "c", "d"].iter().flat_map(|p| (1..=8).map(move |i| format!("{p}-{i}-end"))).collect();
+    let mut want: Vec<String> = ["a", "b", "c", "d"].iter().flat_map(|p| (1..=per_client).map(move |i| format!("{p}-{i}-end"))).collect();
     want.sort_unstable();
     assert_eq!(printed, want, "{out}");
     assert_eq!(typed, want.iter().map(|w| format!("$ echo {w}")).collect::<Vec<_>>(), "{out}");
     // Requests that overlapped were told so.
     assert!(interleaved > 0, "no request was marked interleaved");
+}
+
+#[test]
+fn concurrent_sends_are_typed_whole() {
+    concurrent_sends(8);
+}
+
+/// The full-size hammer from the soak runs (soak/README.md). Not part of the
+/// normal run: `cargo test --test integration -- --ignored soak`.
+#[test]
+#[ignore = "soak test; run with --ignored"]
+fn soak_hammer_one_session() {
+    concurrent_sends(50);
+    concurrent_runs(25);
 }
 
 #[test]
@@ -1937,4 +1956,87 @@ fn a_signal_does_not_wait_for_a_program_that_is_not_reading() {
     assert_eq!(r.code, 0, "{}\n{}", r.out, r.err);
     assert!(began.elapsed() < Duration::from_secs(4), "{:?}", began.elapsed());
     assert_eq!(t.will("nr")["signal"], "SIGTERM");
+}
+
+// ---- waldo inside waldo ---------------------------------------------------------------
+
+#[test]
+fn waldo_inside_waldo_three_deep() {
+    let t = T::new();
+    t.bash("n1");
+    // Only n1 is addressed from outside. It starts n2, and n2 starts n3.
+    let r = t.term(&["run", "-s", "n1", &format!("{WRAP} --detach --name n2 --size 100x28 -- bash --norc --noprofile")]);
+    assert_eq!(r.code, 0, "{}\n{}", r.out, r.err);
+    assert_eq!(r.out.lines().nth(1), Some("session=n2"), "{}", r.out);
+    let r = t.term(&["run", "-s", "n1", &format!("{TERM} run -s n2 '{WRAP} --detach --name n3 --size 80x20 -- bash --norc --noprofile'")]);
+    assert_eq!(r.code, 0, "{}\n{}", r.out, r.err);
+    assert!(r.out.lines().nth(1).unwrap_or("").starts_with("[n2 done exit=0 "), "{}", r.out);
+    assert_eq!(r.out.lines().nth(2), Some("session=n3"), "{}", r.out);
+
+    // A command at the bottom, through both layers: one status line per
+    // layer, and the output once.
+    let deep = format!("{TERM} run -s n2 \"{TERM} run -s n3 'echo deep; echo \\$WALDO_SESSION'\"");
+    let r = t.term(&["run", "-s", "n1", &deep]);
+    assert_eq!(r.code, 0, "{}\n{}", r.out, r.err);
+    let lines: Vec<&str> = r.out.lines().collect();
+    assert!(lines[0].starts_with("[n1 done exit=0 "), "{}", r.out);
+    assert!(lines[1].starts_with("[n2 done exit=0 ") && lines[1].contains(" 100x28 "), "{}", r.out);
+    assert!(lines[2].starts_with("[n3 done exit=0 ") && lines[2].contains(" 80x20 "), "{}", r.out);
+    assert_eq!(&lines[3..], ["deep", "n3"], "{}", r.out);
+
+    // A failure at the bottom: the bottom reports the command's own status,
+    // and each layer above reports that the command it ran failed.
+    let failing = format!("{TERM} run -s n2 \"{TERM} run -s n3 'exit_with() {{ return 7; }}; exit_with'\"");
+    let r = t.term(&["run", "-s", "n1", &failing]);
+    assert_eq!(r.code, 5, "{}\n{}", r.out, r.err);
+    let lines: Vec<&str> = r.out.lines().collect();
+    assert!(lines[0].starts_with("[n1 done exit=5 "), "{}", r.out);
+    assert!(lines[1].starts_with("[n2 done exit=5 "), "{}", r.out);
+    assert!(lines[2].starts_with("[n3 done exit=7 "), "{}", r.out);
+
+    // Three workers at once from one session: each answer is whole.
+    let fan = format!("for s in n2 n3; do {TERM} run -s $s \"echo hello from $s\" & done; wait");
+    let r = t.term(&["run", "-s", "n1", &fan]);
+    assert_eq!(r.code, 0, "{}\n{}", r.out, r.err);
+    for s in ["n2", "n3"] {
+        let at = r.out.lines().position(|l| l.starts_with(&format!("[{s} done exit=0 "))).unwrap_or_else(|| panic!("no answer from {s}:\n{}", r.out));
+        assert_eq!(r.out.lines().nth(at + 1), Some(format!("hello from {s}").as_str()), "{}", r.out);
+    }
+}
+
+#[test]
+fn typing_reaches_the_bottom_of_two_attaches() {
+    let t = T::new();
+    for (name, size) in [("b1", "120x32"), ("b2", "100x26"), ("b3", "80x20")] {
+        let r = t.wrap(&["--detach", "--name", name, "--size", size, "--", "bash", "--norc", "--noprofile"]);
+        assert_eq!(r.code, 0, "{}", r.err);
+        assert_eq!(t.term(&["wait", "-s", name, "--until", "match", "--pattern", r"^\$ $"]).code, 0);
+    }
+    // b2 attaches to b3, and b1 to b2, both with typing on.
+    let r = t.term(&["send", "-s", "b2", "--text", &format!("{TERM} attach -s b3 --drive"), "--keys", "<Enter>", "--until", "match", "--pattern", "waldo b3 "]);
+    assert_eq!(r.code, 0, "{}\n{}", r.out, r.err);
+    let r = t.term(&["send", "-s", "b1", "--text", &format!("{TERM} attach -s b2 --drive"), "--keys", "<Enter>", "--until", "match", "--pattern", "waldo b2 "]);
+    assert_eq!(r.code, 0, "{}\n{}", r.out, r.err);
+
+    // Typed at the top, it runs at the bottom, and the top shows it through
+    // both layers with a status bar for each.
+    let r = t.term(&["send", "-s", "b1", "--text", "echo through-two", "--keys", "<Enter>", "--until", "match", "--pattern", "^through-two$"]);
+    assert_eq!(r.code, 0, "{}\n{}", r.out, r.err);
+    assert!(r.out.contains("waldo b3  80x20") && r.out.contains("waldo b2  100x26"), "{}", r.out);
+    let bottom = t.term(&["screen", "-s", "b3"]).out;
+    assert!(bottom.contains("$ echo through-two\nthrough-two\n"), "{bottom}");
+
+    // The bottom session ends: the middle one is back at its shell, and the
+    // top is still attached to the middle.
+    assert_eq!(t.term(&["kill", "b3"]).code, 0);
+    let r = t.term(&["wait", "-s", "b2", "--until", "match", "--pattern", r"^\$ $", "--timeout", "5000"]);
+    assert_eq!(r.code, 0, "{}\n{}", r.out, r.err);
+    assert!(status_line(&r.out).contains("fg=bash"), "{}", r.out);
+    let top = t.term(&["wait", "-s", "b1", "--until", "settle"]).out;
+    assert!(status_line(&top).contains("fg=waldo-term") && top.contains("waldo b2  100x26"), "{top}");
+    assert!(!top.contains("waldo b3 "), "{top}");
+
+    // Detach at the top: its own shell again.
+    let r = t.term(&["send", "-s", "b1", "--keys", "<C-]>", "--until", "match", "--pattern", "^detached from 'b2'"]);
+    assert_eq!(r.code, 0, "{}\n{}", r.out, r.err);
 }
