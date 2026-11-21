@@ -725,7 +725,8 @@ fn resize_during_output_soak() {
     let mut n = 0;
     let end = Instant::now() + Duration::from_secs(60);
     loop {
-        let r = t.term(&["resize", "-s", "so", sizes[n % sizes.len()]]);
+        // Without waiting for a redraw: the point is many resizes mid-output.
+        let r = t.term(&["resize", "-s", "so", "--until", "none", sizes[n % sizes.len()]]);
         assert_eq!(r.code, 0, "resize {n} failed: {}\n{}", r.out, r.err);
         n += 1;
         if r.out.contains("soak-done") && sizes[(n - 1) % sizes.len()] == "80x24" {
@@ -1676,4 +1677,132 @@ fn run_into_something_that_is_not_a_shell_says_so() {
     let r = t.term(&["run", "-s", "od", "--timeout", "300", "sleep 1"]);
     assert_eq!(r.code, 124);
     assert!(r.out.contains("hint: the command is still running"), "{}", r.out);
+}
+
+// ---- found by the NetHack stress test of 2026-11-21 ---------------------------------
+
+#[test]
+fn a_run_typed_into_a_program_is_given_up() {
+    let t = T::new();
+    t.bash("gu");
+    assert_eq!(t.term(&["send", "-s", "gu", "--text", "cat", "--keys", "<Enter>"]).code, 0);
+    let r = t.term(&["run", "-s", "gu", "--timeout", "600", "echo lost"]);
+    assert_eq!(r.code, 124, "{}\n{}", r.out, r.err);
+    assert!(r.out.contains("while 'cat' was in the foreground") && r.out.contains("This run has been given up"), "{}", r.out);
+    // Back at the shell, run works again: the lost one does not block it.
+    let r = t.term(&["send", "-s", "gu", "--keys", "<C-c>", "--until", "match", "--pattern", r"^\$ $"]);
+    assert_eq!(r.code, 0, "{}", r.out);
+    let r = t.term(&["run", "-s", "gu", "echo back"]);
+    assert_eq!(r.code, 0, "{}\n{}", r.out, r.err);
+    assert_eq!(r.out.lines().nth(1), Some("back"), "{}", r.out);
+    // A command that is only slow is not given up.
+    let r = t.term(&["run", "-s", "gu", "--timeout", "300", "sleep 1; echo slow"]);
+    assert_eq!(r.code, 124);
+    let r = t.term(&["wait", "-s", "gu", "--until", "done"]);
+    assert_eq!(r.out.lines().nth(1), Some("slow"), "{}", r.out);
+}
+
+#[test]
+fn resize_waits_for_the_program_to_redraw() {
+    let t = T::new();
+    // Redraws a moment after the size changes, as a full-screen program does.
+    let program = "trap 'sleep 0.1; echo \"now $(stty size)\"' WINCH; echo ready; while true; do sleep 0.05; done";
+    t.start("rw", &["bash", "--norc", "--noprofile", "-c", program]);
+    assert_eq!(t.term(&["wait", "-s", "rw", "--until", "match", "--pattern", "^ready$"]).code, 0);
+    let r = t.term(&["resize", "-s", "rw", "100x20"]);
+    assert_eq!(r.code, 0, "{}", r.err);
+    assert!(status_line(&r.out).starts_with("[rw settle ") && status_line(&r.out).contains("100x20"), "{}", r.out);
+    assert!(r.out.contains("now 20 100"), "{}", r.out);
+
+    // A screen that never goes quiet does not make a resize fail or take long.
+    t.start("rb", &["sh", "-c", "i=0; while true; do i=$((i+1)); printf '\\r%s' $i; sleep 0.05; done"]);
+    assert_eq!(t.term(&["wait", "-s", "rb", "--until", "change"]).code, 0);
+    let began = Instant::now();
+    let r = t.term(&["resize", "-s", "rb", "90x20"]);
+    assert_eq!(r.code, 0, "{}\n{}", r.out, r.err);
+    assert!(status_line(&r.out).starts_with("[rb none ") && status_line(&r.out).contains("90x20"), "{}", r.out);
+    assert!(began.elapsed() < Duration::from_millis(1800), "{:?}", began.elapsed());
+}
+
+#[test]
+fn timeout_hints_say_why() {
+    let t = T::new();
+    t.bash("th");
+    // With input, text that was already there does not count, and the hint
+    // says so.
+    let r = t.term(&["send", "-s", "th", "--text", "x", "--until", "match", "--pattern", r"^\$ ", "--timeout", "400"]);
+    assert_eq!(r.code, 124, "{}", r.out);
+    assert!(r.out.contains("hint: the pattern matches text that was on screen before the input was sent"), "{}", r.out);
+    // Without input the same text is a match.
+    let r = t.term(&["wait", "-s", "th", "--until", "match", "--pattern", r"^\$ ", "--timeout", "400"]);
+    assert_eq!(r.code, 0, "{}", r.out);
+    // Waiting for the end of a session that is still at its shell.
+    let r = t.term(&["wait", "-s", "th", "--until", "exit", "--timeout", "300"]);
+    assert_eq!(r.code, 124, "{}", r.out);
+    assert!(r.out.contains("hint: the session has not ended: 'bash' is in the foreground."), "{}", r.out);
+}
+
+#[test]
+fn an_interrupted_run_ends_and_does_not_block_the_next() {
+    let t = T::new();
+    t.bash("ir");
+    // Ctrl-C makes the shell drop the rest of the line, end mark included.
+    let r = t.term(&["run", "-s", "ir", "--timeout", "400", "echo before; sleep 30"]);
+    assert_eq!(r.code, 124, "{}\n{}", r.out, r.err);
+    assert_eq!(t.term(&["send", "-s", "ir", "--keys", "<C-c>"]).code, 0);
+    let r = t.term(&["wait", "-s", "ir", "--until", "done", "--timeout", "3000"]);
+    assert!(status_line(&r.out).starts_with("[ir done exit=130 "), "{}\n{}", r.out, r.err);
+    assert_eq!(r.out.lines().nth(1), Some("before"), "{}", r.out);
+    let r = t.term(&["run", "-s", "ir", "echo after"]);
+    assert_eq!(r.code, 0, "{}\n{}", r.out, r.err);
+    assert_eq!(r.out.lines().nth(1), Some("after"), "{}", r.out);
+
+    // The same at a continuation prompt, where no command ever started.
+    let r = t.term(&["run", "-s", "ir", "--timeout", "400", "echo 'unclosed"]);
+    assert_eq!(r.code, 124, "{}\n{}", r.out, r.err);
+    assert_eq!(t.term(&["send", "-s", "ir", "--keys", "<C-c>"]).code, 0);
+    let r = t.term(&["run", "-s", "ir", "echo again"]);
+    assert_eq!(r.code, 0, "{}\n{}", r.out, r.err);
+    assert_eq!(r.out.lines().nth(1), Some("again"), "{}", r.out);
+
+    // A request already waiting for the command is answered when a signal
+    // interrupts it.
+    let r = t.term(&["run", "-s", "ir", "--timeout", "300", "sleep 30"]);
+    assert_eq!(r.code, 124);
+    let waiter = {
+        let mut c = t.command(TERM);
+        c.args(["wait", "-s", "ir", "--until", "done", "--timeout", "5000"]);
+        std::thread::spawn(move || T::finish(c.output().unwrap()))
+    };
+    std::thread::sleep(Duration::from_millis(300));
+    assert_eq!(t.term(&["signal", "-s", "ir", "SIGINT"]).code, 0);
+    let r = waiter.join().unwrap();
+    assert!(status_line(&r.out).starts_with("[ir done exit=130 "), "{}\n{}", r.out, r.err);
+
+    // A command that ignores the interrupt carries on and ends as usual.
+    let r = t.term(&["run", "-s", "ir", "--timeout", "300", "(trap '' INT; sleep 1.5; echo survived)"]);
+    assert_eq!(r.code, 124);
+    assert_eq!(t.term(&["send", "-s", "ir", "--keys", "<C-c>"]).code, 0);
+    let r = t.term(&["wait", "-s", "ir", "--until", "done", "--timeout", "5000"]);
+    assert!(status_line(&r.out).starts_with("[ir done exit=0 "), "{}\n{}", r.out, r.err);
+    assert!(r.out.contains("survived"), "{}", r.out);
+}
+
+#[test]
+fn a_program_that_leaves_the_foreground_is_named() {
+    let t = T::new();
+    t.bash("lf");
+    let r = t.term(&["send", "-s", "lf", "--text", "cat", "--keys", "<Enter>"]);
+    assert!(r.out.contains("hint: 'cat' is still running"), "{}", r.out);
+    // Typing into it carries no hint.
+    let r = t.term(&["send", "-s", "lf", "--text", "abc", "--keys", "<Enter>"]);
+    assert!(!r.out.contains("hint:"), "{}", r.out);
+    // The input that ends it does: what follows goes to the shell.
+    let r = t.term(&["send", "-s", "lf", "--keys", "<C-d>"]);
+    assert_eq!(r.code, 0, "{}", r.out);
+    assert!(status_line(&r.out).contains("fg=bash"), "{}", r.out);
+    assert!(r.out.contains("hint: 'cat' is no longer in the foreground; input now goes to 'bash'."), "{}", r.out);
+    // At the shell there is nothing to say.
+    let r = t.term(&["send", "-s", "lf", "--text", "true", "--keys", "<Enter>"]);
+    assert!(!r.out.contains("hint:"), "{}", r.out);
 }

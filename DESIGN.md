@@ -389,7 +389,7 @@ waldo-term output [-s ID] [--tail N]
 waldo-term match add [-s ID] [--id NAME] [--once] PATTERN
 waldo-term match rm [-s ID] NAME
 waldo-term match list [-s ID]
-waldo-term resize [-s ID] COLSxROWS
+waldo-term resize [-s ID] [--until none] COLSxROWS
 waldo-term attach [-s ID] [--drive] [--resize]
 waldo-term kill [ID]
 waldo-term signal [-s ID] NAME | --stop
@@ -455,6 +455,12 @@ make: *** [Makefile:8: foo.o] Error 1
 - On the deadline the command is still running. The response says `timeout`
   with the output so far, and `waldo-term wait --until done` picks it up
   again.
+- An interrupt ends the command. A shell that is interrupted drops the rest
+  of the line it was given, and the end mark with it. So once an interrupt
+  has been sent (Ctrl-C through `send`, or `signal SIGINT`), the command
+  counts as ended when the screen has settled with the shell in the
+  foreground again, with exit code 130. A command that ignores the
+  interrupt keeps the foreground and ends in the usual way.
 - One `run` at a time per session; a second gets 409 `run_in_progress`.
 - The line is sent as a paste when the shell has enabled bracketed paste, so
   tabs and newlines in the command are taken literally.
@@ -487,8 +493,18 @@ These are requirements, not polish.
     `hint: 'make' is still running; settle only means the screen went quiet. Use --until match, or waldo-term run.`
     Later requests to the same program carry no hint: by then it is the
     thing being driven.
-  - A `run` that times out after typing into something that is not a shell:
-    `hint: run typed the command while 'vim' was in the foreground, and it still is; that does not look like a shell, ...`
+  - The mirror case: the program the input was sent to has left the
+    foreground by the time the screen settles, and the session's own
+    program has it again:
+    `hint: 'vim' is no longer in the foreground; input now goes to 'bash'.`
+  - A match wait with input that times out while the pattern matches text
+    that was already there: the hint says that only a new match counts for
+    a request that sends input, and to use `wait --until match` instead.
+  - A wait for `exit` that times out: the hint names the foreground program
+    and says that `exit` means the session's own program.
+  - A `run` that times out after typing into something that is not a shell.
+    That run is also given up, so the next `run` is not refused:
+    `hint: run typed the command while 'vim' was in the foreground, and it still is; that does not look like a shell, and run needs a shell prompt. This run has been given up. ...`
   - A timeout while the screen was still changing:
     `hint: the screen never went quiet; wait for specific text with --until match.`
   - Unparsed text that looks like key notation sent as `text`:
@@ -917,7 +933,10 @@ the rest blank; there is no border.
 `attach --resize` opts in to adopting the viewer's size and restores the old
 size when that viewer detaches. `POST /v1/resize` sets it explicitly. A resize
 sends SIGWINCH through the pty, reflows the primary screen, counts as a screen
-change, and restarts any settle window.
+change, and restarts any settle window. The response waits for the screen to
+settle, so it shows what the program redrew, but for at most 1 s: after that
+it answers with reason `none` and the screen as it is. A `wait` object in
+the request replaces that, and `{"until": "none"}` answers at once.
 
 ### 7.3 Human and agent input
 

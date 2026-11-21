@@ -60,7 +60,8 @@ or a socket path); with exactly one live session it can be left out.
   wait                      wait, then print the screen
       --until settle|match|change|exit|done [--pattern RE] [--timeout MS]
   output [--tail N]         what the program has printed so far
-  resize COLSxROWS          change the terminal size
+  resize COLSxROWS          change the terminal size, then print the screen once the
+                            program has redrawn (--until none: at once)
   attach [--drive] [--resize]
                             watch the session live in your own terminal. View only
                             unless --drive; Ctrl-\\ toggles typing, Ctrl-] detaches.

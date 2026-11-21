@@ -427,10 +427,13 @@ fn cmd_output(args: &[String]) -> ! {
 }
 
 fn cmd_resize(args: &[String]) -> ! {
-    let o = parse_opts("resize", args, &["--session", "--json"], true);
+    let o = parse_opts("resize", args, &["--session", "--until", "--json"], true);
     let size = o.rest.first().and_then(|s| s.split_once(['x', 'X'])).and_then(|(c, r)| Some((c.parse::<u64>().ok()?, r.parse::<u64>().ok()?)));
     let Some((cols, rows)) = size else { usage("'resize' takes COLSxROWS, such as: waldo-term resize 100x30") };
-    let body = json!({"cols": cols, "rows": rows});
+    let mut body = json!({"cols": cols, "rows": rows});
+    if o.until.is_some() {
+        body["wait"] = Value::Object(wait_object(&o));
+    }
     let (_, status, value) = call(o.session.as_deref(), "POST", "/v1/resize", Some(&body), o.json, EXIT_CHILD_EXITED);
     check_status(status, &value);
     finish(&value, o.json, false);

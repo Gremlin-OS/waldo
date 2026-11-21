@@ -14,12 +14,66 @@ not from the design.
    column rulers, or coordinates relative to the cursor. Part of the trouble
    was the test's own helper script, which trimmed the screen; check how
    much remains with the untrimmed text format before building anything.
+   The 2026-11-21 stress test adds a likely cause: NetHack 5 draws frames
+   with box characters, which are three bytes each, so an agent that counts
+   bytes (or cuts the screen with `sed` or `awk`) is off by two per frame
+   edge. One player saw exactly that offset against `cursor=`. The guide
+   does not say that columns count characters from 1.
 2. **`signal --stop` returns before the program is gone**, so a `gc` right
    after it finds the session still running. `gc` now says so, and `kill`
    waits. Whether `signal --stop` should also wait was not decided.
 3. **The key-after-text explanation is only partly checked.** Claude Code's
    input box was read (DESIGN.md section 13), but not the place where a
    short text and an Enter in one burst become a line break.
+
+## Found by the stress tests of 2026-11-21
+
+Twelve subagents (six Sonnet, six Haiku) drove NetHack 5.0.0, htop 3.5.3,
+vim 9.2 and one shared tmux 3.8 session through waldo, 675 logged calls in
+all. Fixed the same day:
+`resize` answering before the redraw, a `run` typed into a program
+blocking later runs, a `run` stopped with Ctrl-C blocking later runs, two
+timeout hints, and a hint when the program being typed into leaves the
+foreground. Still open:
+
+1. **Keys sent in one call can be lost when an earlier key opens a
+   prompt.** `--keys '_>.'` (travel, pick the stairs, confirm) left the
+   travel prompt open for two players, once each; one of them had it work
+   on a later level. Sending the keys one call at a time worked. Probably
+   NetHack discards typed-ahead input when it opens a prompt, which is
+   the same family as the key-after-text problem, but that was not
+   checked. A wait for the program's reaction between keys would cost
+   40 ms or more per key.
+2. **A screen that did not change after input looks like lost keys.** With
+   a `--More--` pending, further keys were swallowed and the response was
+   identical to the one before. Three players asked for a hint. A general
+   one is possible without knowing the program: "the screen did not change
+   after this input".
+3. **`run` prints the command's output, not the screen**, so after a `run`
+   timeout the agent needs a second call to see what happened.
+4. **`run` types before it knows whether a shell is there.** Into htop,
+   `echo hello` opened a process's environment view; into vim it edited
+   the buffer. The hint only comes at the timeout. `run` could refuse at
+   once when the foreground program is not the session's own and not a
+   known shell, at the price of refusing an unlisted shell started from
+   another one.
+5. **The `run` wrapper is on screen.** Without the shell's own marks, the
+   typed line `{ cmd` / `}; printf '\033]7770;waldo;...'` stays visible.
+   Three players called it noise. Shell integration (OSC 133) avoids it.
+6. **A paste that ends in a newline leaves an empty last line in vim.**
+   That is vim's doing, and correct, but both vim players tripped on it;
+   `help` could say that a trailing newline in a paste is an Enter.
+7. **Several agents on one waldo session is untested by agents.** The
+   tmux test used four waldo sessions attached to one tmux session, and
+   found no waldo fault. Two clients typing into the same waldo session,
+   and the `interleaved` flag, were not exercised.
+8. **Text left on the shell's input line breaks `run`.** A stray `4` typed
+   into bash turned the wrapper into `4{ ...`, the end mark never ran,
+   and the `run` sat until its 120 s timeout. `run` could clear the line
+   first.
+9. **`output` is empty while a full-screen program is up.** It leaves out
+   the primary screen while the alternate screen is showing, so lines
+   that have not scrolled off cannot be read until the program exits.
 
 ## Designed, not built
 
@@ -38,7 +92,11 @@ not from the design.
    sentinel. If the marks then stop (the prompt hook is unset, or a subshell
    without it is started), that `run` waits until its deadline. Options:
    fall back to the sentinel after such a timeout, or a request field that
-   forces it.
+   forces it. More generally, a `run` whose end never comes blocks every
+   later `run` with `run_in_progress`. Two cases are handled: typing into
+   a program that is not a shell is given up at its timeout, and a run
+   that was interrupted ends when the shell is back. For any other case
+   there is no command to drop a `run` by hand.
 3. **Triggers can only be added once the session is running**, so output
    before the first `match add` is missed unless it is still on screen. A
    `waldo-wrap --match ID=PATTERN` option would close that.
