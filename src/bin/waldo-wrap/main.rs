@@ -324,7 +324,7 @@ fn detach() -> Report {
 struct SessionDir {
     id: String,
     dir: PathBuf,
-    _lock: File,
+    lock: File,
 }
 
 fn try_lock(dir: &Path) -> Result<File, String> {
@@ -367,7 +367,7 @@ fn create_session_dir(name: Option<&str>) -> Result<SessionDir, String> {
         for f in ["sock", "meta.json", "will.json", "events.ndjson", "log"] {
             let _ = fs::remove_file(dir.join(f));
         }
-        return Ok(SessionDir { id: name.to_string(), dir, _lock: lock });
+        return Ok(SessionDir { id: name.to_string(), dir, lock });
     }
     for _ in 0..20 {
         let id = util::random_id(6);
@@ -375,7 +375,7 @@ fn create_session_dir(name: Option<&str>) -> Result<SessionDir, String> {
         match mkdir(&dir) {
             Ok(()) => {
                 let lock = try_lock(&dir)?;
-                return Ok(SessionDir { id, dir, _lock: lock });
+                return Ok(SessionDir { id, dir, lock });
             }
             Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => continue,
             Err(e) => return Err(format!("cannot create {}: {e}", dir.display())),
@@ -595,6 +595,7 @@ fn main() {
         on_stream: args.on_stream,
         linger: args.linger.map(Duration::from_secs),
         started_wall,
+        lock_fd: sd.lock.as_raw_fd(),
     };
     let host = match host::Host::new(cfg, pty.master, child, sigfd, listener, emu, log, delivery, recorder, start) {
         Ok(h) => h,

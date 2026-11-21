@@ -9,32 +9,16 @@ order is my suggested priority.
 These came from driving real programs (top, htop, vim, Claude Code, NetHack),
 not from the design.
 
-1. **The settle hint is noise for interactive programs.** Every screen from a
-   program started inside a shell carries "'nethack' is still running; settle
-   only means the screen went quiet." It is true and useless when that
-   program is the thing being driven. Likely fix: show it only when the
-   foreground program has changed since the request's input was sent, or
-   only once per foreground program.
-2. **A model cannot easily tell which square is which.** Both subagents that
+1. **A model cannot easily tell which square is which.** Both subagents that
    played NetHack misjudged columns. Options: a screen format with row and
    column rulers, or coordinates relative to the cursor. Part of the trouble
    was the test's own helper script, which trimmed the screen; check how
    much remains with the untrimmed text format before building anything.
-3. **`gc` straight after `signal --stop` removed nothing.** Seen once: the
-   session was reported ended, then `gc --all` printed "removed 0". Probably
-   the host still held its lock for an instant. `kill` waits for the lock;
-   `wait --until exit` does not. Reproduce, then decide whether `gc` should
-   wait briefly or `wait --until exit` should.
-4. **Input sent before a shell draws its first prompt is echoed twice**, once
-   by the terminal and once by the shell. Harmless, and `run` strips both
-   from its output, but it is confusing on screen. `run` could wait for the
-   first settle before typing.
-5. **The key-after-text test is weak.** It could pass by luck without the
-   fix. The real evidence was four manual runs against Claude Code. Find a
-   program from nixpkgs that detects pastes by timing, or write a small one.
-6. **`run` on something that is not a shell** types the command line into it
-   and times out. A hint on that timeout would help ("the foreground program
-   is 'vim', not a shell").
+2. **`signal --stop` returns before the program is gone**, so a `gc` right
+   after it finds the session still running. `gc` now says so, and `kill`
+   waits. Whether `signal --stop` should also wait was not decided.
+3. **`send` before a shell's first prompt is still echoed twice.** `run` now
+   waits for the prompt; `send` does not.
 
 ## Designed, not built
 
@@ -85,12 +69,6 @@ not from the design.
   receiver slow enough to fill it.
 - `http:` retries and `unix:` reconnecting after a failed write: no test.
 - A recording was checked as JSON lines, never played with `asciinema`.
-
-## Housekeeping
-
-- CI (`.github/workflows/ci.yml` runs `nix flake check`, which includes
-  clippy with warnings as errors) has never run: it was written before
-  being pushed. Check the first run.
 
 ## Driving waldo with subagents
 

@@ -389,7 +389,7 @@ fn run_timeout_then_wait_until_done() {
 fn settle_during_a_silent_job_carries_a_hint() {
     let t = T::new();
     t.bash("h1");
-    let r = t.term(&["send", "-s", "h1", "--text", "sleep 2", "--keys", "<Enter>"]);
+    let r = t.term(&["send", "-s", "h1", "--text", "sleep 3", "--keys", "<Enter>"]);
     assert_eq!(r.code, 0);
     assert!(status_line(&r.out).contains("settle") && status_line(&r.out).contains("fg=sleep"), "{}", r.out);
     assert!(
@@ -397,8 +397,16 @@ fn settle_during_a_silent_job_carries_a_hint() {
         "{}",
         r.out
     );
+    // Only the request that started it is told. After that the program is
+    // the thing being driven, and its screens carry no hint.
+    let r = t.term(&["send", "-s", "h1", "--text", "x"]);
+    assert!(status_line(&r.out).contains("settle") && status_line(&r.out).contains("fg=sleep"), "{}", r.out);
+    assert!(!r.out.contains("hint:"), "{}", r.out);
+    let r = t.term(&["wait", "-s", "h1", "--until", "settle"]);
+    assert!(status_line(&r.out).contains("fg=sleep"), "{}", r.out);
+    assert!(!r.out.contains("hint:"), "{}", r.out);
     // At the prompt there is no hint.
-    let r = t.term(&["wait", "-s", "h1", "--until", "match", "--pattern", r"^\$ $", "--timeout", "5000"]);
+    let r = t.term(&["wait", "-s", "h1", "--until", "match", "--pattern", r"\$ x$", "--timeout", "5000"]);
     assert_eq!(r.code, 0, "{}", r.out);
     let r = t.term(&["wait", "-s", "h1", "--until", "settle"]);
     assert!(!r.out.contains("hint:"), "{}", r.out);
@@ -1052,16 +1060,25 @@ fn attach_needs_a_terminal_and_an_upgrade() {
 #[test]
 fn a_key_after_text_arrives_separately() {
     let t = T::new();
-    // A program that reads its input one burst at a time, as programs that
-    // detect pastes by timing do. Each `dd` is one read.
-    t.start("kt", &["sh", "-c", "stty raw -echo; printf 'ready\\r\\n'; for i in 1 2; do dd bs=100 count=1 2>/dev/null | od -An -c; printf '\\r'; done; stty sane"]);
+    // A program that detects pastes by timing. It reads some input, is busy
+    // with it for a while, and only then draws. Input that arrived while it
+    // was busy belongs to the same burst: an Enter in it is part of a paste,
+    // not a keypress. Each `dd` is one read; `read -t 0` asks whether more
+    // is waiting.
+    let program = "stty raw -echo; printf 'ready\\r\\n'; \
+        first=$(dd bs=100 count=1 2>/dev/null); sleep 0.12; \
+        if read -t 0; then kind=burst; else kind=alone; fi; \
+        printf 'got %s\\r\\n' \"$first\"; \
+        second=$(dd bs=100 count=1 2>/dev/null | od -An -c); \
+        printf 'then %s %s\\r\\n' \"$kind\" \"$second\"; stty sane";
+    t.start("kt", &["bash", "--norc", "--noprofile", "-c", program]);
     assert_eq!(t.term(&["wait", "-s", "kt", "--until", "match", "--pattern", "^ready$"]).code, 0);
     let r = t.term(&["send", "-s", "kt", "--text", "hello", "--keys", "<Enter>", "--until", "exit"]);
     assert_eq!(r.code, 0, "{}\n{}", r.out, r.err);
     let will = t.will("kt");
     let out: Vec<String> = will["output"]["text"].as_str().unwrap().lines().map(|l| l.split_whitespace().collect::<Vec<_>>().join(" ")).collect();
-    // The text was one read and the Enter another.
-    assert_eq!(out, vec!["ready", "h e l l o", "\\r"], "{out:?}");
+    // The Enter came after the program had drawn what it made of the text.
+    assert_eq!(out, vec!["ready", "got hello", "then alone \\r"], "{out:?}");
 }
 
 #[test]
@@ -1571,4 +1588,74 @@ fn run_uses_the_shells_own_marks_when_it_has_them() {
     assert_eq!(code, 5, "{v}");
     assert_eq!(v["command_exit_code"], 1);
     assert_eq!(v["output"]["text"], "a\nb");
+}
+
+// ---- found by using it ---------------------------------------------------------------
+
+#[test]
+fn an_exit_answer_means_the_lock_is_free() {
+    let t = T::new();
+    for i in 0..5 {
+        let name = format!("lk{i}");
+        t.start(&name, &["sleep", "60"]);
+        let dir = t.session_dir(&name);
+        let mut s = UnixStream::connect(dir.join("sock")).unwrap();
+        let body = r#"{"wait":{"until":"exit"},"timeout_ms":10000}"#;
+        write!(s, "POST /v1/wait HTTP/1.1\r\nHost: waldo\r\nContent-Type: application/json\r\nContent-Length: {}\r\n\r\n{body}", body.len()).unwrap();
+        assert_eq!(t.term(&["signal", "-s", &name, "--stop"]).code, 0);
+        // The first bytes of the answer, not the end of the connection: the
+        // connection also closes when the host is gone.
+        let mut buf = [0u8; 4096];
+        let n = s.read(&mut buf).unwrap();
+        let held = waldo::session::lock_is_held(&dir);
+        assert!(String::from_utf8_lossy(&buf[..n]).starts_with("HTTP/1.1 200"), "{}", String::from_utf8_lossy(&buf[..n]));
+        assert!(!held, "the host still held its lock when it answered exit (round {i})");
+        let r = t.term(&["gc", "--all"]);
+        assert_eq!(r.out.trim(), "removed 1 ended session", "{}", r.out);
+    }
+}
+
+#[test]
+fn gc_says_what_is_still_running() {
+    let t = T::new();
+    t.start("gr", &["sleep", "60"]);
+    let r = t.term(&["gc", "--all"]);
+    assert_eq!(r.out.trim(), "removed 0 ended sessions; 1 still running (end one with: waldo-term kill ID)");
+    assert_eq!(t.term(&["kill", "gr"]).code, 0);
+    assert_eq!(t.term(&["gc", "--all"]).out.trim(), "removed 1 ended session");
+}
+
+#[test]
+fn run_waits_for_the_first_prompt() {
+    let t = T::new();
+    // No wait for the prompt: the command arrives while bash is starting.
+    t.start("fp", &["bash", "--norc", "--noprofile"]);
+    let r = t.term(&["run", "-s", "fp", "echo early"]);
+    assert_eq!(r.code, 0, "{}\n{}", r.out, r.err);
+    assert_eq!(r.out.lines().nth(1), Some("early"), "{}", r.out);
+    let screen = t.term(&["screen", "-s", "fp"]).out;
+    // Typed before the prompt, the line would be there twice: once echoed by
+    // the terminal and once by the shell.
+    assert_eq!(screen.matches("echo early").count(), 1, "{screen}");
+    assert!(screen.lines().nth(1).unwrap_or("").starts_with("$ "), "{screen}");
+}
+
+#[test]
+fn run_into_something_that_is_not_a_shell_says_so() {
+    let t = T::new();
+    // `cat` draws nothing, so run gives up waiting for a prompt and types.
+    t.start("ns", &["cat"]);
+    let began = Instant::now();
+    let r = t.term(&["run", "-s", "ns", "--timeout", "3000", "echo hi"]);
+    assert_eq!(r.code, 124, "{}\n{}", r.out, r.err);
+    assert!(began.elapsed() >= Duration::from_secs(3));
+    let screen = t.term(&["screen", "-s", "ns"]).out;
+    assert!(screen.contains("echo hi"), "the line was never typed:\n{screen}");
+    assert!(r.out.contains("hint: run typed the command while 'cat' was in the foreground"), "{}", r.out);
+
+    // A command that is only slow, in a real shell, keeps the usual hint.
+    t.bash("sl");
+    let r = t.term(&["run", "-s", "sl", "--timeout", "300", "sleep 1"]);
+    assert_eq!(r.code, 124);
+    assert!(r.out.contains("hint: the command is still running"), "{}", r.out);
 }

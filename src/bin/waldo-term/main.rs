@@ -658,8 +658,13 @@ fn cmd_gc(args: &[String]) -> ! {
     let o = parse_opts("gc", args, &["--all", "--older-than"], false);
     let threshold = if o.all { 0 } else { o.older_than.unwrap_or(3600) };
     let mut removed = 0;
+    let mut live = 0;
     for s in session::list() {
-        if s.state == State::Live || s.age_secs() < threshold {
+        if s.state == State::Live {
+            live += 1;
+            continue;
+        }
+        if s.age_secs() < threshold {
             continue;
         }
         // Only what waldo put there; anything else stops the rmdir.
@@ -670,7 +675,12 @@ fn cmd_gc(args: &[String]) -> ! {
             removed += 1;
         }
     }
-    println!("removed {removed} ended session{}", if removed == 1 { "" } else { "s" });
+    let running = match live {
+        0 => String::new(),
+        // A session asked to stop is still running until its program is gone.
+        n => format!("; {n} still running (end one with: waldo-term kill ID)"),
+    };
+    println!("removed {removed} ended session{}{running}", if removed == 1 { "" } else { "s" });
     std::process::exit(EXIT_OK);
 }
 

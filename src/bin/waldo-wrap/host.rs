@@ -51,6 +51,9 @@ const KEY_MIN: Duration = Duration::from_millis(40);
 const KEY_MAX: Duration = Duration::from_millis(300);
 const KEY_STILL: Duration = Duration::from_millis(30);
 const KEY_POLL: Duration = Duration::from_millis(10);
+/// How long `run` waits for a program that has drawn nothing to draw its
+/// first prompt before typing anyway.
+const FIRST_DRAW_MAX: Duration = Duration::from_secs(2);
 const HOLD_CAP: Duration = Duration::from_secs(1);
 const DRAIN_QUIET: Duration = Duration::from_millis(100);
 const DRAIN_CAP: Duration = Duration::from_secs(2);
@@ -92,12 +95,18 @@ pub struct Config {
     /// Keep answering read-only requests this long after the program exits.
     pub linger: Option<Duration>,
     pub started_wall: String,
+    /// The descriptor that holds the session lock. The host releases it
+    /// itself once the will is out, before it answers `exit`.
+    pub lock_fd: RawFd,
 }
 
 enum QKind {
     Bytes(Vec<u8>),
     Key { key: i32, mods: u16, text: Option<char>, is_esc: bool },
     Paste(Vec<u8>),
+    /// A command line from `run`: a paste if the shell takes bracketed
+    /// pastes when the line reaches the front, typed otherwise.
+    Line(String),
 }
 
 struct QItem {
@@ -107,6 +116,10 @@ struct QItem {
     pause_after: bool,
     /// Wait a moment after the previous input before sending this.
     pause_before: bool,
+    /// If nothing has been typed yet, wait until the program has drawn
+    /// something and gone quiet, but no later than this. A shell echoes
+    /// what arrives before its first prompt a second time.
+    first_draw: Option<Instant>,
 }
 
 #[derive(Clone, Copy, PartialEq, Debug)]
@@ -167,6 +180,9 @@ struct Wait {
     hint: Option<String>,
     /// Return the screen with SGR colour codes left in.
     ansi: bool,
+    /// For a request that sends input: the foreground process group
+    /// before it was sent.
+    fg_before: Option<libc::pid_t>,
 }
 
 /// A standing match trigger (section 3.2). Its matches go to the destination.
@@ -200,6 +216,9 @@ struct Run {
     by_marks: bool,
     /// With `by_marks`: the shell has said the command started.
     output_started: bool,
+    /// The foreground program when the command was typed, if its name is
+    /// not a shell's.
+    not_shell: Option<String>,
 }
 
 struct Conn {
@@ -242,6 +261,10 @@ pub struct Host {
     /// settled one. Output alone does not count: programs set the terminal
     /// up before they draw.
     seen_output: bool,
+    /// The screen has shown text.
+    drawn: bool,
+    /// Input has been written to the program.
+    typed: bool,
 
     outbuf: OutBuf,
     watermark: Option<Tracked>,
@@ -349,6 +372,8 @@ impl Host {
             hold_since: None,
             prompt_seen: false,
             seen_output: false,
+            drawn: false,
+            typed: false,
             outbuf,
             watermark,
             rows_committed: 0,
@@ -703,7 +728,8 @@ impl Host {
             self.last_change = Instant::now();
             self.settle_pending = true;
         }
-        if !self.seen_output && rows.iter().any(|r| !r.text.trim().is_empty()) {
+        if !self.drawn && rows.iter().any(|r| !r.text.trim().is_empty()) {
+            self.drawn = true;
             self.seen_output = true;
         }
         self.rows = rows;
@@ -861,6 +887,14 @@ impl Host {
                 self.pause_until = None;
             }
             let Some(front) = self.queue.front_mut() else { break };
+            if let Some(latest) = front.first_draw {
+                let ready = self.drawn && self.last_change.elapsed() >= Duration::from_millis(self.cfg.quiet_ms);
+                if !self.typed && !ready && Instant::now() < latest {
+                    self.pause_until = Some(Instant::now() + KEY_POLL);
+                    break;
+                }
+                front.first_draw = None;
+            }
             if front.pause_before {
                 let since = self.last_input.elapsed();
                 let reacted = self.gen != self.gen_at_input && self.last_change.elapsed() >= KEY_STILL;
@@ -887,6 +921,10 @@ impl Host {
                     let bytes = self.emu.encode_paste(data);
                     front.kind = QKind::Bytes(bytes);
                 }
+                QKind::Line(line) => {
+                    let bytes = if self.emu.dec_mode(2004) { self.emu.encode_paste(line.as_bytes()) } else { text_bytes(line) };
+                    front.kind = QKind::Bytes(bytes);
+                }
             }
             let QKind::Bytes(bytes) = &front.kind else { unreachable!() };
             if front.off < bytes.len() {
@@ -897,6 +935,7 @@ impl Host {
                         self.last_input = Instant::now();
                         self.gen_at_input = self.gen;
                         self.seen_output = true;
+                        self.typed = true;
                         self.prompt_seen = false;
                         for w in self.waits.iter_mut() {
                             if w.req_id != owner {
@@ -1349,9 +1388,12 @@ impl Host {
                 resp.insert("exit".into(), Value::Object(self.exit_fields(tail)));
             }
             Reason::Settle => {
-                if hint.is_none() {
+                // Only for the request whose input started the program. Once
+                // it is the thing being driven, the hint would be on every
+                // screen.
+                if hint.is_none() && w.fg_before.is_some() {
                     let fg = sys::foreground_pgrp(self.master);
-                    if let Some(pg) = fg.filter(|pg| *pg != self.child.pid) {
+                    if let Some(pg) = fg.filter(|pg| *pg != self.child.pid && Some(*pg) != w.fg_before) {
                         let name = sys::process_name(pg).unwrap_or_else(|| "a command".into());
                         hint = Some(format!(
                             "'{name}' is still running; settle only means the screen went quiet. Use --until match, or waldo-term run."
@@ -1367,9 +1409,14 @@ impl Host {
                     Until::Settle if self.last_change.elapsed() < Duration::from_secs(2) => {
                         Some("the screen never went quiet; wait for specific text with --until match.".into())
                     }
-                    Until::Done => Some(
-                        "the command is still running; wait for it with 'waldo-term wait --until done', or interrupt it with 'waldo-term send --keys <C-c>'.".into(),
-                    ),
+                    Until::Done => match self.run.as_ref().and_then(|r| r.not_shell.as_ref()) {
+                        Some(name) => Some(format!(
+                            "run typed the command while '{name}' was in the foreground, and that does not look like a shell; run needs a shell prompt. Look at the screen above to see what the typing did."
+                        )),
+                        None => Some(
+                            "the command is still running; wait for it with 'waldo-term wait --until done', or interrupt it with 'waldo-term send --keys <C-c>'.".into(),
+                        ),
+                    },
                     Until::Match => Some("the pattern did not appear; it is matched against one line at a time. Check the screen above for what is there.".into()),
                     _ => None,
                 };
@@ -1479,14 +1526,16 @@ impl Host {
             let _ = std::fs::write(self.cfg.dir.join("will.json"), format!("{will_line}\n"));
         }
 
-        for w in std::mem::take(&mut self.waits) {
-            self.respond_wait(w, Reason::Exit);
-        }
         self.end_attach();
         self.record(|r| r.flush());
         self.record = None;
-        self.flush_all(Duration::from_secs(1));
         if let Some(time) = self.cfg.linger {
+            // A lingering session still counts as running, so those waiting
+            // are answered now and the lock is kept until it is over.
+            for w in std::mem::take(&mut self.waits) {
+                self.respond_wait(w, Reason::Exit);
+            }
+            self.flush_all(Duration::from_secs(1));
             self.linger(time);
         }
 
@@ -1498,6 +1547,14 @@ impl Host {
             }
             let _ = std::fs::remove_dir(&self.cfg.dir);
         }
+        // The session is over once the lock is free, and whoever is told
+        // `exit` may act on that at once (`gc`, a new session of the same
+        // name). So the lock goes first and the answers after it.
+        unsafe { libc::flock(self.cfg.lock_fd, libc::LOCK_UN) };
+        for w in std::mem::take(&mut self.waits) {
+            self.respond_wait(w, Reason::Exit);
+        }
+        self.flush_all(Duration::from_secs(1));
         match (st.code, st.signal) {
             (Some(c), _) => c,
             (None, Some(s)) => 128 + s,
@@ -1935,6 +1992,7 @@ impl Host {
         }
 
         let now = Instant::now();
+        let sends_input = owner.is_some();
         let (req_id, hint) = match owner {
             Some((rid, hint)) => (rid, hint),
             None => {
@@ -1956,6 +2014,7 @@ impl Host {
             known: Vec::new(),
             hint,
             ansi,
+            fg_before: sends_input.then(|| sys::foreground_pgrp(self.master)).flatten(),
         };
         // With input, text that is already on screen does not count: the
         // caller is waiting for what its input causes.
@@ -2017,7 +2076,7 @@ impl Host {
         let mut after_text = false;
         for kind in items {
             let is_key = matches!(kind, QKind::Key { .. });
-            self.queue.push_back(QItem { owner: req_id, kind, off: 0, pause_after: false, pause_before: is_key && after_text });
+            self.queue.push_back(QItem { owner: req_id, kind, off: 0, pause_after: false, pause_before: is_key && after_text, first_draw: None });
             after_text = !is_key;
         }
         self.handle_wait(id, req, Until::Settle, Some(body), Some((req_id, hint)));
@@ -2096,15 +2155,19 @@ impl Host {
         // With marks, the output's first row is known when the shell says
         // the command has started.
         let tracked = if by_marks || self.emu.alt_screen() { None } else { self.emu.track(Space::Active, cy as u32) };
-        self.run = Some(Run { nonce, echo_tail, tracked, started: Instant::now(), finished: None, by_marks, output_started: false });
+        // Remembered for the hint if the command never ends.
+        let not_shell = sys::foreground_pgrp(self.master).and_then(sys::process_name).filter(|name| !is_shell(name));
+        self.run =
+            Some(Run { nonce, echo_tail, tracked, started: Instant::now(), finished: None, by_marks, output_started: false, not_shell });
 
         let req_id = self.next_req;
         self.next_req += 1;
         // As a paste where the shell supports it, so tabs and newlines in the
-        // command are taken literally; otherwise typed.
-        let kind = if self.emu.dec_mode(2004) { QKind::Paste(line.into_bytes()) } else { QKind::Bytes(text_bytes(&line)) };
-        self.queue.push_back(QItem { owner: req_id, kind, off: 0, pause_after: false, pause_before: false });
-        self.queue.push_back(QItem { owner: req_id, kind: QKind::Bytes(b"\r".to_vec()), off: 0, pause_after: false, pause_before: false });
+        // command are taken literally; otherwise typed. A shell that has not
+        // drawn its prompt yet is given a moment to.
+        let first_draw = Some(Instant::now() + FIRST_DRAW_MAX);
+        self.queue.push_back(QItem { owner: req_id, kind: QKind::Line(line), off: 0, pause_after: false, pause_before: false, first_draw });
+        self.queue.push_back(QItem { owner: req_id, kind: QKind::Bytes(b"\r".to_vec()), off: 0, pause_after: false, pause_before: false, first_draw: None });
 
         let mut wait_body = json!({"wait": {"until": "done"}});
         if let Some(t) = body.get("timeout_ms") {
@@ -2170,6 +2233,14 @@ impl Host {
 
 fn owner_has_input(queue: &VecDeque<QItem>, owner: u64) -> bool {
     queue.iter().any(|q| q.owner == owner)
+}
+
+/// Whether a process name is a shell's, as far as `run` can tell.
+fn is_shell(name: &str) -> bool {
+    // Nix wraps some programs as `.NAME-wrapped`.
+    let name = name.strip_prefix('.').and_then(|n| n.strip_suffix("-wrapped")).unwrap_or(name);
+    ["sh", "bash", "zsh", "fish", "dash", "ksh", "mksh", "ash", "busybox", "csh", "tcsh", "nu", "xonsh", "elvish", "pwsh"]
+        .contains(&name.trim_start_matches('-'))
 }
 
 /// Literal text as a keyboard would send it: Enter is a carriage return.
@@ -2367,7 +2438,7 @@ impl Host {
                     // in flight learn that someone else typed.
                     let owner = self.next_req;
                     self.next_req += 1;
-                    self.queue.push_back(QItem { owner, kind: QKind::Bytes(bytes), off: 0, pause_after: false, pause_before: false });
+                    self.queue.push_back(QItem { owner, kind: QKind::Bytes(bytes), off: 0, pause_after: false, pause_before: false, first_draw: None });
                 }
             }
             if msg.get("detach").and_then(|d| d.as_bool()) == Some(true) {

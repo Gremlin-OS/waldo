@@ -143,7 +143,11 @@ exits cleanly after delivering the will.
 - **Discovery**: `waldo-term list` reads the base directory.
 - **Liveness**: a session is alive if its `lock` is held. The kernel releases
   the lock however the host dies, including SIGKILL. This distinguishes
-  "host is busy" from "host is gone", which a connect attempt cannot.
+  "host is busy" from "host is gone", which a connect attempt cannot. The
+  host also releases the lock itself, after the will is out and before it
+  answers anyone waiting for `exit`, so a client that is told `exit` can
+  remove the session or reuse its name at once. With `--linger` the lock is
+  held until the lingering is over.
 - **Ended sessions**: a directory whose lock is free belongs to a host that
   has gone. `list` shows it as `exited` if the will is readable in the
   directory, which is the normal end with the default destination; as
@@ -450,7 +454,12 @@ make: *** [Makefile:8: foo.o] Error 1
   tabs and newlines in the command are taken literally.
 - It assumes `;` and `$?`, which holds for sh, bash and zsh. `--shell fish`
   uses `$status`. If the foreground program is not a shell at its prompt the
-  result is whatever typing that line into it does; `run` cannot check.
+  result is whatever typing that line into it does. `run` cannot check that
+  for certain, but it notes the foreground program's name when it types,
+  and if that is not a known shell's the timeout carries a hint saying so.
+- If nothing has been typed into the session yet, `run` waits for the
+  program to draw something and go quiet before it types, for at most 2 s.
+  A shell echoes what arrives before its first prompt a second time.
 
 ### 2.6 Help and guidance
 
@@ -467,9 +476,14 @@ These are requirements, not polish.
   does.
 - Responses carry a `hint` when the host can see a likely mistake. The text
   format prints it as a last line starting with `hint:`. The first hints:
-  - A settle that returns while the shell has a foreground job (the
-    terminal's foreground process group is not the child's own):
+  - A settle that returns while the shell has a foreground job that this
+    request's input started (the terminal's foreground process group is
+    not the child's own, and not what it was before the input was sent):
     `hint: 'make' is still running; settle only means the screen went quiet. Use --until match, or waldo-term run.`
+    Later requests to the same program carry no hint: by then it is the
+    thing being driven.
+  - A `run` that times out after typing into something that is not a shell:
+    `hint: run typed the command while 'vim' was in the foreground, and that does not look like a shell; ...`
   - A timeout while the screen was still changing:
     `hint: the screen never went quiet; wait for specific text with --until match.`
   - Unparsed text that looks like key notation sent as `text`:
@@ -930,7 +944,7 @@ attached, and images, which are shown as nothing.
 | Destination fails later | Queue fills, messages coalesce or drop with `dropped` counts; the pty is unaffected |
 | Destination unreachable at exit | Retry 5 s, then write `will.json` in the session directory and keep the directory |
 | Agent calls `waldo-term` after the session ended | Default destination: the will is read from it, status 3. Explicit `--dest`: status 4, and the will is at that destination |
-| `run` used when the foreground program is not a shell | The command line is typed into whatever is there. The sentinel never arrives and the request times out |
+| `run` used when the foreground program is not a shell | The command line is typed into whatever is there. The sentinel never arrives and the request times out, with a hint that names the program |
 | A request arrives during `--linger` | Status, screen, output and triggers are answered with reason `exit`; anything else gets 409 `exited` |
 | The `--record` file cannot be written | At startup: the session does not start. Later: the recording stops, the session continues, the log says so |
 | Child exits with output unread | Pty drained before the will is composed (section 1.5) |
@@ -1234,7 +1248,6 @@ styled screens and the output buffer.
   receiver slow enough to fill it.
 - `http:` retries, and `unix:` reconnecting after a failed write, have no
   test.
-- The CI workflow has not run yet.
 
 ## 13. Findings from building and using it
 
@@ -1257,8 +1270,10 @@ Kept because they explain choices above, or because an agent will meet them.
   after it started. On fresh starts a 40 ms gap failed and gaps of 170 ms
   and more worked; waiting for the reaction worked on four fresh starts out
   of four. The explanation (timing-based paste detection) fits what was seen
-  and was not checked against the program's source. The test for this is
-  weak: it could pass by luck without the fix.
+  and was not checked against the program's source. The test uses a small
+  program that behaves that way: it is busy for a while after reading, and
+  counts input that arrived meanwhile as part of the same burst. The test
+  fails without the wait.
 - **Colour carries meaning.** `htop` marks the selected entry of its sort
   menu with colour alone, which is why styled screens exist (section 6.2).
 - **Settle has to wait for the first text** (section 3.1). `top` sets the
@@ -1269,7 +1284,8 @@ Kept because they explain choices above, or because an agent will meet them.
   is fine. Waldo does what the terminal protocol says; the program is at
   fault, but an agent will meet it.
 - **Input typed before a shell has drawn its first prompt is echoed twice**:
-  once by the terminal and once by the shell when it starts. It is harmless,
-  and `run` strips both echoes from `output`.
+  once by the terminal and once by the shell when it starts. It is harmless.
+  `run` waits for the first prompt before typing (section 2.5); `send` does
+  not, so wait for the prompt before the first `send`.
 - **The upstream resize bug** of section 9.3 (resizing while the viewport is
   scrolled) cannot happen here, since the host never scrolls the viewport.
