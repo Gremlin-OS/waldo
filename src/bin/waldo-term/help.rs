@@ -219,13 +219,13 @@ exit with status 3. 'waldo-term gc' removes ended sessions.
 examples:
   $ waldo-wrap --name msg-demo -- echo hello
   $ waldo-term output -s msg-demo
-  $ waldo-wrap --detach --name match-demo --dest file:/tmp/waldo-match-demo.ndjson -- bash
+  $ waldo-wrap --detach --name match-demo --dest file:$HOME/waldo-match-demo.ndjson -- bash
   $ waldo-term match add -s match-demo --id done '^finished'
   $ waldo-term run -s match-demo 'echo finished'
   $ waldo-term match list -s match-demo
   $ waldo-term match rm -s match-demo done
   $ waldo-term kill match-demo
-  $ grep -c '\"trigger\":\"match\"' /tmp/waldo-match-demo.ndjson
+  $ grep -c '\"trigger\":\"match\"' $HOME/waldo-match-demo.ndjson
 ";
 
 pub const EXIT_STATUS: &str = "\

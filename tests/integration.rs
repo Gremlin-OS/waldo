@@ -814,7 +814,6 @@ fn a_session_under_a_very_long_path() {
 fn every_help_example_runs_as_written() {
     let t = T::new();
     let _ = std::fs::remove_file("/tmp/waldo-demo.c");
-    let _ = std::fs::remove_file("/tmp/waldo-match-demo.ndjson");
     let bin_dir = std::path::Path::new(WRAP).parent().unwrap();
     let path = format!("{}:{}", bin_dir.display(), std::env::var("PATH").unwrap_or_default());
     let mut ran = 0;
@@ -838,7 +837,6 @@ fn every_help_example_runs_as_written() {
     assert!(ran >= 20, "only {ran} examples were found");
     // The guide's vim example really wrote the file.
     assert_eq!(std::fs::read_to_string("/tmp/waldo-demo.c").unwrap(), "#include <stdio.h>\n");
-    let _ = std::fs::remove_file("/tmp/waldo-match-demo.ndjson");
     let _ = std::fs::remove_file("/tmp/waldo-demo.c");
     // The guide is short enough to read in one go.
     assert!(t.term(&["help"]).out.lines().count() <= 45);

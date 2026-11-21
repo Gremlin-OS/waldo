@@ -1030,6 +1030,14 @@ Security notes:
   print text that looks like instructions to an agent. Waldo cannot prevent
   that; consumers should treat screens as data.
 - Key payloads are not logged.
+- The host follows symlinks. Against the callers it admits that changes
+  nothing: a caller with the host's uid can name any file the host can read.
+  Where it matters is a predictable name in a directory other users can
+  write to. The session base directory is checked for that (section 1.4),
+  and everything waldo creates itself lives inside it. A `--dest file:` or
+  `unix:` path, or a `--record` file, is opened where the operator points
+  it, so keep those out of shared directories such as `/tmp`: another user
+  could plant a symlink under the name and have the host write through it.
 
 ## 9. Language and emulator core
 

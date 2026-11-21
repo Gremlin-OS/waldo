@@ -39,6 +39,9 @@ options:
                      file:/PATH appends lines, unix:/PATH streams lines to a
                      socket, http://HOST:PORT/PATH posts each message.
                      The last message is the will: how PROGRAM ended and its output.
+                     Keep a file: or unix: path, and --record's FILE, out of
+                     directories other users can write to, such as /tmp: the
+                     host follows a symlink planted under that name.
   --no-probe         do not require the destination to accept a message at startup
   --on LIST          also send these messages: settle (the screen, each time it
                      goes still) and stream (output lines as they scroll off).
@@ -65,7 +68,7 @@ Without --detach it then waits, and exits with PROGRAM's exit status.
 examples:
   waldo-wrap --detach --name sh -- bash
   waldo-wrap --detach -- vim notes.txt
-  waldo-wrap --dest file:/tmp/build.ndjson -- make test
+  waldo-wrap --dest file:$HOME/build.ndjson -- make test
 
 Run 'waldo-term help' for how to drive the session.
 ";
