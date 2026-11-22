@@ -119,11 +119,11 @@ fn parse_opts(cmd: &str, args: &[String], allowed: &[&str], positional: bool) ->
             match name {
                 "--session" => o.session = Some(value()),
                 // Several may be given: the wait ends when any one is met.
-                "--until-match" => {
+                "--until-match" | "--until-match-new" => {
                     let re = value();
                     match o
                         .conds
-                        .entry("until_match")
+                        .entry(name[2..].replace('-', "_"))
                         .or_insert_with(|| Value::Array(Vec::new()))
                     {
                         Value::Array(list) => list.push(re.into()),
@@ -502,10 +502,11 @@ fn encode(s: &str) -> String {
 
 // ---- commands ------------------------------------------------------------------
 
-const WAIT_OPTS: [&str; 13] = [
+const WAIT_OPTS: [&str; 14] = [
     "--session",
     "--as",
     "--until-match",
+    "--until-match-new",
     "--until-settle",
     "--until-change",
     "--until-exit",
