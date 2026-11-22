@@ -11,6 +11,9 @@ on:
         type: boolean
         default: false
 
+permissions:
+  contents: read
+
 jobs:
   tarball:
     strategy:
@@ -21,12 +24,22 @@ jobs:
     timeout-minutes: 60
     steps:
       - uses: actions/checkout@v4
-      - uses: mlugg/setup-zig@v2
+      # The emulator library takes five minutes to build and changes only
+      # when the vendored tarballs or the build script do. Zig is needed
+      # only to build it.
+      - id: vt
+        uses: actions/cache@v4
+        with:
+          path: target/libghostty-vt
+          key: vt-${{ matrix.os }}-${{ hashFiles('vendor/libghostty-vt/SHA256SUMS', 'vendor/libghostty-vt/*.tar.gz', 'scripts/build-vt.sh') }}
+      - if: steps.vt.outputs.cache-hit != 'true'
+        uses: mlugg/setup-zig@v2
         with:
           version: 0.17.1
       # The tests drive bash, vim and ps. Rust is already on the runner.
       - run: sudo apt-get update && sudo apt-get install -y vim procps
-      - run: scripts/build-vt.sh
+      - if: steps.vt.outputs.cache-hit != 'true'
+        run: scripts/build-vt.sh
       - run: cargo build --release --locked
       - run: cargo test --release --locked -- --test-threads=1
       - run: scripts/dist.sh

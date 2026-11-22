@@ -92,8 +92,10 @@ beyond fetching the Rust crates.
 
 Pushing a tag `vX.Y.Z` that matches the version in `Cargo.toml` builds
 tarballs for x86_64 and aarch64 Linux on GitHub, runs the tests on each,
-and makes a draft release with the tarballs and a `SHA256SUMS` file. A
-person publishes the draft. Every push to `main` also keeps an x86_64
+and makes a draft release with the tarballs and a `SHA256SUMS` file. The
+release notes are that version's section of `CHANGELOG.md`, so before
+tagging, rename `[Unreleased]` to `[X.Y.Z] - DATE` and start a new
+`[Unreleased]`. A person publishes the draft. Every push to `main` also keeps an x86_64
 tarball as a workflow artifact.
 
 The binaries are built on Ubuntu 22.04 and need glibc 2.35 or newer. They
@@ -109,6 +111,7 @@ It runs on Linux only.
   and the messages.
 - `DESIGN.md`: how it works and why.
 - `TODO.md`: the open work.
+- `CHANGELOG.md`: what each release changed.
 - `soak/README.md`: the slow tests, run by hand: a scripted hammer, and
   subagents driving real programs.
 

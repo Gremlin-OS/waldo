@@ -15,8 +15,9 @@ and wait for the marker (more in: waldo-term help shell):
   $ waldo-term send -s demo --text 'ls /; echo \"rc=$?\"' --keys '<Enter>' --until match --pattern '^rc=[0-9]+$'
 
 Type into the program and see the screen. --text is literal; --keys takes
-key names such as <Enter>, <Esc>, <Tab>, <C-c>, <Up>:
-  $ waldo-term send -s demo --text 'vim /tmp/waldo-demo.c' --keys '<Enter>'
+key names such as <Enter>, <Esc>, <Tab>, <C-c>, <Up>. A program you start
+may be slow to draw, so wait for something it shows before typing into it:
+  $ waldo-term send -s demo --text 'vim /tmp/waldo-demo.c' --keys '<Enter>' --until match --pattern '^\"/tmp/waldo-demo.c\"'
   $ waldo-term send -s demo --keys 'i' --text '#include <stdio.h>' --keys '<Esc>:wq<Enter>'
 
 Look at the screen without typing:
@@ -37,11 +38,10 @@ End the session, see what is left, and clean up:
 
 Each command prints one status line, such as
   [demo settle gen=7 120x30 cursor=3,3 running fg=bash]
-then the screen, then sometimes a line starting
-with 'hint:' that says what probably went wrong and what to do. In the
-status line, 'unchanged' means what you typed changed nothing on screen:
-the program ignored it or is waiting for something else. 'interleaved'
-means someone else typed during your request.
+then the screen, then sometimes a line starting with 'hint:' that says what
+probably went wrong and what to do. In the status line, 'unchanged' means
+what you typed changed nothing on screen: the program ignored it or wants
+something else. 'interleaved' means someone else typed during your request.
 
 Exit status: 0 ok, 124 timed out, 3 the program exited, 4 no such session,
 2 bad usage.

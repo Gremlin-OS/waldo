@@ -30,7 +30,7 @@ work=$(mktemp -d "$root/target/dist-build.XXXXXX")
 d=$work/$name
 mkdir -p "$d/bin" "$d/licenses"
 cp "$root/target/release/waldo-wrap" "$root/target/release/waldo-term" "$d/bin/"
-cp "$root/README.md" "$root/PROTOCOL.md" "$d/"
+cp "$root/README.md" "$root/PROTOCOL.md" "$root/CHANGELOG.md" "$d/"
 cp "$root/LICENSE-MIT" "$root/LICENSE-APACHE" "$d/"
 
 # The emulator library and the packages its build takes in.

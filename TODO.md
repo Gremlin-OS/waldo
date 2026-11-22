@@ -17,6 +17,13 @@ Found by driving real programs: by hand, and by the soak runs of
 2. **`unchanged` is unproven.** It appeared on about 1 send in 50 in
    NetHack and no agent repeated its input after it, but that is too few
    cases to say it helps.
+3. **Settle can fire before a program that was just started has drawn.**
+   On a slow machine `vim FILE` and Enter settled on the echoed command
+   line; the next send was typed at the shell's terminal, vim read it as
+   typed-ahead, and what followed was lost. Found by the first CI run on
+   Ubuntu, in the guide's own example, which now waits for text. The host
+   knows a fact it does not use here: the foreground program changed
+   during the request and has printed nothing yet.
 3. **A model cannot easily tell which column is which.** NetHack players
    misjudged columns. One likely cause: frames drawn with box characters
    are three bytes each, so counting bytes, or cutting the screen with

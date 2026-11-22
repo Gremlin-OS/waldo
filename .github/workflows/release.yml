@@ -1,10 +1,14 @@
-# A tag vX.Y.Z builds the tarballs and makes a draft release. Publishing
-# the draft is left to a person.
+# A tag vX.Y.Z builds the tarballs and makes a draft release whose notes
+# are that version's section of CHANGELOG.md. Publishing the draft is left
+# to a person.
 name: release
 
 on:
   push:
     tags: ["v*"]
+
+permissions:
+  contents: read
 
 jobs:
   version:
@@ -15,6 +19,14 @@ jobs:
         run: |
           v=$(sed -n 's/^version = "\(.*\)"$/\1/p' Cargo.toml | head -1)
           [ "v$v" = "$GITHUB_REF_NAME" ] || { echo "tag $GITHUB_REF_NAME, Cargo.toml $v"; exit 1; }
+      - name: CHANGELOG.md must have a section for the version
+        run: |
+          scripts/changelog-section.sh "${GITHUB_REF_NAME#v}" > notes.md
+          cat notes.md
+      - uses: actions/upload-artifact@v4
+        with:
+          name: notes
+          path: notes.md
 
   build:
     needs: version
@@ -37,6 +49,6 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: |
           cd dist
-          cat *.sha256 > SHA256SUMS
+          cat ./*.sha256 > SHA256SUMS
           sha256sum --check SHA256SUMS
-          gh release create "$GITHUB_REF_NAME" --repo "$GITHUB_REPOSITORY" --draft --generate-notes --title "waldo $GITHUB_REF_NAME" *.tar.gz SHA256SUMS
+          gh release create "$GITHUB_REF_NAME" --repo "$GITHUB_REPOSITORY" --draft --notes-file notes.md --title "waldo $GITHUB_REF_NAME" ./*.tar.gz SHA256SUMS
