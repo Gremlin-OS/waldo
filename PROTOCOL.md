@@ -192,11 +192,12 @@ same everywhere:
 
 | Name | Meaning |
 |---|---|
-| `until` | `settle`, `match`, `change`, `exit` or `none` (section 5) |
+| `until` | `settle`, `match`, `change`, `exit`, `broadcast` or `none` (section 5) |
 | `pattern` | For `match`: a regular expression against one line |
 | `since_gen` | For `change`: return when `gen` differs from this. Default: `gen` when the request arrived |
 | `style` | `plain` (default) or `ansi` (section 3.3) |
 | `timeout_ms` | The deadline. Default 10000; values above 600000 are lowered to it. `timeout` is accepted as another name |
+| `as` | The client's name, for broadcasts (section 4.10): 1 to 32 characters from letters, digits, `_` and `-`. Optional |
 
 Each is looked for in three places, in this order: the query string; the
 `wait` object in a JSON body; the top level of a JSON body. So these mean
@@ -237,7 +238,7 @@ when the deadline passed:
 
 | Field | Meaning |
 |---|---|
-| `reason` | Why the request returned: `settle`, `match`, `change`, `exit`, `none` or `timeout` |
+| `reason` | Why the request returned: `settle`, `match`, `change`, `exit`, `broadcast`, `none` or `timeout` |
 | `waited_ms` | How long the request waited |
 | `interleaved` | True if someone else's input, signal or resize took effect during this request |
 | `changed` | Only on a request that typed something: false if `gen` is the same as when its first input was written, so nothing on screen changed, not even the cursor |
@@ -247,6 +248,7 @@ when the deadline passed:
 | `screen` | Section 3.3 |
 | `match` | Only when `reason` is `match` (below) |
 | `exit` | When `reason` is `exit` and it was the session's own program that exited (below) |
+| `broadcasts` | Only when there are some to give: what other clients said (section 4.10) |
 | `hint` | Sometimes: a sentence about a likely mistake and what to do |
 
 `match`, when a wait matched:
@@ -338,6 +340,8 @@ With `Accept: text/plain`, or `?format=text`, a 200 response is text
 | `GET /v1/triggers` | List match triggers |
 | `POST /v1/triggers` | Add one |
 | `DELETE /v1/triggers/ID` | Remove one |
+| `GET /v1/broadcasts` | What clients have said to each other |
+| `POST /v1/broadcasts` | Say something to the other clients |
 | `GET /v1/attach` | Upgrade to the attach stream (section 7) |
 
 A wrong method gets 405; an unknown path gets 404 with the list of
@@ -525,6 +529,55 @@ removed:
 `DELETE /v1/triggers/pw` answers the same with `removed` in place of
 `added`. `count` is how many times the trigger has fired.
 
+### 4.10 Broadcasts
+
+A broadcast is one line of text that a client says to the other clients
+of the session. It is never typed into the program and never appears on
+the screen. The host keeps the last 32.
+
+`POST /v1/broadcasts`:
+
+```json
+{"text": "vim is closed; the shell is yours", "as": "ann"}
+```
+
+`text` is required: one line of at most 1000 bytes with no control
+characters; space at its ends is dropped. `as` is the sender's name and is
+optional; it may also be given in the query string. The answer:
+
+```json
+{"v": 1, "session": "k3f9q2",
+ "broadcast": {"n": 3, "from": "ann", "text": "vim is closed; the shell is yours", "t_ms": 61250}}
+```
+
+`n` counts the session's broadcasts from 1. `from` is null for a sender
+without a name. `t_ms` is milliseconds since the session started.
+
+A client receives broadcasts in three ways:
+
+- **On its own responses.** A request with the wait parameter `as` gets a
+  `broadcasts` list in its response (section 3.2): every broadcast kept
+  that this name has not been given before, oldest first, leaving out the
+  ones it sent under that name. Each is given to a name once. A name the
+  host has not seen before is given everything kept. A request without
+  `as` gets none. The host remembers 64 names.
+- **By waiting.** `until: broadcast` returns, with reason `broadcast`, as
+  soon as there is one to give. With `as`, that is one this name has not
+  been given, so it returns at once if some are waiting. Without `as`, it
+  is one made after the request began, from anyone.
+- **By asking.** `GET /v1/broadcasts` answers with all that are kept, or
+  with `?since=N` those numbered above N, and `last`, the number of the
+  newest. It changes nothing about what any name has been given.
+
+```json
+{"v": 1, "session": "k3f9q2", "last": 3,
+ "broadcasts": [{"n": 3, "from": "ann", "text": "vim is closed; the shell is yours", "t_ms": 61250}]}
+```
+
+Each broadcast also goes to the destination (section 8.9). The name is
+what the sender says it is: every client of a session is the same user,
+and the host does not check it.
+
 ## 5. Waiting
 
 ### 5.1 The conditions
@@ -535,10 +588,14 @@ removed:
 | `match` | `pattern` matches a line (5.3) |
 | `change` | `gen` differs from `since_gen` |
 | `exit` | The program that had the terminal's foreground when the request began has exited. That is the session's own program, or a program started inside it, such as an editor run from a shell |
+| `broadcast` | Another client has said something this one has not been given (section 4.10) |
 | `none` | At once |
 
 Whatever the condition:
 
+- A request that carries input is not answered until all of that input has
+  been typed, except with `none`. So a pattern that matches the echo of the
+  request's own text does not return it with its Enter still to come.
 - At the deadline the request returns with reason `timeout` and the screen
   as it is. That is a 200, not an error.
 - If the session's own program exits first, the request returns with reason
@@ -747,7 +804,7 @@ Every message starts with:
 | `v` | 1 |
 | `session` | The session id |
 | `seq` | Counts from 0, one per message |
-| `trigger` | `hello`, `settle`, `match`, `stream`, `heartbeat` or `exit` |
+| `trigger` | `hello`, `settle`, `match`, `stream`, `heartbeat`, `broadcast` or `exit` |
 | `time` | Wall clock, RFC 3339 UTC with milliseconds |
 | `t_ms` | Milliseconds since the session started |
 | `dropped` | Only when messages were lost since the last one that arrived: how many |
@@ -889,6 +946,15 @@ or look at the session directory (section 1.3).
 6. It removes the socket and exits. After that there is nothing to connect
    to, and the will is the only record (section 1.4).
 
+### 8.9 broadcast
+
+Sent for every broadcast (section 4.10), whatever `--on` says:
+
+```json
+{"v":1,"session":"k3f9q2","seq":21,"trigger":"broadcast","time":"2026-11-17T23:42:08.370Z","t_ms":61250,
+ "broadcast":{"n":3,"from":"ann","text":"vim is closed; the shell is yours","t_ms":61250}}
+```
+
 ## 9. Errors
 
 An error is a status of 400 or more with this body, always JSON:
@@ -914,7 +980,7 @@ that says what to do next; its wording may change.
 | 400 | `bad_delay` | `key_delay_ms` is not a whole number of milliseconds up to 10000 |
 | 400 | `unknown_key` | A name in key notation that is not a key |
 | 400 | `file_unreadable` | A `_file` item's path is not absolute, not a regular file, over 1 MiB, not UTF-8, or cannot be read |
-| 400 | `unknown_until` | `until` is not one of the five conditions |
+| 400 | `unknown_until` | `until` is not one of the six conditions |
 | 400 | `unknown_style` | `style` is not `plain` or `ansi` |
 | 400 | `bad_timeout` | `timeout_ms` is not a whole number |
 | 400 | `missing_pattern` | `until=match`, or a new trigger, without a pattern |
@@ -928,6 +994,9 @@ that says what to do next; its wording may change.
 | 409 | `trigger_exists` | A trigger with that id is already there |
 | 409 | `too_many_triggers` | The session already has 32 |
 | 404 | `no_such_trigger` | Removing a trigger that does not exist |
+| 400 | `bad_name` | `as` is not 1 to 32 allowed characters |
+| 400 | `missing_text` | A broadcast without `text`, or with only space in it |
+| 400 | `bad_text` | A broadcast's `text` is over 1000 bytes or has a control character, such as a newline |
 | 400 | `upgrade_required` | `/v1/attach` without `Upgrade: waldo-attach` |
 | 409 | `exited` | The program has exited and the session is lingering; only requests that read or wait are answered |
 
@@ -949,6 +1018,12 @@ itself.
   lock to be released before deciding the session has ended.
 - **File paths.** It makes relative `--text-file`, `--keys-file` and
   `--paste-file` paths absolute before sending, and reads `-` from stdin.
+- **A name.** `--as NAME`, or else the environment variable `WALDO_AS`, is
+  sent as `as` by `send`, `screen`, `wait` and `broadcast`.
+- **Broadcasts in text output.** Each is printed as `broadcast from NAME:
+  TEXT` (or `broadcast: TEXT` for a sender without a name) on its own line
+  **above** the status line. Nothing the program prints can appear there,
+  so a program cannot pass its own output off as a broadcast.
 - **Text output.** It asks for JSON and prints the text format of section
   3.5 itself. For a will it prints `[ID exit code=N 54.6s exited]` (or
   `signal=NAME` and so on) and then the output.

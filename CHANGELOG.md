@@ -7,6 +7,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- Broadcasts: a client can say a line to the other clients of a session
+  without typing it into the program. `waldo-term broadcast TEXT` sends
+  one; a client that names itself with `--as NAME` (or `WALDO_AS`) is given
+  what the others said, above the status line of its next response; and
+  `--until broadcast` waits to be spoken to. Each broadcast also goes to
+  the session's destination. See `waldo-term help sharing` and PROTOCOL.md
+  section 4.10.
+
 ## [0.1.0] - 2026-11-21
 
 The first release.

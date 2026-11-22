@@ -789,6 +789,39 @@ the request replaces that, and `{"until": "none"}` answers at once.
 Not built: mouse input from the viewer, scrolling back through history while
 attached, and images, which are shown as nothing.
 
+### 7.5 Broadcasts
+
+Several clients can already use one session, and the host already keeps
+their input whole and tells each what the others did. What they could not
+do was say anything to each other except through the program. A broadcast
+is that: a line from one client to the rest, which the program never sees.
+The reference is PROTOCOL.md section 4.10.
+
+- **Why it belongs here.** A person can tell an agent "wrong branch"
+  while it works. An agent can ask a person to type a password and wait to
+  be told it is done, so the secret never enters the agent's context.
+  Agents can hand a shell to each other. A harness could do all of this,
+  but the session is already the shared place, and this needs no harness.
+- **Callers name themselves.** The host cannot tell clients apart: each
+  request is a new connection from the same user. So a client that wants
+  broadcasts says who it is, and is given each one once. A client that
+  gives no name gets none, and nothing about its responses changes.
+- **Delivery rides on responses.** An agent has no open connection to push
+  to; it has its next request. What others said arrives with whatever it
+  asked for, so an agent is steered without polling. `until: broadcast` is
+  for the agent that should stop and wait to be spoken to.
+- **A new name is given what is kept.** Someone who joins late sees the
+  recent conversation. The cost is that the first request under a new name
+  can carry up to 32 lines.
+- **Where it is printed.** Above the status line. The screen is the
+  program's to fill, and so is everything under it that looks like the
+  screen; the lines before the status line are only ever waldo's.
+- **It is a relay and no more.** One line, no addressing, no threads, no
+  history beyond the last 32, nothing across sessions. The destination
+  gets every broadcast, so a record exists for whoever wants one.
+- **Names are not checked.** Every client is the same user and can already
+  type into the program; a false name gains nothing that typing does not.
+
 ## 8. Failure modes
 
 | Situation | Behaviour |

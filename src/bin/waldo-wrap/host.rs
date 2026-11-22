@@ -57,6 +57,12 @@ const FIRST_DRAW_MAX: Duration = Duration::from_secs(2);
 const HOLD_CAP: Duration = Duration::from_secs(1);
 /// How long a resize waits for the program to redraw and go quiet.
 const RESIZE_WAIT: Duration = Duration::from_millis(1000);
+/// How many broadcasts are kept for clients that have not heard them yet.
+const MAX_BROADCASTS: usize = 32;
+const MAX_BROADCAST_BYTES: usize = 1000;
+/// How many client names are remembered.
+const MAX_NAMES: usize = 64;
+const NAME_RULE: &str = "a name is 1 to 32 characters from a-z, A-Z, 0-9, _ and -";
 const DRAIN_QUIET: Duration = Duration::from_millis(100);
 const DRAIN_CAP: Duration = Duration::from_secs(2);
 const KILL_STEP: Duration = Duration::from_secs(2);
@@ -160,6 +166,7 @@ enum Until {
     Match,
     Change(u64),
     Exit,
+    Broadcast,
     None,
 }
 
@@ -176,6 +183,7 @@ enum Reason {
     Match(MatchInfo),
     Change,
     Exit,
+    Broadcast,
     None,
     Timeout,
 }
@@ -187,6 +195,7 @@ impl Reason {
             Reason::Match(_) => "match",
             Reason::Change => "change",
             Reason::Exit => "exit",
+            Reason::Broadcast => "broadcast",
             Reason::None => "none",
             Reason::Timeout => "timeout",
         }
@@ -224,6 +233,33 @@ struct Wait {
     /// foreground as the request began: its process group and name. The
     /// wait is for that program, not for the whole session.
     exit_of: Option<(libc::pid_t, String)>,
+    /// Who is asking, when the request said (`as`). A named client is
+    /// given the broadcasts it has not heard.
+    name: Option<String>,
+    /// The newest broadcast when the request began. A wait for a
+    /// broadcast from a client without a name means one after this.
+    heard_at_start: u64,
+}
+
+/// A line one client said to the others on the session. It never reaches
+/// the program.
+struct Broadcast {
+    n: u64,
+    from: Option<String>,
+    text: String,
+    t_ms: u64,
+}
+
+impl Broadcast {
+    fn json(&self) -> Value {
+        json!({"n": self.n, "from": self.from, "text": self.text, "t_ms": self.t_ms})
+    }
+}
+
+fn valid_name(s: &str) -> bool {
+    (1..=32).contains(&s.len())
+        && s.bytes()
+            .all(|b| b.is_ascii_alphanumeric() || b == b'_' || b == b'-')
 }
 
 /// A standing match trigger (section 3.2). Its matches go to the destination.
@@ -292,6 +328,11 @@ pub struct Host {
 
     triggers: Vec<Trigger>,
     next_trigger: u64,
+    broadcasts: VecDeque<Broadcast>,
+    /// The number of the newest broadcast; they count from 1.
+    last_broadcast: u64,
+    /// For each client name, the newest broadcast it has been given.
+    heard: Vec<(String, u64)>,
     /// Lines that left the screen since the triggers last looked.
     trig_fresh: Vec<(u64, String)>,
     /// `gen` when the triggers last looked at the visible screen.
@@ -395,6 +436,9 @@ impl Host {
             fresh_lines: Vec::new(),
             triggers: Vec::new(),
             next_trigger: 1,
+            broadcasts: VecDeque::new(),
+            last_broadcast: 0,
+            heard: Vec::new(),
             trig_fresh: Vec::new(),
             trig_gen: 0,
             trig_last: now,
@@ -1233,6 +1277,97 @@ impl Host {
         self.reply(id, 200, &v, false, req.keep_alive);
     }
 
+    /// The broadcasts a request has not been given: for a named client,
+    /// those after the last it heard, leaving out its own; otherwise those
+    /// made since the request began.
+    fn unheard(&self, w: &Wait) -> Vec<Value> {
+        let after = match w.name.as_ref() {
+            Some(name) => self
+                .heard
+                .iter()
+                .find(|(n, _)| n == name)
+                .map(|h| h.1)
+                .unwrap_or(0),
+            None => w.heard_at_start,
+        };
+        self.broadcasts
+            .iter()
+            .filter(|b| b.n > after && (w.name.is_none() || b.from != w.name))
+            .map(Broadcast::json)
+            .collect()
+    }
+
+    fn handle_broadcast_list(&mut self, id: u64, req: &Request) {
+        let since = req
+            .query_get("since")
+            .and_then(|s| s.parse::<u64>().ok())
+            .unwrap_or(0);
+        let v = json!({
+            "v": 1,
+            "session": self.cfg.id,
+            "last": self.last_broadcast,
+            "broadcasts": self.broadcasts.iter().filter(|b| b.n > since).map(Broadcast::json).collect::<Vec<_>>(),
+        });
+        self.reply(id, 200, &v, false, req.keep_alive);
+    }
+
+    fn handle_broadcast(&mut self, id: u64, req: &Request) {
+        let Some(body) = self.body_json(id, req) else {
+            return;
+        };
+        let named = req
+            .query_get("as")
+            .map(|s| Value::from(s.to_string()))
+            .or_else(|| body.get("as").cloned());
+        let from = match named {
+            None | Some(Value::Null) => None,
+            Some(v) => match v.as_str().filter(|s| valid_name(s)) {
+                Some(s) => Some(s.to_string()),
+                None => return self.error(id, req, 400, "bad_name", NAME_RULE),
+            },
+        };
+        let Some(text) = body
+            .get("text")
+            .and_then(|t| t.as_str())
+            .map(|t| t.trim())
+            .filter(|t| !t.is_empty())
+        else {
+            return self.error(
+                id,
+                req,
+                400,
+                "missing_text",
+                "the body needs the text to broadcast, such as {\"text\": \"the shell is yours\", \"as\": \"ann\"}",
+            );
+        };
+        if text.len() > MAX_BROADCAST_BYTES || text.chars().any(|c| c.is_control()) {
+            return self.error(
+                id,
+                req,
+                400,
+                "bad_text",
+                &format!("a broadcast is one line of at most {MAX_BROADCAST_BYTES} bytes, with no control characters"),
+            );
+        }
+        self.last_broadcast += 1;
+        let b = Broadcast {
+            n: self.last_broadcast,
+            from,
+            text: text.to_string(),
+            t_ms: ms_since(self.start),
+        };
+        let said = b.json();
+        if self.broadcasts.len() >= MAX_BROADCASTS {
+            self.broadcasts.pop_front();
+        }
+        self.broadcasts.push_back(b);
+        let mut fields = Map::new();
+        fields.insert("broadcast".into(), said.clone());
+        self.send(Kind::Broadcast, fields);
+        let v = json!({"v": 1, "session": self.cfg.id, "broadcast": said});
+        self.reply(id, 200, &v, false, req.keep_alive);
+    }
+
     fn handle_trigger_add(&mut self, id: u64, req: &Request) {
         let Some(body) = self.body_json(id, req) else {
             return;
@@ -1429,11 +1564,18 @@ impl Host {
         let mut waits = std::mem::take(&mut self.waits);
         let mut keep = Vec::with_capacity(waits.len());
         for mut w in waits.drain(..) {
+            // A request is not answered while input of its own is still to
+            // be typed. Otherwise a pattern that matches the echo of its
+            // text would answer it before its Enter had been sent, and
+            // that Enter would land in someone else's request.
+            let typing = w.until != Until::None && owner_has_input(&self.queue, w.req_id);
             let reason = match w.until {
+                _ if typing => None,
                 // A signal or resize is answered once it has happened.
                 Until::None if !self.action_pending(w.req_id) => Some(Reason::None),
                 Until::Settle if settled => Some(Reason::Settle),
                 Until::Change(g) if self.gen != g => Some(Reason::Change),
+                Until::Broadcast if !self.unheard(&w).is_empty() => Some(Reason::Broadcast),
                 // The program inside the session that was being typed into
                 // is gone, and what replaced it has finished drawing.
                 Until::Exit
@@ -1523,6 +1665,27 @@ impl Host {
         }
         resp.insert("child".into(), self.child_json());
         resp.insert("screen".into(), self.screen_json(w.ansi));
+        // What others on the session have said that this client has not
+        // been given yet. Only a client that names itself is given them,
+        // and a wait for a broadcast.
+        if w.name.is_some() || w.until == Until::Broadcast {
+            let said = self.unheard(&w);
+            if !said.is_empty() {
+                resp.insert("broadcasts".into(), Value::Array(said));
+            }
+            if let Some(name) = w.name.as_ref() {
+                let newest = self.last_broadcast;
+                match self.heard.iter_mut().find(|(n, _)| n == name) {
+                    Some(h) => h.1 = newest,
+                    None => {
+                        if self.heard.len() >= MAX_NAMES {
+                            self.heard.remove(0);
+                        }
+                        self.heard.push((name.clone(), newest));
+                    }
+                }
+            }
+        }
 
         let mut hint = w.hint.clone();
         match &reason {
@@ -1579,6 +1742,7 @@ impl Host {
             }
             Reason::Timeout if hint.is_none() => {
                 hint = match w.until {
+                    Until::Broadcast => Some("nobody else on the session broadcast anything in that time.".into()),
                     Until::Settle if !self.seen_output => {
                         Some("the program has not drawn anything yet; settle waits for the first text on screen.".into())
                     }
@@ -2052,12 +2216,20 @@ impl Host {
             ("GET", "/v1/triggers"),
             ("POST", "/v1/triggers"),
             ("DELETE", "/v1/triggers/ID"),
+            ("GET", "/v1/broadcasts"),
+            ("POST", "/v1/broadcasts"),
         ];
         if self.lingering {
             // A wait types nothing, so it counts as reading.
             let read_only = (req.method == "GET"
-                && ["/v1/status", "/v1/screen", "/v1/output", "/v1/triggers"]
-                    .contains(&req.path.as_str()))
+                && [
+                    "/v1/status",
+                    "/v1/screen",
+                    "/v1/output",
+                    "/v1/triggers",
+                    "/v1/broadcasts",
+                ]
+                .contains(&req.path.as_str()))
                 || (req.method == "POST" && req.path == "/v1/wait");
             if req.method == "POST" && req.path == "/v1/signal" {
                 // Whatever was asked, there is no program to signal; the
@@ -2086,6 +2258,8 @@ impl Host {
             ("GET", "/v1/attach") => self.handle_attach(id, &req),
             ("GET", "/v1/triggers") => self.triggers_reply(id, &req, None),
             ("POST", "/v1/triggers") => self.handle_trigger_add(id, &req),
+            ("GET", "/v1/broadcasts") => self.handle_broadcast_list(id, &req),
+            ("POST", "/v1/broadcasts") => self.handle_broadcast(id, &req),
             ("DELETE", p) if p.starts_with("/v1/triggers/") => {
                 let name = p["/v1/triggers/".len()..].to_string();
                 self.handle_trigger_remove(id, &req, &name);
@@ -2219,6 +2393,7 @@ impl Host {
             Some("match") => Until::Match,
             Some("exit") => Until::Exit,
             Some("none") => Until::None,
+            Some("broadcast") => Until::Broadcast,
             Some("change") => match field("since_gen").as_ref().and_then(as_u64) {
                 Some(g) => Until::Change(g),
                 None => Until::Change(self.gen),
@@ -2230,7 +2405,7 @@ impl Host {
                     400,
                     "unknown_until",
                     &format!(
-                        "unknown wait condition '{other}'; use settle, match, change, exit or none"
+                        "unknown wait condition '{other}'; use settle, match, change, exit, broadcast or none"
                     ),
                 );
             }
@@ -2250,6 +2425,13 @@ impl Host {
                     &format!("unknown style '{other}'; use plain or ansi"),
                 );
             }
+        };
+        let name = match field("as") {
+            None | Some(Value::Null) => None,
+            Some(v) => match v.as_str().filter(|s| valid_name(s)) {
+                Some(s) => Some(s.to_string()),
+                None => return self.error(id, req, 400, "bad_name", NAME_RULE),
+            },
         };
         let default_timeout = DEFAULT_TIMEOUT_MS;
         let timeout_ms = match field("timeout_ms").or_else(|| field("timeout")) {
@@ -2323,6 +2505,8 @@ impl Host {
             fg_name_before: None,
             gen_at_typing: None,
             exit_of: None,
+            name,
+            heard_at_start: self.last_broadcast,
         };
         if until == Until::Exit {
             w.exit_of = sys::foreground_pgrp(self.master)

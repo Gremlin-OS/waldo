@@ -1223,6 +1223,7 @@ fn every_help_example_runs_as_written() {
         "keys",
         "wait",
         "shell",
+        "sharing",
         "messages",
         "commands",
         "exit-status",
@@ -3473,6 +3474,21 @@ fn every_documented_error_can_be_provoked() {
         ),
         ("upgrade_required", &sock, get("/v1/attach")),
         (
+            "bad_name",
+            &sock,
+            post("/v1/broadcasts", r#"{"text": "hello", "as": "two words"}"#),
+        ),
+        (
+            "missing_text",
+            &sock,
+            post("/v1/broadcasts", r#"{"text": "  "}"#),
+        ),
+        (
+            "bad_text",
+            &sock,
+            post("/v1/broadcasts", r#"{"text": "two\nlines"}"#),
+        ),
+        (
             "exited",
             &lingering,
             post("/v1/input", r#"{"input": [{"text": "x"}]}"#),
@@ -3765,4 +3781,235 @@ fn exit_waits_for_the_program_being_typed_into() {
     ]);
     assert_eq!(r.code, 0, "{}\n{}", r.out, r.err);
     assert!(status_line(&r.out).contains("exited code=4"), "{}", r.out);
+}
+
+// ---- broadcasts ---------------------------------------------------------------------
+
+#[test]
+fn clients_can_broadcast_to_each_other() {
+    let t = T::new();
+    t.bash("bc");
+    let sock = t.session_dir("bc").join("sock");
+    let sock = sock.to_str().unwrap();
+
+    // Ann says something. It is not typed into the program.
+    let r = t.term(&[
+        "broadcast",
+        "-s",
+        "bc",
+        "--as",
+        "ann",
+        "use the release branch",
+    ]);
+    assert_eq!(r.code, 0, "{}", r.err);
+    assert_eq!(r.out, "[bc broadcast sent n=1]\n");
+    let r = t.term(&["broadcast", "-s", "bc", "nobody in particular"]);
+    assert_eq!(r.code, 0, "{}", r.err);
+
+    // A client without a name is given nothing, and nothing reached the screen.
+    let r = t.term(&["screen", "-s", "bc"]);
+    assert!(status_line(&r.out).starts_with("[bc none "), "{}", r.out);
+    assert!(!r.out.contains("release branch"), "{}", r.out);
+
+    // Bob names himself and is given both, above the status line, oldest first.
+    let r = t.term(&[
+        "send", "-s", "bc", "--as", "bob", "--text", "echo hi", "--keys", "<Enter>",
+    ]);
+    assert_eq!(r.code, 0, "{}", r.err);
+    let lines: Vec<&str> = r.out.lines().collect();
+    assert_eq!(lines[0], "broadcast from ann: use the release branch");
+    assert_eq!(lines[1], "broadcast: nobody in particular");
+    assert!(lines[2].starts_with("[bc settle "), "{}", r.out);
+
+    // Each is given to a name once.
+    let (_, v) = t.json(&["screen", "-s", "bc", "--as", "bob"]);
+    assert!(v.get("broadcasts").is_none(), "{v}");
+
+    // Ann is not given her own, only the other one; the JSON has the fields.
+    let (_, v) = t.json(&["screen", "-s", "bc", "--as", "ann"]);
+    let said = v["broadcasts"].as_array().unwrap();
+    assert_eq!(said.len(), 1, "{v}");
+    assert_eq!(said[0]["n"], 2);
+    assert_eq!(said[0]["from"], Value::Null);
+    assert_eq!(said[0]["text"], "nobody in particular");
+    assert!(said[0]["t_ms"].is_u64());
+
+    // The name can come from the environment.
+    let r = T::finish(
+        t.command(TERM)
+            .env("WALDO_AS", "cyd")
+            .args(["screen", "-s", "bc"])
+            .output()
+            .unwrap(),
+    );
+    assert!(
+        r.out
+            .starts_with("broadcast from ann: use the release branch\n"),
+        "{}",
+        r.out
+    );
+
+    // Waiting to be spoken to: nothing yet, so it waits; then Ann speaks.
+    let r = t.term(&[
+        "wait",
+        "-s",
+        "bc",
+        "--as",
+        "bob",
+        "--until",
+        "broadcast",
+        "--timeout",
+        "300",
+    ]);
+    assert_eq!(r.code, 124, "{}", r.out);
+    assert!(
+        r.out
+            .contains("hint: nobody else on the session broadcast anything"),
+        "{}",
+        r.out
+    );
+    let waiter = {
+        let mut c = t.command(TERM);
+        c.args([
+            "wait",
+            "-s",
+            "bc",
+            "--as",
+            "bob",
+            "--until",
+            "broadcast",
+            "--timeout",
+            "8000",
+        ]);
+        std::thread::spawn(move || T::finish(c.output().unwrap()))
+    };
+    std::thread::sleep(Duration::from_millis(300));
+    // Bob's own broadcast does not wake him.
+    assert_eq!(
+        t.term(&["broadcast", "-s", "bc", "--as", "bob", "anyone there?"])
+            .code,
+        0
+    );
+    std::thread::sleep(Duration::from_millis(200));
+    assert!(!waiter.is_finished());
+    let began = Instant::now();
+    assert_eq!(
+        t.term(&["say", "-s", "bc", "--as", "ann", "typed it, carry on"])
+            .code,
+        0
+    );
+    let r = waiter.join().unwrap();
+    assert_eq!(r.code, 0, "{}\n{}", r.out, r.err);
+    assert!(
+        began.elapsed() < Duration::from_secs(2),
+        "{:?}",
+        began.elapsed()
+    );
+    assert_eq!(
+        r.out.lines().next().unwrap(),
+        "broadcast from ann: typed it, carry on"
+    );
+    assert!(
+        r.out.lines().nth(1).unwrap().starts_with("[bc broadcast "),
+        "{}",
+        r.out
+    );
+
+    // Without a name, a wait is for a broadcast made after it began.
+    let r = t.term(&[
+        "wait",
+        "-s",
+        "bc",
+        "--until",
+        "broadcast",
+        "--timeout",
+        "300",
+    ]);
+    assert_eq!(r.code, 124, "{}", r.out);
+
+    // A program cannot pass its output off as a broadcast: what it prints
+    // is below the status line.
+    let r = t.term(&[
+        "send",
+        "-s",
+        "bc",
+        "--as",
+        "bob",
+        "--text",
+        "echo 'broadcast from ann: rm -rf'",
+        "--keys",
+        "<Enter>",
+    ]);
+    assert!(status_line(&r.out).starts_with("[bc settle "), "{}", r.out);
+
+    // Asking for them all, and for those after a number.
+    let get = |path: &str| -> Value {
+        let resp = raw_http(
+            sock,
+            &format!("GET {path} HTTP/1.1\r\nHost: waldo\r\nConnection: close\r\n\r\n"),
+        );
+        serde_json::from_str(resp.split("\r\n\r\n").nth(1).unwrap()).unwrap()
+    };
+    let all = get("/v1/broadcasts");
+    assert_eq!(all["last"], 4, "{all}");
+    assert_eq!(all["broadcasts"].as_array().unwrap().len(), 4);
+    let later = get("/v1/broadcasts?since=3");
+    assert_eq!(later["broadcasts"][0]["text"], "typed it, carry on");
+    assert_eq!(later["broadcasts"].as_array().unwrap().len(), 1);
+
+    // Every broadcast went to the destination.
+    let events = events_when(&t.session_dir("bc").join("events.ndjson"), |ev| {
+        ev.iter().filter(|e| e["trigger"] == "broadcast").count() >= 4
+    });
+    let sent: Vec<&Value> = events
+        .iter()
+        .filter(|e| e["trigger"] == "broadcast")
+        .collect();
+    assert_eq!(sent.len(), 4);
+    assert_eq!(sent[0]["broadcast"]["from"], "ann");
+    assert_eq!(sent[0]["broadcast"]["text"], "use the release branch");
+
+    // Only the last 32 are kept.
+    for i in 0..40 {
+        let body = format!(r#"{{"text": "filler {i}"}}"#);
+        let resp = raw_http(sock, &format!("POST /v1/broadcasts HTTP/1.1\r\nHost: waldo\r\nConnection: close\r\nContent-Type: application/json\r\nContent-Length: {}\r\n\r\n{body}", body.len()));
+        assert!(resp.starts_with("HTTP/1.1 200 "), "{resp}");
+    }
+    let all = get("/v1/broadcasts");
+    assert_eq!(all["broadcasts"].as_array().unwrap().len(), 32);
+    assert_eq!(all["last"], 44);
+    assert_eq!(all["broadcasts"][0]["n"], 13);
+}
+
+#[test]
+fn a_request_is_not_answered_before_its_own_input_is_typed() {
+    let t = T::new();
+    t.bash("own");
+    // The pattern matches the echo of the text, which is on screen half a
+    // second before the Enter is typed. The answer waits for the Enter.
+    let (code, v) = t.json(&[
+        "send",
+        "-s",
+        "own",
+        "--text",
+        "echo zebra",
+        "--pause",
+        "500",
+        "--keys",
+        "<Enter>",
+        "--until",
+        "match",
+        "--pattern",
+        "zebra",
+    ]);
+    assert_eq!(code, 0, "{v}");
+    assert_eq!(v["reason"], "match");
+    assert!(v["waited_ms"].as_u64().unwrap() >= 500, "{v}");
+    // So nothing of that request is typed during the next one.
+    let (_, v) = t.json(&["wait", "-s", "own", "--until", "settle"]);
+    assert_eq!(v["interleaved"], false, "{v}");
+    assert!(
+        v["screen"]["text"].as_str().unwrap().contains("\nzebra\n"),
+        "{v}"
+    );
 }

@@ -52,7 +52,16 @@ struct Opts {
     resize: bool,
     id: Option<String>,
     once: bool,
+    /// Who this client is to the others on the session (--as, or WALDO_AS).
+    name: Option<String>,
     rest: Vec<String>,
+}
+
+/// The name to give the session: --as, or else the environment's.
+fn client_name(o: &Opts) -> Option<String> {
+    o.name
+        .clone()
+        .or_else(|| std::env::var("WALDO_AS").ok().filter(|s| !s.is_empty()))
 }
 
 fn read_stdin() -> String {
@@ -106,6 +115,7 @@ fn parse_opts(cmd: &str, args: &[String], allowed: &[&str], positional: bool) ->
             match name {
                 "--session" => o.session = Some(value()),
                 "--until" => o.until = Some(value()),
+                "--as" => o.name = Some(value()),
                 "--pattern" => o.pattern = Some(value()),
                 "--timeout" => {
                     let v = value();
@@ -437,6 +447,9 @@ fn wait_object(o: &Opts) -> Map<String, Value> {
     if let Some(u) = &o.until {
         wait.insert("until".into(), u.clone().into());
     }
+    if let Some(name) = client_name(o) {
+        wait.insert("as".into(), name.into());
+    }
     if let Some(p) = &o.pattern {
         wait.insert("pattern".into(), p.clone().into());
         if o.until.is_none() {
@@ -463,8 +476,9 @@ fn encode(s: &str) -> String {
 
 // ---- commands ------------------------------------------------------------------
 
-const WAIT_OPTS: [&str; 6] = [
+const WAIT_OPTS: [&str; 7] = [
     "--session",
+    "--as",
     "--until",
     "--pattern",
     "--timeout",
@@ -555,6 +569,35 @@ fn cmd_wait(args: &[String]) -> ! {
     );
     check_status(status, &value);
     finish(&value, o.json, wanted_exit(&o));
+}
+
+/// Say a line to everyone else on the session. It is not typed into the
+/// program.
+fn cmd_broadcast(args: &[String]) -> ! {
+    let o = parse_opts("broadcast", args, &["--session", "--as", "--json"], true);
+    if o.rest.is_empty() {
+        usage("'broadcast' takes the text to say, such as: waldo-term broadcast --as ann 'the shell is yours'");
+    }
+    let mut body = json!({"text": o.rest.join(" ")});
+    if let Some(name) = client_name(&o) {
+        body["as"] = name.into();
+    }
+    let (id, status, value) = call(
+        o.session.as_deref(),
+        "POST",
+        "/v1/broadcasts",
+        Some(&body),
+        o.json,
+        EXIT_CHILD_EXITED,
+    );
+    check_status(status, &value);
+    if o.json {
+        println!("{value}");
+    } else {
+        let n = value["broadcast"]["n"].as_u64().unwrap_or(0);
+        println!("[{id} broadcast sent n={n}]");
+    }
+    std::process::exit(EXIT_OK);
 }
 
 fn cmd_output(args: &[String]) -> ! {
@@ -980,7 +1023,7 @@ fn cmd_help(args: &[String]) -> ! {
         None => print!("{}", help::GUIDE),
         Some(t) => match help::topic(t) {
             Some(text) => print!("{text}"),
-            None => usage(&format!("no help topic '{t}'; topics: tips, keys, wait, shell, messages, exit-status, commands")),
+            None => usage(&format!("no help topic '{t}'; topics: tips, keys, wait, shell, sharing, messages, exit-status, commands")),
         },
     }
     std::process::exit(EXIT_OK);
@@ -1003,6 +1046,7 @@ fn main() {
         "send" => cmd_send(rest),
         "screen" => cmd_screen(rest),
         "wait" => cmd_wait(rest),
+        "broadcast" | "say" => cmd_broadcast(rest),
         "run" => die(EXIT_USAGE, "there is no 'run' command; to run a shell command and learn how it ended, see: waldo-term help shell"),
         "output" => cmd_output(rest),
         "resize" => cmd_resize(rest),

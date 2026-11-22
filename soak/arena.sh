@@ -10,6 +10,8 @@
 #   --shared         all agents use one session directory, so they can
 #                    address the same sessions
 #   --shared-home    all agents work in one directory
+#   --named          each agent's calls carry its name (WALDO_AS), so it is
+#                    given what the others broadcast
 #   --dir DIR        where to make the arena (default: $TMPDIR or /tmp)
 #
 # It prints the arena directory and each agent's wrapper. The wrapper, called
@@ -25,6 +27,7 @@ extra=
 budget=80
 shared=no
 shared_home=no
+named=no
 base=${TMPDIR:-/tmp}
 while [ $# -gt 0 ]; do
   case $1 in
@@ -33,8 +36,9 @@ while [ $# -gt 0 ]; do
     --budget) budget=$2; shift 2 ;;
     --shared) shared=yes; shift ;;
     --shared-home) shared_home=yes; shift ;;
+    --named) named=yes; shift ;;
     --dir) base=$2; shift 2 ;;
-    -h|--help) sed -n '2,20p' "$0"; exit 0 ;;
+    -h|--help) sed -n '2,22p' "$0"; exit 0 ;;
     -*) echo "arena.sh: unknown option $1" >&2; exit 2 ;;
     *) break ;;
   esac
@@ -50,6 +54,7 @@ for agent in "$@"; do
   if [ $shared = yes ]; then sessions=$arena/sessions; else sessions=$dir/sessions; fi
   if [ $shared_home = yes ]; then work=$arena/work; else work=$dir/work; fi
   mkdir -p "$dir" "$sessions" "$work"
+  if [ $named = yes ]; then as="export WALDO_AS=$agent"; else as="unset WALDO_AS"; fi
   chmod 700 "$sessions"
   cat > "$dir/w" <<EOF
 #!/usr/bin/env bash
@@ -57,6 +62,7 @@ for agent in "$@"; do
 D=$dir
 export WALDO_DIR=$sessions HOME=$work PATH=$bin${extra:+:$extra}:\$PATH PS1='\$ '
 unset XDG_RUNTIME_DIR PROMPT_COMMAND WALDO_SESSION WALDO_SOCKET TMUX TMUX_PANE
+$as
 cd $work || exit 98
 BUDGET=$budget
 bin=waldo-term

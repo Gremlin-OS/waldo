@@ -75,7 +75,21 @@ pub fn response(resp: &Value) -> String {
             words.push(w);
         }
     }
-    let mut out = format!("[{}]\n", words.join(" "));
+    // What others on the session said comes first, above the status line:
+    // nothing the program prints can appear there.
+    let mut out = String::new();
+    for b in resp
+        .get("broadcasts")
+        .and_then(|b| b.as_array())
+        .into_iter()
+        .flatten()
+    {
+        match b.get("from").and_then(|f| f.as_str()) {
+            Some(from) => out.push_str(&format!("broadcast from {from}: {}\n", s(b, "text"))),
+            None => out.push_str(&format!("broadcast: {}\n", s(b, "text"))),
+        }
+    }
+    out.push_str(&format!("[{}]\n", words.join(" ")));
     let body = resp.get("screen").map(|sc| s(sc, "text")).unwrap_or("");
     if !body.is_empty() {
         out.push_str(body);
