@@ -62,7 +62,8 @@ or a socket path); with exactly one live session it can be left out.
       [--until U] [--pattern RE] [--timeout MS] [--as NAME]
   screen                    print the screen  [--until U] [--pattern RE] [--timeout MS]
   wait                      wait, then print the screen
-      --until settle|match|change|exit|broadcast [--pattern RE] [--timeout MS]
+      --until settle|match|change|exit|broadcast|after  (repeatable: any one)
+      [--pattern RE] [--after MS] [--from NAME] [--timeout MS]
   broadcast [--as NAME] TEXT
                             say a line to the other clients of the session; it is
                             not typed into the program (help sharing)
@@ -152,8 +153,16 @@ Commands that print the screen wait first. --until says for what:
            program, or one started inside it, such as vim in a shell. Typed
            at a shell prompt, that program is the shell itself.
   broadcast  another client of the session has said something
-           (waldo-term help sharing)
+           (waldo-term help sharing). --from NAME: only that sender.
+  after    --after MS has passed. Not a failure, unlike the deadline:
+           use it to look again after a while.
   none     (default for screen) do not wait
+
+Give --until more than once to wait for whichever comes first; the status
+line says which it was. --pattern RE and --after MS each count as one:
+  --pattern '^rc=[0-9]+$' --until broadcast     the marker, or someone speaks
+  --pattern 'Password: $' --until exit           the prompt, or the program ends
+  --pattern 'ready' --after 5s                   the text, or five seconds
 
 --timeout MS sets the deadline: default 10000, at most 600000. On the
 deadline the screen is still printed, the reason is 'timeout', and the exit
@@ -179,7 +188,8 @@ What agents who used waldo before you learned the slow way.
    appear, and anchor it with ^: an unanchored pattern can match the echo
    of the command you just typed.
 3. A screen that never goes still (an animation, a clock) makes the default
-   wait run to its timeout. Use --until none, or --until match.
+   wait run to its timeout. Use --until none, --until match, or --after MS
+   to look again after a while.
 4. To know that a shell command finished, and how, put a marker after it
    and wait for the marker: waldo-term help shell
 5. --until exit waits for the program you are typing into. After :wq in vim
@@ -236,6 +246,10 @@ commands above are refused, and say so.
 A broadcast says who sent it; waldo does not check the name, and does not
 decide whose word counts. Whether to act on one is for your own
 instructions to say.
+
+A wait for the screen does not end when someone speaks. To watch the
+screen and listen, name both, and the status line says which it was:
+  $ waldo-term send -s room --as bob --text 'sleep 1; echo \"rc=$?\"' --keys '<Enter>' --pattern '^rc=' --until broadcast
 
 To stop and wait until someone speaks, for example after asking a person
 to type a password themselves:

@@ -3514,6 +3514,7 @@ fn every_documented_error_can_be_provoked() {
             &sock,
             post("/v1/broadcasts", r#"{"text": "hello", "as": "two words"}"#),
         ),
+        ("bad_after", &sock, get("/v1/screen?until=after")),
         (
             "broadcasts_off",
             &quiet,
@@ -4291,4 +4292,203 @@ fn a_session_can_be_started_without_broadcasts() {
         "send", "-s", "v", "--text", "s", "--pause", "200", "--text", "hello",
     ]);
     assert!(!v.out.contains(" say: "), "{}", v.out);
+}
+
+#[test]
+fn a_wait_can_name_several_conditions() {
+    let t = T::new();
+    t.bash("any");
+
+    // A marker or a broadcast: the marker comes first.
+    let (code, v) = t.json(&[
+        "send",
+        "-s",
+        "any",
+        "--as",
+        "bob",
+        "--text",
+        "sleep 0.3; echo \"rc=$?\"",
+        "--keys",
+        "<Enter>",
+        "--pattern",
+        "^rc=[0-9]+$",
+        "--until",
+        "broadcast",
+    ]);
+    assert_eq!(code, 0, "{v}");
+    assert_eq!(v["reason"], "match");
+
+    // The same wait, and someone speaks first: it hears them, where a wait
+    // for the marker alone would have slept through it.
+    let waiter = {
+        let mut c = t.command(TERM);
+        c.args([
+            "send",
+            "-s",
+            "any",
+            "--as",
+            "bob",
+            "--text",
+            "sleep 3; echo \"rc=$?\"",
+            "--keys",
+            "<Enter>",
+            "--pattern",
+            "^rc=[0-9]+$",
+            "--until",
+            "broadcast",
+            "--timeout",
+            "8000",
+        ]);
+        std::thread::spawn(move || T::finish(c.output().unwrap()))
+    };
+    std::thread::sleep(Duration::from_millis(500));
+    let began = Instant::now();
+    assert_eq!(
+        t.term(&[
+            "broadcast",
+            "-s",
+            "any",
+            "--as",
+            "ann",
+            "stop, wrong directory"
+        ])
+        .code,
+        0
+    );
+    let r = waiter.join().unwrap();
+    assert_eq!(r.code, 0, "{}\n{}", r.out, r.err);
+    assert!(
+        began.elapsed() < Duration::from_secs(2),
+        "{:?}",
+        began.elapsed()
+    );
+    assert_eq!(
+        r.out.lines().next().unwrap(),
+        "broadcast from ann: stop, wrong directory"
+    );
+    assert!(
+        r.out.lines().nth(1).unwrap().starts_with("[any broadcast "),
+        "{}",
+        r.out
+    );
+    assert_eq!(
+        t.term(&[
+            "wait",
+            "-s",
+            "any",
+            "--pattern",
+            "^rc=0$",
+            "--timeout",
+            "8000"
+        ])
+        .code,
+        0
+    );
+
+    // Only one sender counts with --from.
+    let waiter = {
+        let mut c = t.command(TERM);
+        c.args([
+            "wait",
+            "-s",
+            "any",
+            "--as",
+            "bob",
+            "--until",
+            "broadcast",
+            "--from",
+            "chris",
+            "--timeout",
+            "8000",
+        ]);
+        std::thread::spawn(move || T::finish(c.output().unwrap()))
+    };
+    std::thread::sleep(Duration::from_millis(300));
+    assert_eq!(
+        t.term(&["broadcast", "-s", "any", "--as", "ann", "not for you"])
+            .code,
+        0
+    );
+    std::thread::sleep(Duration::from_millis(300));
+    assert!(!waiter.is_finished());
+    assert_eq!(
+        t.term(&["broadcast", "-s", "any", "--as", "chris", "carry on"])
+            .code,
+        0
+    );
+    let r = waiter.join().unwrap();
+    assert_eq!(r.code, 0, "{}\n{}", r.out, r.err);
+    // Both are given, since neither had been; it was chris's that ended the wait.
+    assert!(
+        r.out
+            .contains("broadcast from ann: not for you\nbroadcast from chris: carry on\n"),
+        "{}",
+        r.out
+    );
+
+    // A length of time is a condition, not a failure.
+    let began = Instant::now();
+    let (code, v) = t.json(&[
+        "wait",
+        "-s",
+        "any",
+        "--pattern",
+        "never-appears",
+        "--after",
+        "400",
+    ]);
+    assert_eq!(code, 0, "{v}");
+    assert_eq!(v["reason"], "after");
+    let took = began.elapsed();
+    assert!(
+        took >= Duration::from_millis(400) && took < Duration::from_secs(2),
+        "{took:?}"
+    );
+    // It is not cut short by the usual ten-second deadline.
+    let (code, v) = t.json(&["screen", "-s", "any", "--after", "11s"]);
+    assert_eq!(code, 0, "{v}");
+    assert_eq!(v["reason"], "after");
+    assert!(v["waited_ms"].as_u64().unwrap() >= 11_000, "{v}");
+
+    // A program inside the session ends before the text appears.
+    assert_eq!(
+        t.term(&["send", "-s", "any", "--text", "cat", "--keys", "<Enter>"])
+            .code,
+        0
+    );
+    let (code, v) = t.json(&[
+        "send",
+        "-s",
+        "any",
+        "--keys",
+        "<C-d>",
+        "--pattern",
+        "never-appears",
+        "--until",
+        "exit",
+    ]);
+    assert_eq!(code, 0, "{v}");
+    assert_eq!(v["reason"], "exit");
+
+    // The body takes a list; none cannot be combined.
+    let sock = t.session_dir("any").join("sock");
+    let post = |body: &str| {
+        raw_http(sock.to_str().unwrap(), &format!("POST /v1/wait HTTP/1.1\r\nHost: waldo\r\nConnection: close\r\nContent-Type: application/json\r\nContent-Length: {}\r\n\r\n{body}", body.len()))
+    };
+    assert!(
+        post(r#"{"until": ["match", "after"], "pattern": "nope", "after_ms": 100}"#)
+            .contains("\"reason\":\"after\"")
+    );
+    let refused = post(r#"{"until": ["none", "settle"]}"#);
+    assert!(
+        refused.starts_with("HTTP/1.1 400 ") && refused.contains("unknown_until"),
+        "{refused}"
+    );
+
+    // How a broadcast arrived is recorded.
+    let resp = raw_http(
+        sock.to_str().unwrap(),
+        "GET /v1/broadcasts HTTP/1.1\r\nHost: waldo\r\nConnection: close\r\n\r\n",
+    );
+    assert!(resp.contains("\"via\":\"api\""), "{resp}");
 }

@@ -19,6 +19,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   --no-broadcast` starts a session without any of this. See `waldo-term help sharing` and PROTOCOL.md
   section 4.10.
 
+- A wait can name several conditions and returns on whichever is met
+  first: give `--until` more than once. `--pattern '^rc=' --until
+  broadcast` waits for a marker while still hearing other clients.
+- `--after MS`: a length of time as a wait condition. The reason is `after`
+  and the exit status 0, where running into `--timeout` is a failure.
+- `--from NAME` limits a wait for a broadcast to one sender, and each
+  broadcast records how it arrived (`via`: `attach` or `api`).
+
 ### Changed
 
 - `waldo-term attach` keeps one key for itself instead of two. Ctrl-] now
