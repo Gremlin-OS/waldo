@@ -57,6 +57,10 @@ pub fn response(resp: &Value) -> String {
         "" => {}
         other => words.push(other.to_string()),
     }
+    // The request typed something and nothing on screen changed.
+    if resp.get("changed").and_then(|c| c.as_bool()) == Some(false) {
+        words.push("unchanged".into());
+    }
     // Someone else's input was typed during this request, so the screen
     // and a run's output may hold more than this request caused.
     if resp.get("interleaved").and_then(|i| i.as_bool()) == Some(true) {
@@ -117,6 +121,11 @@ mod tests {
             response(&r),
             "[k3f9q2 settle gen=41 80x24 cursor=1,19 alt running fg=vim]\n#include <stdio.h>\n~\nhint: something\n"
         );
+        let mut ignored = r.clone();
+        ignored["changed"] = false.into();
+        assert!(response(&ignored).starts_with("[k3f9q2 settle gen=41 80x24 cursor=1,19 alt running fg=vim unchanged]\n"));
+        ignored["changed"] = true.into();
+        assert!(response(&ignored).starts_with("[k3f9q2 settle gen=41 80x24 cursor=1,19 alt running fg=vim]\n"));
         let mut shared = r.clone();
         shared["interleaved"] = true.into();
         assert!(response(&shared).starts_with("[k3f9q2 settle gen=41 80x24 cursor=1,19 alt running fg=vim interleaved]\n"));

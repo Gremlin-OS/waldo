@@ -311,6 +311,12 @@ pub fn foreground_pgrp(master: RawFd) -> Option<libc::pid_t> {
     }
 }
 
+/// Whether any process is left in a process group.
+pub fn group_exists(pg: libc::pid_t) -> bool {
+    let r = unsafe { libc::kill(-pg, 0) };
+    r == 0 || io::Error::last_os_error().raw_os_error() == Some(libc::EPERM)
+}
+
 /// The short name of a process, from /proc.
 pub fn process_name(pid: libc::pid_t) -> Option<String> {
     let s = std::fs::read_to_string(format!("/proc/{pid}/comm")).ok()?;

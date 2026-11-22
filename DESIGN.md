@@ -272,12 +272,28 @@ read meaning into timing:
   first time, or until 2 s after the session started, whichever comes
   first. A shell echoes what arrives before its first prompt a second time:
   once by the terminal, and once by the shell when it draws its prompt.
+- Beyond those, the caller decides. A `pause` item puts a delay at one
+  point, and `key_delay_ms` puts one between all the keys of a request.
+  Programs differ in how fast they take keys, and the host cannot know: in
+  the tests against tmux, htop missed a `q` sent right after an Escape, and
+  NetHack dropped keys sent in the same call as the one that opened its
+  travel prompt, under both tools. The host does not guess; it gives the
+  caller the control.
 
 ### 2.2 Waiting
 
 The wait conditions other than `settle` exist because settle is a guess
 (section 3.1): `match` for text that says the thing is done, `change` for
 "anything at all", `exit` for a program that runs to completion.
+
+`exit` means the program being typed into: whatever had the terminal's
+foreground when the request began. For a session that runs one program that
+is the session's end. For vim started from a shell it is vim. It used to
+mean the session only, and in the tests against tmux every agent, in every
+round, waited on it after `:wq` or `q` and sat through a timeout; a written
+warning did not stop that. The tool now means what its users took it to
+mean. It is decided from the foreground process group, a fact the kernel
+reports, not from a guess about the program.
 
 - With input, `match` ignores text that was already on screen when the
   request began, so a wait for the prompt after a command is not satisfied
@@ -295,6 +311,12 @@ The wait conditions other than `settle` exist because settle is a guess
   change` and to notice that nothing happened.
 - Screen text has trailing whitespace trimmed from each row and trailing
   blank rows dropped. Width then costs almost nothing in tokens.
+- `changed` says whether anything on screen is different from when the
+  request's first input was written. Programs swallow keys without a sign:
+  a prompt is pending, a move ran into a wall. The host cannot know why,
+  so it reports the fact and does not guess a cause. It is a field and a
+  word in the status line, not a hint, because input that changes nothing
+  is sometimes right, as with a password that is not echoed.
 - `interleaved` says another client's input reached the pty during the
   request. Each request's input is typed whole, so it never means mixed-up
   lines; it means the screen may hold more than the request caused, such as
@@ -394,8 +416,8 @@ These are requirements, not polish.
   - A match wait with input that times out while the pattern matches text
     that was already there: the hint says that only a new match counts for
     a request that sends input, and to use `wait --until match` instead.
-  - A wait for `exit` that times out: the hint names the foreground program
-    and says that `exit` means the session's own program.
+  - A wait for `exit` that times out: the hint names the program that was
+    being waited for.
   - A timeout while the screen was still changing:
     `hint: the screen never went quiet; wait for specific text with --until match.`
   - Unparsed text that looks like key notation sent as `text`:

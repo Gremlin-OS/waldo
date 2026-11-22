@@ -771,7 +771,7 @@ fn every_help_example_runs_as_written() {
     let bin_dir = std::path::Path::new(WRAP).parent().unwrap();
     let path = format!("{}:{}", bin_dir.display(), std::env::var("PATH").unwrap_or_default());
     let mut ran = 0;
-    for topic in ["", "keys", "wait", "shell", "messages", "commands", "exit-status"] {
+    for topic in ["", "tips", "keys", "wait", "shell", "messages", "commands", "exit-status"] {
         let args: Vec<&str> = if topic.is_empty() { vec!["help"] } else { vec!["help", topic] };
         let help = t.term(&args);
         assert_eq!(help.code, 0, "help {topic}: {}", help.err);
@@ -2008,6 +2008,7 @@ fn every_documented_error_can_be_provoked() {
         ("unknown_until", &sock, post("/v1/wait", r#"{"until": "never"}"#)),
         ("unknown_style", &sock, post("/v1/wait", r#"{"style": "neon"}"#)),
         ("bad_timeout", &sock, post("/v1/wait", r#"{"timeout_ms": "soon"}"#)),
+        ("bad_delay", &sock, post("/v1/input", r#"{"input": [{"keys": "ab"}], "key_delay_ms": 20000}"#)),
         ("missing_pattern", &sock, post("/v1/wait", r#"{"until": "match"}"#)),
         ("bad_pattern", &sock, post("/v1/wait", r#"{"until": "match", "pattern": "("}"#)),
         ("bad_tail", &sock, get("/v1/output?tail=some")),
@@ -2040,4 +2041,115 @@ fn every_documented_error_can_be_provoked() {
     // A refused request types nothing: the screen is as it was.
     assert_eq!(t.term(&["screen", "-s", "er"]).out, before);
     assert_eq!(t.term(&["kill", "lg"]).code, 0);
+}
+
+// ---- delays the request asks for --------------------------------------------------------
+
+#[test]
+fn a_request_can_slow_its_own_typing() {
+    let t = T::new();
+    // A program that reads one key, is busy for a while, throws away
+    // whatever arrived meanwhile, and then reads a second key: the way a
+    // program that opens a prompt discards typed-ahead input.
+    let program = "stty -echo; printf 'go\\n'; read -rsn1 a; sleep 0.4; while read -rsn1 -t 0.01 junk; do :; done; \
+        printf 'next\\n'; read -rsn1 b; printf 'got %s%s\\n' \"$a\" \"$b\"; sleep 30";
+    let start = |name: &str| {
+        t.start(name, &["bash", "--norc", "--noprofile", "-c", program]);
+        assert_eq!(t.term(&["wait", "-s", name, "--until", "match", "--pattern", "^go$"]).code, 0);
+    };
+
+    // Sent together, the second key is thrown away and the program waits.
+    start("d0");
+    let r = t.term(&["send", "-s", "d0", "--keys", "xy", "--until", "match", "--pattern", "^got", "--timeout", "1500"]);
+    assert_eq!(r.code, 124, "{}\n{}", r.out, r.err);
+
+    // With a pause at that point, it arrives.
+    start("d1");
+    let r = t.term(&["send", "-s", "d1", "--keys", "x", "--pause", "800", "--keys", "y", "--until", "match", "--pattern", "^got"]);
+    assert_eq!(r.code, 0, "{}\n{}", r.out, r.err);
+    assert!(r.out.lines().any(|l| l == "got xy"), "{}", r.out);
+
+    // And with a delay between all the keys.
+    start("d2");
+    let r = t.term(&["send", "-s", "d2", "--key-delay", "800", "--keys", "xy", "--until", "match", "--pattern", "^got"]);
+    assert_eq!(r.code, 0, "{}\n{}", r.out, r.err);
+    assert!(r.out.lines().any(|l| l == "got xy"), "{}", r.out);
+
+    // The delay is between keys, so three keys take at least two of them,
+    // and the text still arrives whole and in order.
+    t.bash("d3");
+    let began = Instant::now();
+    let r = t.term(&["send", "-s", "d3", "--key-delay", "250", "--keys", "abc", "--text", "def"]);
+    assert_eq!(r.code, 0, "{}\n{}", r.out, r.err);
+    assert!(began.elapsed() >= Duration::from_millis(750), "{:?}", began.elapsed());
+    assert!(r.out.lines().any(|l| l == "$ abcdef"), "{}", r.out);
+
+    // A pause that is not a sensible number is refused, and nothing is typed.
+    let r = t.term(&["send", "-s", "d3", "--text", "nope", "--pause", "99999"]);
+    assert_eq!(r.code, 2, "{}\n{}", r.out, r.err);
+    assert!(r.err.contains("bad_item") && r.err.contains("pause"), "{}", r.err);
+    assert!(!t.term(&["screen", "-s", "d3"]).out.contains("nope"));
+}
+
+#[test]
+fn a_response_says_when_typing_changed_nothing() {
+    let t = T::new();
+    // A program that reads nothing and echoes nothing: keys go nowhere.
+    t.start("un", &["sh", "-c", "stty -echo; echo ready; sleep 30"]);
+    assert_eq!(t.term(&["wait", "-s", "un", "--until", "match", "--pattern", "^ready$"]).code, 0);
+    let r = t.term(&["send", "-s", "un", "--keys", "abc"]);
+    assert_eq!(r.code, 0, "{}", r.err);
+    assert!(status_line(&r.out).ends_with(" unchanged]"), "{}", r.out);
+    let (_, v) = t.json(&["send", "-s", "un", "--keys", "abc"]);
+    assert_eq!(v["changed"], false, "{v}");
+
+    // At a shell, typing shows up, so nothing is said.
+    t.bash("ch");
+    let r = t.term(&["send", "-s", "ch", "--text", "echo hi", "--keys", "<Enter>"]);
+    assert!(!status_line(&r.out).contains("unchanged"), "{}", r.out);
+    let (_, v) = t.json(&["send", "-s", "ch", "--text", "x"]);
+    assert_eq!(v["changed"], true, "{v}");
+
+    // A request that types nothing does not carry the field.
+    let (_, v) = t.json(&["screen", "-s", "ch"]);
+    assert!(v.get("changed").is_none(), "{v}");
+    let (_, v) = t.json(&["wait", "-s", "ch", "--until", "settle"]);
+    assert!(v.get("changed").is_none(), "{v}");
+}
+
+#[test]
+fn exit_waits_for_the_program_being_typed_into() {
+    let t = T::new();
+    t.bash("xe");
+    // vim inside a shell: quitting it is the exit that is waited for.
+    assert_eq!(t.term(&["send", "-s", "xe", "--text", "vim --clean", "--keys", "<Enter>", "--until", "match", "--pattern", "VIM - Vi IMproved"]).code, 0);
+    let began = Instant::now();
+    let (code, v) = t.json(&["send", "-s", "xe", "--keys", ":q<Enter>", "--until", "exit", "--timeout", "5000"]);
+    assert_eq!(code, 0, "{v}");
+    assert!(began.elapsed() < Duration::from_secs(3), "{:?}", began.elapsed());
+    assert_eq!(v["reason"], "exit");
+    // The session is still there: it was vim that exited, not the shell.
+    assert_eq!(v["child"]["state"], "running");
+    assert_eq!(v["child"]["foreground"], "bash");
+    assert!(v.get("exit").is_none(), "{v}");
+    assert_eq!(t.sh("xe", "echo still here").out, "still here");
+
+    // A program that exits without drawing anything is noticed too.
+    assert_eq!(t.term(&["send", "-s", "xe", "--text", "cat > /dev/null", "--keys", "<Enter>"]).code, 0);
+    let r = t.term(&["send", "-s", "xe", "--keys", "<C-d>", "--until", "exit", "--timeout", "5000"]);
+    assert_eq!(r.code, 0, "{}\n{}", r.out, r.err);
+    assert!(status_line(&r.out).starts_with("[xe exit ") && status_line(&r.out).contains("fg=bash"), "{}", r.out);
+
+    // A program that does not exit: the hint names it.
+    assert_eq!(t.term(&["send", "-s", "xe", "--text", "cat", "--keys", "<Enter>"]).code, 0);
+    let r = t.term(&["send", "-s", "xe", "--text", "x", "--until", "exit", "--timeout", "400"]);
+    assert_eq!(r.code, 124, "{}", r.out);
+    assert!(r.out.contains("hint: 'cat' has not exited."), "{}", r.out);
+    assert_eq!(t.term(&["send", "-s", "xe", "--keys", "<C-c>"]).code, 0);
+
+    // At the shell prompt, the program being typed into is the shell, so
+    // exit is the end of the session.
+    let r = t.term(&["send", "-s", "xe", "--text", "exit 4", "--keys", "<Enter>", "--until", "exit"]);
+    assert_eq!(r.code, 0, "{}\n{}", r.out, r.err);
+    assert!(status_line(&r.out).contains("exited code=4"), "{}", r.out);
 }

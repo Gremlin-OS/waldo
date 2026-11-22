@@ -240,12 +240,13 @@ when the deadline passed:
 | `reason` | Why the request returned: `settle`, `match`, `change`, `exit`, `none` or `timeout` |
 | `waited_ms` | How long the request waited |
 | `interleaved` | True if someone else's input, signal or resize took effect during this request |
+| `changed` | Only on a request that typed something: false if `gen` is the same as when its first input was written, so nothing on screen changed, not even the cursor |
 | `child.state` | `running` or `exited` |
 | `child.pid` | The program's process id |
 | `child.foreground` | While running: the name of the process that leads the terminal's foreground process group, or null if it cannot be read |
 | `screen` | Section 3.3 |
 | `match` | Only when `reason` is `match` (below) |
-| `exit` | Only when `reason` is `exit` (below) |
+| `exit` | When `reason` is `exit` and it was the session's own program that exited (below) |
 | `hint` | Sometimes: a sentence about a likely mistake and what to do |
 
 `match`, when a wait matched:
@@ -260,9 +261,11 @@ a group that did not take part). `line` is the absolute number of the output
 line. `row` and `col` are there only when `on_screen` is true; a line can
 match as it scrolls off.
 
-`exit`, when the program has exited: the fields of the will (section 8.6)
-without the envelope and without `screen`, and with `output` cut to its last
-40 lines.
+`exit`, when the session's own program has exited: the fields of the will
+(section 8.6) without the envelope and without `screen`, and with `output`
+cut to its last 40 lines. When `until: exit` was answered because a program
+inside the session exited, the reason is `exit`, there is no `exit` object,
+and `child.state` is still `running`.
 
 ### 3.3 The screen
 
@@ -313,7 +316,8 @@ With `Accept: text/plain`, or `?format=text`, a 200 response is text
 
   The status line is, in order: the session; the reason; `gen=N`;
   `COLSxROWS`; `cursor=ROW,COL`; `alt` if on the alternate screen; `running`
-  and `fg=NAME`, or `exited`; `interleaved` if true; and for an exit, how it
+  and `fg=NAME`, or `exited`; `unchanged` if `changed` is false;
+  `interleaved` if true; and for an exit, how it
   ended: `code=N`, or `signal=NAME` and perhaps `core_dumped`, then
   `killed_by_waldo` if so.
 - `GET /v1/output` is the output text and a newline.
@@ -389,7 +393,7 @@ section 3.2.
 ```
 
 `input` is a list of items, typed in order. Each item is an object with
-exactly one of these keys, whose value is a string:
+exactly one of these keys, whose value is a string (a number for `pause`):
 
 | Key | Meaning |
 |---|---|
@@ -397,6 +401,14 @@ exactly one of these keys, whose value is a string:
 | `keys` | Key notation (section 4.5) |
 | `paste` | A paste: bracketed if the program has turned bracketed paste on, as plain text otherwise. The content is sanitised so it cannot end the bracket early |
 | `text_file`, `keys_file`, `paste_file` | The same, with the content read from the named file |
+| `pause` | Nothing is typed. The value is a number of milliseconds, at most 10000: what follows is typed no sooner than that long after what came before |
+
+`key_delay_ms`, at the top level of the body or in the query string, is a
+minimum gap between the request's items, at most 10000. With it, each key
+name and each literal character of a `keys` item is typed separately, with
+that gap between them. `text` and `paste` items are still typed in one
+piece. Use it, or a `pause`, for a program that discards keys which arrive
+while it is opening a prompt or a menu.
 
 For the `_file` kinds the host reads the file, so the path must be absolute
 and readable by the host. It must be a regular UTF-8 file of at most 1 MiB,
@@ -522,15 +534,16 @@ removed:
 | `settle` | The screen is settled (5.2) |
 | `match` | `pattern` matches a line (5.3) |
 | `change` | `gen` differs from `since_gen` |
-| `exit` | The program has exited |
+| `exit` | The program that had the terminal's foreground when the request began has exited. That is the session's own program, or a program started inside it, such as an editor run from a shell |
 | `none` | At once |
 
 Whatever the condition:
 
 - At the deadline the request returns with reason `timeout` and the screen
   as it is. That is a 200, not an error.
-- If the program exits first, the request returns with reason `exit` and
-  the `exit` object, once the program's remaining output has been read.
+- If the session's own program exits first, the request returns with reason
+  `exit` and the `exit` object, once the program's remaining output has been
+  read.
 
 ### 5.2 Settled
 
@@ -604,6 +617,8 @@ anything about these, but they explain the delays:
   chord.
 - **A signal or resize** that follows input waits for the program to react
   to that input in the same way, at most 300 ms.
+- **Delays the request asked for**: a `pause` item, and `key_delay_ms`
+  between items (section 4.4). These add to the waits above.
 
 ### 6.3 Interleaving
 
@@ -895,7 +910,8 @@ that says what to do next; its wording may change.
 | 405 | `method_not_allowed` | The endpoint exists but not with this method |
 | 400 | `bad_json` | The body is not JSON, or not an object |
 | 400 | `missing_input` | `/v1/input` without an `input` list |
-| 400 | `bad_item` | An input item is not an object with exactly one known kind and a string value |
+| 400 | `bad_item` | An input item is not an object with exactly one known kind and a string value, or a `pause` that is not a number of milliseconds up to 10000 |
+| 400 | `bad_delay` | `key_delay_ms` is not a whole number of milliseconds up to 10000 |
 | 400 | `unknown_key` | A name in key notation that is not a key |
 | 400 | `file_unreadable` | A `_file` item's path is not absolute, not a regular file, over 1 MiB, not UTF-8, or cannot be read |
 | 400 | `unknown_until` | `until` is not one of the five conditions |

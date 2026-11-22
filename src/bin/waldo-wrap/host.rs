@@ -61,6 +61,10 @@ const DRAIN_QUIET: Duration = Duration::from_millis(100);
 const DRAIN_CAP: Duration = Duration::from_secs(2);
 const KILL_STEP: Duration = Duration::from_secs(2);
 const MAX_FILE_ITEM: u64 = 1 << 20;
+/// The longest delay a request may ask for, between keys or as a pause.
+const MAX_DELAY_MS: u64 = 10_000;
+/// How often a wait for a program inside the session to exit looks again.
+const EXIT_POLL: Duration = Duration::from_millis(100);
 const ALT_BASE: u64 = 1 << 40;
 /// Match triggers look at the visible screen at most this often (section 3.2).
 const TRIG_EVERY: Duration = Duration::from_millis(25);
@@ -136,6 +140,9 @@ struct QItem {
     pause_after: bool,
     /// Wait a moment after the previous input before sending this.
     pause_before: bool,
+    /// Send this no sooner than this long after the previous input: a delay
+    /// the request asked for.
+    gap: Duration,
 }
 
 #[derive(Clone, Copy, PartialEq, Debug)]
@@ -201,6 +208,13 @@ struct Wait {
     /// Its name, if it was a program inside the session and not the
     /// session's own.
     fg_name_before: Option<String>,
+    /// `gen` when this request's first input was written. The answer says
+    /// whether the screen has changed since.
+    gen_at_typing: Option<u64>,
+    /// For `until: exit` when a program inside the session had the
+    /// foreground as the request began: its process group and name. The
+    /// wait is for that program, not for the whole session.
+    exit_of: Option<(libc::pid_t, String)>,
 }
 
 /// A standing match trigger (section 3.2). Its matches go to the destination.
@@ -463,6 +477,10 @@ impl Host {
             consider(w.deadline);
             if let Some(t) = settle_timer.filter(|_| w.until == Until::Settle) {
                 consider(t);
+            }
+            // A program that exits without drawing anything wakes nothing.
+            if w.until == Until::Exit && w.exit_of.is_some() {
+                consider(now + EXIT_POLL);
             }
         }
         let held = self.hold_since.filter(|h| now < *h + HOLD_CAP);
@@ -780,6 +798,13 @@ impl Host {
                     break;
                 }
             }
+            if !front.gap.is_zero() {
+                if self.typed && self.last_input.elapsed() < front.gap {
+                    self.pause_until = Some(self.last_input + front.gap);
+                    break;
+                }
+                front.gap = Duration::ZERO;
+            }
             if front.pause_before {
                 if !absorbed {
                     self.pause_until = Some(Instant::now() + KEY_POLL);
@@ -817,9 +842,12 @@ impl Host {
                         self.seen_output = true;
                         self.typed = true;
                         self.prompt_seen = false;
+                        let gen = self.gen;
                         for w in self.waits.iter_mut() {
                             if w.req_id != owner {
                                 w.interleaved = true;
+                            } else if w.gen_at_typing.is_none() {
+                                w.gen_at_typing = Some(gen);
                             }
                         }
                     }
@@ -1258,6 +1286,9 @@ impl Host {
                 Until::None if !self.action_pending(w.req_id) => Some(Reason::None),
                 Until::Settle if settled => Some(Reason::Settle),
                 Until::Change(g) if self.gen != g => Some(Reason::Change),
+                // The program inside the session that was being typed into
+                // is gone, and what replaced it has finished drawing.
+                Until::Exit if settled && w.exit_of.as_ref().map(|(pg, _)| !sys::group_exists(*pg)).unwrap_or(false) => Some(Reason::Exit),
                 Until::Match => self.check_match(&mut w, &lines).map(Reason::Match),
                 _ => None,
             };
@@ -1307,6 +1338,11 @@ impl Host {
         resp.insert("reason".into(), reason.as_str().into());
         resp.insert("waited_ms".into(), ms_since(w.started).into());
         resp.insert("interleaved".into(), w.interleaved.into());
+        if let Some(before) = w.gen_at_typing {
+            // Only for a request that typed: did anything on screen change
+            // since its first input was written?
+            resp.insert("changed".into(), (self.gen != before).into());
+        }
         resp.insert("child".into(), self.child_json());
         resp.insert("screen".into(), self.screen_json(w.ansi));
 
@@ -1328,7 +1364,10 @@ impl Host {
                 }
                 resp.insert("match".into(), mj);
             }
-            Reason::Exit => {
+            // The session's own program has exited. When it was a program
+            // inside the session that exited, there is nothing to report
+            // about it beyond the reason.
+            Reason::Exit if self.exit_status.is_some() => {
                 let tail = self.outbuf.render(&self.primary_lines(), Some(40));
                 resp.insert("exit".into(), Value::Object(self.exit_fields(tail)));
             }
@@ -1365,10 +1404,13 @@ impl Host {
                     Until::Match => Some("the pattern did not appear; it is matched against one line at a time. Check the screen above for what is there.".into()),
                     Until::Exit => {
                         let fg = sys::foreground_pgrp(self.master).and_then(sys::process_name).unwrap_or_else(|| "the program".into());
-                        Some(format!(
-                            "the session has not ended: '{fg}' is in the foreground. --until exit waits for the session's own program ({}) to exit, not for a command inside it.",
-                            self.cfg.argv.first().map(|s| s.as_str()).unwrap_or("?")
-                        ))
+                        Some(match w.exit_of.as_ref() {
+                            Some((_, name)) => format!("'{name}' has not exited. --until exit waits for the program that had the foreground when the request began."),
+                            None => format!(
+                                "the session has not ended: '{fg}' is in the foreground. --until exit waits for the program you are typing into, and that was the session's own ({}); to wait for a command started from it, wait for its output or a marker (waldo-term help shell).",
+                                self.cfg.argv.first().map(|s| s.as_str()).unwrap_or("?")
+                            ),
+                        })
                     }
                     _ => None,
                 };
@@ -1593,7 +1635,7 @@ impl Host {
                     let owner = self.next_req;
                     self.next_req += 1;
                     let kind = QKind::Resize { cols, rows, why: Resize::Restore };
-                    self.queue.push_back(QItem { owner, kind, off: 0, pause_after: false, pause_before: false });
+                    self.queue.push_back(QItem { owner, kind, off: 0, pause_after: false, pause_before: false, gap: Duration::ZERO });
                 }
             }
         }
@@ -1947,7 +1989,14 @@ impl Host {
             ansi,
             fg_before: None,
             fg_name_before: None,
+            gen_at_typing: None,
+            exit_of: None,
         };
+        if until == Until::Exit {
+            w.exit_of = sys::foreground_pgrp(self.master)
+                .filter(|pg| *pg != self.child.pid)
+                .map(|pg| (pg, sys::process_name(pg).unwrap_or_else(|| "the program".into())));
+        }
         if sends_input {
             w.fg_before = sys::foreground_pgrp(self.master);
             w.fg_name_before = w.fg_before.filter(|pg| *pg != self.child.pid).and_then(sys::process_name);
@@ -1970,9 +2019,20 @@ impl Host {
     fn handle_input(&mut self, id: u64, req: &Request) {
         let req_id = self.next_req;
         self.next_req += 1;
-        let mut items: Vec<QKind> = Vec::new();
+        // Each item, with the pause the request put in front of it.
+        let mut items: Vec<(QKind, Duration)> = Vec::new();
+        let mut pause = Duration::ZERO;
         let mut hint: Option<String> = None;
         let body: Value;
+        let delay_of = |v: Option<u64>| v.filter(|ms| *ms <= MAX_DELAY_MS).map(Duration::from_millis);
+        let bad_delay = format!("key_delay_ms must be a whole number of milliseconds, at most {MAX_DELAY_MS}");
+        let mut key_delay = Duration::ZERO;
+        if let Some(q) = req.query_get("key_delay_ms") {
+            match delay_of(q.parse().ok()) {
+                Some(d) => key_delay = d,
+                None => return self.error(id, req, 400, "bad_delay", &bad_delay),
+            }
+        }
 
         if req.json_body || req.body.first() == Some(&b'{') {
             body = match self.body_json(id, req) {
@@ -1988,10 +2048,29 @@ impl Host {
                     "the body needs an \"input\" list, such as {\"input\": [{\"text\": \"ls\"}, {\"keys\": \"<Enter>\"}]}",
                 );
             };
+            if let Some(v) = body.get("key_delay_ms") {
+                match delay_of(v.as_u64().or_else(|| v.as_str().and_then(|s| s.parse().ok()))) {
+                    Some(d) => key_delay = d,
+                    None => return self.error(id, req, 400, "bad_delay", &bad_delay),
+                }
+            }
             for (n, item) in list.iter().enumerate() {
-                match self.read_item(item) {
-                    Ok((mut kinds, h)) => {
-                        items.append(&mut kinds);
+                // A pause is not typed: it delays whatever comes after it.
+                if let Some(v) = item.as_object().filter(|o| o.len() == 1).and_then(|o| o.get("pause")) {
+                    match delay_of(v.as_u64().or_else(|| v.as_str().and_then(|s| s.parse().ok()))) {
+                        Some(d) => pause += d,
+                        None => {
+                            let text = format!("input item {n}: the value of 'pause' must be a whole number of milliseconds, at most {MAX_DELAY_MS}");
+                            return self.error(id, req, 400, "bad_item", &text);
+                        }
+                    }
+                    continue;
+                }
+                match self.read_item(item, !key_delay.is_zero()) {
+                    Ok((kinds, h)) => {
+                        for kind in kinds {
+                            items.push((kind, std::mem::take(&mut pause)));
+                        }
                         hint = hint.or(h);
                     }
                     Err((code, text)) => {
@@ -2003,17 +2082,25 @@ impl Host {
             // For curl: a body that is not JSON is one `keys` item.
             body = json!({});
             let text = String::from_utf8_lossy(&req.body).into_owned();
-            match parse_keys(&text) {
-                Ok(mut kinds) => items.append(&mut kinds),
+            match parse_keys(&text, !key_delay.is_zero()) {
+                Ok(kinds) => items.extend(kinds.into_iter().map(|k| (k, Duration::ZERO))),
                 Err(e) => return self.error(id, req, 400, "unknown_key", &e),
             }
         }
 
         let mut after_text = false;
-        for kind in items {
+        let mut first = true;
+        for (kind, before) in items {
             let is_key = matches!(kind, QKind::Key { .. });
-            self.queue.push_back(QItem { owner: req_id, kind, off: 0, pause_after: false, pause_before: is_key && after_text });
+            // The key delay goes between this request's own items.
+            let gap = before + if first { Duration::ZERO } else { key_delay };
+            self.queue.push_back(QItem { owner: req_id, kind, off: 0, pause_after: false, pause_before: is_key && after_text, gap });
             after_text = !is_key;
+            first = false;
+        }
+        if !pause.is_zero() {
+            // A pause at the end holds back whatever is typed next.
+            self.queue.push_back(QItem { owner: req_id, kind: QKind::Bytes(Vec::new()), off: 0, pause_after: false, pause_before: false, gap: pause });
         }
         self.handle_wait(id, req, Until::Settle, Some(body), Some((req_id, hint)));
         if !self.waits.iter().any(|w| w.req_id == req_id) {
@@ -2024,10 +2111,10 @@ impl Host {
 
     /// Turn one input item into what goes in the queue. Files are read here,
     /// before anything is sent.
-    fn read_item(&self, item: &Value) -> Result<(Vec<QKind>, Option<String>), ItemError> {
+    fn read_item(&self, item: &Value, each_key: bool) -> Result<(Vec<QKind>, Option<String>), ItemError> {
         let obj = item.as_object().filter(|o| o.len() == 1).ok_or((
             "bad_item",
-            "each item is an object with exactly one of: text, keys, paste, text_file, keys_file, paste_file".to_string(),
+            "each item is an object with exactly one of: text, keys, paste, text_file, keys_file, paste_file, pause".to_string(),
         ))?;
         let (kind, value) = obj.iter().next().unwrap();
         let s = value.as_str().ok_or(("bad_item", format!("the value of '{kind}' must be a string")))?;
@@ -2045,7 +2132,7 @@ impl Host {
                     .map(|k| format!("'{k}' was sent as literal text; use --keys (a 'keys' item) for key names."));
                 Ok((vec![QKind::Bytes(text_bytes(&content))], hint))
             }
-            "keys" => Ok((parse_keys(&content).map_err(|e| ("unknown_key", e))?, None)),
+            "keys" => Ok((parse_keys(&content, each_key).map_err(|e| ("unknown_key", e))?, None)),
             "paste" => Ok((vec![QKind::Paste(content.into_bytes())], None)),
             other => Err(("bad_item", format!("unknown item kind '{other}'; use text, keys, paste, text_file, keys_file or paste_file"))),
         }
@@ -2087,7 +2174,7 @@ impl Host {
         let req_id = self.next_req;
         self.next_req += 1;
         let kind = QKind::Resize { cols: cols as u16, rows: rows as u16, why: Resize::Explicit };
-        self.queue.push_back(QItem { owner: req_id, kind, off: 0, pause_after: false, pause_before: false });
+        self.queue.push_back(QItem { owner: req_id, kind, off: 0, pause_after: false, pause_before: false, gap: Duration::ZERO });
         // The program redraws for the new size, so the answer waits for
         // that. A program that has drawn nothing has nothing to redraw.
         // It does not wait long: a screen that never goes quiet is no reason
@@ -2117,7 +2204,7 @@ impl Host {
             // Like a resize, a signal takes its turn behind queued input.
             let req_id = self.next_req;
             self.next_req += 1;
-            self.queue.push_back(QItem { owner: req_id, kind: QKind::Signal(sig), off: 0, pause_after: false, pause_before: false });
+            self.queue.push_back(QItem { owner: req_id, kind: QKind::Signal(sig), off: 0, pause_after: false, pause_before: false, gap: Duration::ZERO });
             return self.handle_wait(id, req, Until::None, Some(json!({})), Some((req_id, None)));
         } else {
             return self.error(id, req, 400, "bad_signal", "the body needs {\"signal\": \"SIGINT\"} or {\"stop\": true}");
@@ -2135,14 +2222,18 @@ fn text_bytes(text: &str) -> Vec<u8> {
     text.replace("\r\n", "\r").replace('\n', "\r").into_bytes()
 }
 
-fn parse_keys(notation: &str) -> Result<Vec<QKind>, String> {
-    Ok(keys::parse(notation)?
-        .into_iter()
-        .map(|t| match t {
-            Tok::Text(s) => QKind::Bytes(text_bytes(&s)),
-            Tok::Key { key, mods, text, is_esc } => QKind::Key { key, mods, text, is_esc },
-        })
-        .collect())
+/// Key notation as queue items. With `each_key`, literal characters between
+/// key names are one item each, so that a delay can go between them.
+fn parse_keys(notation: &str, each_key: bool) -> Result<Vec<QKind>, String> {
+    let mut out = Vec::new();
+    for t in keys::parse(notation)? {
+        match t {
+            Tok::Text(s) if each_key => out.extend(s.chars().map(|c| QKind::Bytes(text_bytes(&c.to_string())))),
+            Tok::Text(s) => out.push(QKind::Bytes(text_bytes(&s))),
+            Tok::Key { key, mods, text, is_esc } => out.push(QKind::Key { key, mods, text, is_esc }),
+        }
+    }
+    Ok(out)
 }
 
 fn read_file_item(path: &str) -> Result<String, String> {
@@ -2312,7 +2403,7 @@ impl Host {
                 let owner = self.next_req;
                 self.next_req += 1;
                 let kind = QKind::Resize { cols, rows, why: Resize::Viewer };
-                self.queue.push_back(QItem { owner, kind, off: 0, pause_after: false, pause_before: false });
+                self.queue.push_back(QItem { owner, kind, off: 0, pause_after: false, pause_before: false, gap: Duration::ZERO });
                 if let Some(a) = self.conns.get_mut(&id).and_then(|c| c.attach.as_mut()) {
                     a.resized = true;
                 }
@@ -2323,7 +2414,7 @@ impl Host {
                     // in flight learn that someone else typed.
                     let owner = self.next_req;
                     self.next_req += 1;
-                    self.queue.push_back(QItem { owner, kind: QKind::Bytes(bytes), off: 0, pause_after: false, pause_before: false });
+                    self.queue.push_back(QItem { owner, kind: QKind::Bytes(bytes), off: 0, pause_after: false, pause_before: false, gap: Duration::ZERO });
                 }
             }
             if msg.get("detach").and_then(|d| d.as_bool()) == Some(true) {

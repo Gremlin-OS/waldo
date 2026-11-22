@@ -36,3 +36,5 @@ Report back, in plain text, under these headings:
 Separate the program's own behaviour, and your own typos, from waldo's. Only
 report what you actually saw. Do not pipe W's output through head or tail
 when the status line or a hint matters: you will lose them.
+
+Do the work yourself: do not start other agents or hand any part of it on.

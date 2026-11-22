@@ -10,15 +10,13 @@ Found by driving real programs: by hand, and by the soak runs of
 `soak/README.md`.
 
 1. **Keys sent in one call can be lost when an earlier key opens a prompt.**
-   In NetHack, `--keys '_>.'` left the travel prompt open for two players,
-   once each. One call per key worked. Probably the program discards
-   typed-ahead input when it opens a prompt, the same family as the
-   key-after-text problem; not checked. Waiting for a reaction between keys
-   would cost 40 ms or more per key.
-2. **A screen that did not change after input looks like lost keys.** With
-   NetHack's `--More--` pending, further keys were swallowed and the
-   response was identical to the one before. A hint is possible without
-   knowing the program: "the screen did not change after this input".
+   The program discards typed-ahead input: NetHack after `_`, htop after
+   Escape. The host does not slow down by itself. The caller does, with
+   `--pause` or `--key-delay`; agents adopt them from `help tips` and they
+   work. Why the keys are lost was never checked.
+2. **`unchanged` is unproven.** It appeared on about 1 send in 50 in
+   NetHack and no agent repeated its input after it, but that is too few
+   cases to say it helps.
 3. **A model cannot easily tell which column is which.** NetHack players
    misjudged columns. One likely cause: frames drawn with box characters
    are three bytes each, so counting bytes, or cutting the screen with
@@ -45,12 +43,28 @@ Found by driving real programs: by hand, and by the soak runs of
     checked for triggers at most every 25 ms, so a `send --until match`
     can return before a trigger on the same line has fired. It fires at
     the next look or at settle.
-11. **Help could say more about pastes**: a trailing newline in a paste is
-    an Enter (it leaves an empty last line in vim), and a block for a REPL
-    that indents for you should be a `--paste`, not `--text`.
+11. **Help does not say that a trailing newline in a paste is an Enter**
+    (it leaves an empty last line in vim).
 12. **The key-after-text explanation is only partly checked** (2.1).
 13. **Report the emulator bug upstream**: the no-SIMD static library exports
     stub `calloc` and `free` that override a shared glibc's (9.2).
+
+## From the comparison with tmux (2026-11-21)
+
+Six rounds, the first three against plain tmux, Sonnet and Haiku, on
+scripted tasks, htop, NetHack and five small programs. Every checkable
+answer was right with both tools. Waldo did better where pasting or
+timing mattered and at first cost 10 to 17% more tokens, mostly in waits
+that ran to their timeout. `help tips` and an `--until exit` that means
+the program being typed into took timeouts from 16 to 1 over four agents
+and brought the cost about level with tmux. NetHack depth swung from 1 to
+6 with the same tool and shows nothing either way.
+
+- The comparison is not in the repository: the tmux wrapper and the
+  three task lists exist only in scratch files. `soak/` should get a
+  `versus-tmux` brief if it is to be repeated.
+- Nothing measured what tmux does not have: the API for a harness, the
+  exit message, triggers, and input kept whole between clients.
 
 ## Designed, not built
 

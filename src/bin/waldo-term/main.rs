@@ -40,6 +40,7 @@ struct Opts {
     until: Option<String>,
     pattern: Option<String>,
     timeout_ms: Option<u64>,
+    key_delay_ms: Option<u64>,
     json: bool,
     items: Vec<Value>,
     tail: Option<u64>,
@@ -102,6 +103,15 @@ fn parse_opts(cmd: &str, args: &[String], allowed: &[&str], positional: bool) ->
                 "--timeout" => {
                     let v = value();
                     o.timeout_ms = Some(parse_ms(&v).unwrap_or_else(|| usage("--timeout takes milliseconds, such as 5000, or seconds as 5s")));
+                }
+                "--key-delay" => {
+                    let v = value();
+                    o.key_delay_ms = Some(parse_ms(&v).unwrap_or_else(|| usage("--key-delay takes milliseconds, such as 200")));
+                }
+                "--pause" => {
+                    let v = value();
+                    let ms = parse_ms(&v).unwrap_or_else(|| usage("--pause takes milliseconds, such as 500"));
+                    o.items.push(json!({"pause": ms}));
                 }
                 "--json" => o.json = true,
                 "--stop" => o.stop = true,
@@ -340,7 +350,7 @@ const WAIT_OPTS: [&str; 6] = ["--session", "--until", "--pattern", "--timeout", 
 
 fn cmd_send(args: &[String]) -> ! {
     let mut allowed = WAIT_OPTS.to_vec();
-    allowed.extend(["--text", "--keys", "--paste", "--text-file", "--keys-file", "--paste-file"]);
+    allowed.extend(["--text", "--keys", "--paste", "--text-file", "--keys-file", "--paste-file", "--pause", "--key-delay"]);
     let o = parse_opts("send", args, &allowed, false);
     if o.items.is_empty() {
         usage("'send' needs something to send: --text S, --keys S, --paste S, or a --*-file PATH");
@@ -348,6 +358,9 @@ fn cmd_send(args: &[String]) -> ! {
     let mut body = json!({"input": o.items, "wait": wait_object(&o)});
     if let Some(t) = o.timeout_ms {
         body["timeout_ms"] = t.into();
+    }
+    if let Some(d) = o.key_delay_ms {
+        body["key_delay_ms"] = d.into();
     }
     let (_, status, value) = call(o.session.as_deref(), "POST", "/v1/input", Some(&body), o.json, EXIT_CHILD_EXITED);
     check_status(status, &value);
@@ -668,7 +681,7 @@ fn cmd_help(args: &[String]) -> ! {
         None => print!("{}", help::GUIDE),
         Some(t) => match help::topic(t) {
             Some(text) => print!("{text}"),
-            None => usage(&format!("no help topic '{t}'; topics: keys, wait, shell, messages, exit-status, commands")),
+            None => usage(&format!("no help topic '{t}'; topics: tips, keys, wait, shell, messages, exit-status, commands")),
         },
     }
     std::process::exit(EXIT_OK);

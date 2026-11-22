@@ -38,13 +38,15 @@ End the session, see what is left, and clean up:
 Each command prints one status line, such as
   [demo settle gen=7 120x30 cursor=3,3 running fg=bash]
 then the screen, then sometimes a line starting
-with 'hint:' that says what probably went wrong and what to do. The word
-'interleaved' in the status line means someone else typed into the session
-during your request, so not everything shown is your doing.
+with 'hint:' that says what probably went wrong and what to do. In the
+status line, 'unchanged' means what you typed changed nothing on screen:
+the program ignored it or is waiting for something else. 'interleaved'
+means someone else typed during your request.
 
 Exit status: 0 ok, 124 timed out, 3 the program exited, 4 no such session,
 2 bad usage.
 
+Before a long job, read: waldo-term help tips
 More: waldo-term help keys | wait | shell | messages | exit-status | commands
 ";
 
@@ -56,6 +58,7 @@ or a socket path); with exactly one live session it can be left out.
   send                      type input, wait, print the screen
       --text S | --keys S | --paste S           (repeatable, sent in order)
       --text-file P | --keys-file P | --paste-file P
+      [--pause MS] [--key-delay MS]             (help keys)
       [--until U] [--pattern RE] [--timeout MS]
   screen                    print the screen  [--until U] [--pattern RE] [--timeout MS]
   wait                      wait, then print the screen
@@ -74,7 +77,7 @@ or a socket path); with exactly one live session it can be left out.
   kill [ID]                 end the session and wait until it has ended
   signal NAME               send a signal to the program (--stop is what kill sends)
   gc [--all]                remove ended sessions (--all: regardless of age)
-  help [TOPIC]              keys, wait, shell, messages, exit-status, commands
+  help [TOPIC]              tips, keys, wait, shell, messages, exit-status, commands
 
 Any command that prints a screen takes --json for the full response, and
 --style ansi to keep colour codes in the screen text. Programs often mark the
@@ -102,6 +105,11 @@ Modifiers: <C-x> Ctrl, <M-x> Alt, <S-Tab> Shift; they combine: <C-S-Left>.
 
 A key that follows text waits until the program has shown the text, as a
 person would, so --text PROMPT --keys '<Enter>' submits what it typed.
+
+Some programs throw away keys that arrive while they are opening a prompt
+or a menu. If keys sent together seem lost, slow them down:
+  --pause MS       wait here before what follows: --keys '_' --pause 300 --keys '>.'
+  --key-delay MS   leave at least this long between the keys of every --keys
 
 In --keys, an unknown name such as <Entr> is an error and nothing is sent.
 Text with '<' in it (code, HTML, redirects) belongs in --text.
@@ -133,7 +141,9 @@ Commands that print the screen wait first. --until says for what:
            count. The cursor's line is included, so prompts such as
            'Password: ' can be matched: --pattern 'assword: $'
   change   the screen differs from when the command started
-  exit     the program has exited
+  exit     the program you are typing into has exited: the session's own
+           program, or one started inside it, such as vim in a shell. Typed
+           at a shell prompt, that program is the shell itself.
   none     (default for screen) do not wait
 
 --timeout MS sets the deadline: default 10000, at most 600000. On the
@@ -148,6 +158,43 @@ examples:
   $ waldo-term send -s wait-demo --text 'sleep 1; echo ready' --keys '<Enter>' --until match --pattern '^ready$'
   $ waldo-term wait -s wait-demo --until settle
   $ waldo-term send -s wait-demo --text 'exit 0' --keys '<Enter>' --until exit
+";
+
+pub const TIPS: &str = "\
+What agents who used waldo before you learned the slow way.
+
+1. Every send prints the screen as it is after your input. You rarely need
+   a separate 'screen'.
+2. The default wait (the screen going still) is right for keys sent to a
+   full-screen program. Use --until match only when you know text that will
+   appear, and anchor it with ^: an unanchored pattern can match the echo
+   of the command you just typed.
+3. A screen that never goes still (an animation, a clock) makes the default
+   wait run to its timeout. Use --until none, or --until match.
+4. To know that a shell command finished, and how, put a marker after it
+   and wait for the marker: waldo-term help shell
+5. --until exit waits for the program you are typing into. After :wq in vim
+   it returns when vim is gone. Typed at a shell prompt, it waits for the
+   shell to exit, which is the end of the session.
+6. A block of several lines for a REPL or an editor goes in as --paste,
+   then --keys '<Enter>'. A REPL that indents for you mangles a block sent
+   as --text.
+7. Some keys open a prompt or a menu, and the program throws away what
+   arrives while it is opening: Escape in many programs, a key that asks a
+   question, a program that is just starting or just exiting. Put a pause
+   after such a key, in the same send:
+     --keys '<Esc>' --pause 300 --keys 'q'
+   --key-delay 100 puts a gap between all the keys of a send.
+8. After a program exits back to the shell, send the next shell command in
+   a new send.
+9. 'unchanged' in the status line means your keys changed nothing on
+   screen. Do not repeat them. Look: a prompt or a 'more' marker is
+   probably waiting for Enter or Escape.
+10. Colour is invisible in a plain screen. When a program marks its
+    selection with colour only, add --style ansi and read the codes.
+11. Output that has scrolled off: waldo-term output --tail N
+12. One send can carry text, keys, pastes and pauses in any order. Batch
+    keys where the program takes them reliably.
 ";
 
 pub const SHELL: &str = "\
@@ -251,6 +298,7 @@ plus the signal number.
 
 pub fn topic(name: &str) -> Option<&'static str> {
     Some(match name {
+        "tips" => TIPS,
         "keys" | "input" => KEYS,
         "wait" => WAIT,
         "shell" | "run" => SHELL,
