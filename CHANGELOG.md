@@ -7,6 +7,33 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- Broadcasts: a client can say a line to the other clients of a session
+  without typing it into the program. `waldo-term broadcast TEXT` sends
+  one; a client that names itself with `--as NAME` (or `WALDO_AS`) is given
+  what the others said, above the status line of its next response; and
+  `--until broadcast` waits to be spoken to. A person in `waldo-term attach`
+  sees them in the status bar and presses `s` to write one. Each
+  broadcast also goes to the session's destination. `waldo-wrap
+  --no-broadcast` starts a session without any of this. See `waldo-term help sharing` and PROTOCOL.md
+  section 4.10.
+
+### Changed
+
+- `waldo-term attach` keeps one key for itself instead of two. Ctrl-] now
+  switches between viewing and typing, and Ctrl-C leaves the viewer while
+  viewing. Before, Ctrl-] left from either mode and Ctrl-\ switched typing
+  on and off; Ctrl-\ now goes to the program like any other key, and `q` no
+  longer leaves. The message on leaving is "left 'ID'; it is still
+  running".
+
+### Fixed
+
+- A request that typed input could be answered before all of it was typed,
+  when its pattern matched the echo of its own text. The rest, usually the
+  Enter, was then typed during the next request.
+
 ## [0.1.0] - 2026-11-21
 
 The first release.

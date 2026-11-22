@@ -29,8 +29,9 @@ that session's screen, so you will see status lines nested.
    two lines, `<Esc>:wq<Enter>`; check the file by typing `cat -A deep.txt`
    through the layers.
 7. `W resize -s l1 100x26` and back. What do the inner views show?
-8. Detach from the top down: `<C-]>` into l1, then a `waldo-term send -s l2
-   --keys '<C-]>'` typed into l1.
+8. Leave from the top down: `<C-]><C-c>` into l1 (Ctrl-] stops typing,
+   Ctrl-C leaves the viewer), then a `waldo-term send -s l2 --keys
+   '<C-]><C-c>'` typed into l1.
 9. Pull the floor out: re-attach both, then type `exit` through the layers
    so l3's shell exits. What does each layer show afterwards?
 10. In l1's shell, `waldo-term kill l2`; then `W kill l1`, `W list`, `W gc

@@ -769,9 +769,18 @@ the request replaces that, and `{"until": "none"}` answers at once.
 
 ### 7.3 Human and agent input
 
-- Attach is view-only by default. `attach --drive`, or Ctrl-\ inside attach,
-  lets the human type; Ctrl-\ again stops. Ctrl-] detaches, and so does `q`
-  while not typing.
+- Attach has two modes, viewing and interacting, and starts in viewing
+  unless `--drive` is given. It keeps one key for itself, Ctrl-], which
+  switches between them. The rule for every other key is that whoever has
+  the keyboard gets it. While interacting that is the program, Ctrl-C
+  included. While viewing it is the viewer, so Ctrl-C leaves, as it would
+  leave any program, and `s` says something to the other clients. Leaving
+  ends only the viewer; the session carries on.
+- There used to be three reserved keys, Ctrl-] to detach, Ctrl-\ to switch
+  typing on and off and Ctrl-_ to speak, and the first two could not be
+  typed into the program at all. A key only has to be reserved while the
+  program has the keyboard, and one is enough for that. "Detach" was
+  tmux's word; what it means is that the viewer quits.
 - The viewer's keystrokes are sent as its terminal encoded them. So that they
   are encoded the way the program expects, the viewer's terminal is put in
   the same cursor-key, keypad and bracketed-paste modes as the session. The
@@ -788,6 +797,51 @@ the request replaces that, and `{"until": "none"}` answers at once.
 
 Not built: mouse input from the viewer, scrolling back through history while
 attached, and images, which are shown as nothing.
+
+### 7.5 Broadcasts
+
+Several clients can already use one session, and the host already keeps
+their input whole and tells each what the others did. What they could not
+do was say anything to each other except through the program. A broadcast
+is that: a line from one client to the rest, which the program never sees.
+The reference is PROTOCOL.md section 4.10.
+
+- **Why it belongs here.** A person can tell an agent "wrong branch"
+  while it works. An agent can ask a person to type a password and wait to
+  be told it is done, so the secret never enters the agent's context.
+  Agents can hand a shell to each other. A harness could do all of this,
+  but the session is already the shared place, and this needs no harness.
+- **Callers name themselves.** The host cannot tell clients apart: each
+  request is a new connection from the same user. So a client that wants
+  broadcasts says who it is, and is given each one once. A client that
+  gives no name gets none, and nothing about its responses changes.
+- **Delivery rides on responses.** An agent has no open connection to push
+  to; it has its next request. What others said arrives with whatever it
+  asked for, so an agent is steered without polling. `until: broadcast` is
+  for the agent that should stop and wait to be spoken to.
+- **A new name is given what is kept.** Someone who joins late sees the
+  recent conversation. The cost is that the first request under a new name
+  can carry up to 32 lines.
+- **Where it is printed.** Above the status line. The screen is the
+  program's to fill, and so is everything under it that looks like the
+  screen; the lines before the status line are only ever waldo's.
+- **It is a relay and no more.** One line, no addressing, no threads, no
+  history beyond the last 32, nothing across sessions. The destination
+  gets every broadcast, so a record exists for whoever wants one.
+- **A person attached gets them in the status bar** and writes one in a
+  one-line editor there. They ride on an ordinary frame, as one more
+  field, so a viewer that does not know about them draws the frame as
+  before. The editor opens with `s` while watching (7.3). A person who is
+  only watching can still speak: saying is not typing.
+- **On by default, with a switch to turn it off.** Hearing is already a
+  choice each client makes by naming itself, and saying needs no access
+  that typing does not. The use that matters most is unplanned: an agent
+  meets a password prompt and asks for help, which only works if nobody
+  had to foresee it. But whoever starts a session may need to promise that
+  nothing reaches its agent except the program, so `waldo-wrap
+  --no-broadcast` removes the channel, and `status` says so.
+- **Names are not checked.** Every client is the same user and can already
+  type into the program; a false name gains nothing that typing does not.
 
 ## 8. Failure modes
 

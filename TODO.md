@@ -75,6 +75,18 @@ and brought the cost about level with tmux. NetHack depth swung from 1 to
 
 ## Designed, not built
 
+0. **Saying who arrives and leaves.** Nothing tells the clients of a
+   session that a person has attached or left, so an agent that asks for
+   help cannot tell whether anyone is there to hear. The design: the host
+   adds its own entry to the broadcast stream, "chris attached" and
+   "chris left", marked so that a client cannot make one. That gives a
+   record at the destination and tells named agents on their next request,
+   with no new endpoint or wait. Attach would send its name when it
+   connects. Not built: nobody has needed it yet. A lease that lets one
+   client hold the keyboard across several requests was considered and
+   set aside for the same reason; broadcasts were enough for two agents to
+   take turns.
+
 1. **PNG capture** (6.3). `GET /v1/screen?format=png`, `waldo-term
    screencap`, `format=cells`, and a vendored font. The font is not chosen.
 2. **Images** (6.4). Kitty graphics, composited into captures and listed in

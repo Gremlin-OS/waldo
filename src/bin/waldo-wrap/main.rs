@@ -43,6 +43,9 @@ options:
                      directories other users can write to, such as /tmp: the
                      host follows a symlink planted under that name.
   --no-probe         do not require the destination to accept a message at startup
+  --no-broadcast     do not let the session's clients broadcast to each other
+                     (waldo-term help sharing). For a session whose agent must
+                     hear from nobody but the program.
   --on LIST          also send these messages: settle (the screen, each time it
                      goes still) and stream (output lines as they scroll off).
                      Comma separated. Matches are added with: waldo-term match add
@@ -85,6 +88,7 @@ struct Args {
     quiet_ms: u64,
     on_settle: bool,
     on_stream: bool,
+    no_broadcast: bool,
     heartbeat: Option<u64>,
     linger: Option<u64>,
     record: Option<String>,
@@ -109,6 +113,7 @@ fn parse_args() -> Args {
         quiet_ms: 200,
         on_settle: false,
         on_stream: false,
+        no_broadcast: false,
         heartbeat: None,
         linger: None,
         record: None,
@@ -131,6 +136,7 @@ fn parse_args() -> Args {
             }
             "--detach" => a.detach = true,
             "--no-probe" => a.no_probe = true,
+            "--no-broadcast" => a.no_broadcast = true,
             "--json" => a.json = true,
             "--name" => {
                 let n = value("--name");
@@ -673,6 +679,7 @@ fn main() {
         quiet_ms: args.quiet_ms,
         on_settle: args.on_settle,
         on_stream: args.on_stream,
+        broadcasts: !args.no_broadcast,
         linger: args.linger.map(Duration::from_secs),
         started_wall,
         lock_fd: sd.lock.as_raw_fd(),

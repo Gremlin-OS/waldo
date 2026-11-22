@@ -249,6 +249,7 @@ pub enum Kind {
     Match,
     Stream,
     Heartbeat,
+    Broadcast,
     Exit,
 }
 
@@ -260,6 +261,7 @@ impl Kind {
             Kind::Match => "match",
             Kind::Stream => "stream",
             Kind::Heartbeat => "heartbeat",
+            Kind::Broadcast => "broadcast",
             Kind::Exit => "exit",
         }
     }
@@ -369,7 +371,7 @@ impl Queue {
                 let victim = self
                     .items
                     .iter()
-                    .position(|m| matches!(m.kind, Kind::Match | Kind::Stream))
+                    .position(|m| matches!(m.kind, Kind::Match | Kind::Stream | Kind::Broadcast))
                     .or_else(|| {
                         self.items
                             .iter()

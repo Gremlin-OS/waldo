@@ -47,7 +47,7 @@ Exit status: 0 ok, 124 timed out, 3 the program exited, 4 no such session,
 2 bad usage.
 
 Before a long job, read: waldo-term help tips
-More: waldo-term help keys | wait | shell | messages | exit-status | commands
+More: waldo-term help keys | wait | shell | sharing | messages | exit-status | commands
 ";
 
 pub const COMMANDS: &str = "\
@@ -59,16 +59,22 @@ or a socket path); with exactly one live session it can be left out.
       --text S | --keys S | --paste S           (repeatable, sent in order)
       --text-file P | --keys-file P | --paste-file P
       [--pause MS] [--key-delay MS]             (help keys)
-      [--until U] [--pattern RE] [--timeout MS]
+      [--until U] [--pattern RE] [--timeout MS] [--as NAME]
   screen                    print the screen  [--until U] [--pattern RE] [--timeout MS]
   wait                      wait, then print the screen
-      --until settle|match|change|exit [--pattern RE] [--timeout MS]
+      --until settle|match|change|exit|broadcast [--pattern RE] [--timeout MS]
+  broadcast [--as NAME] TEXT
+                            say a line to the other clients of the session; it is
+                            not typed into the program (help sharing)
   output [--tail N]         what the program has printed so far
   resize COLSxROWS          change the terminal size, then print the screen once the
                             program has redrawn (--until none: at once)
-  attach [--drive] [--resize]
+  attach [--drive] [--resize] [--as NAME]
                             watch the session live in your own terminal. View only
-                            unless --drive; Ctrl-\\ toggles typing, Ctrl-] detaches.
+                            unless --drive. Ctrl-] switches between viewing and
+                            typing. While viewing, Ctrl-C leaves (the session
+                            keeps running) and s says something to the other
+                            clients (help sharing).
                             --resize makes the session take your terminal's size.
   match add [--id NAME] [--once] PATTERN
                             send a message to the session's destination each
@@ -77,7 +83,8 @@ or a socket path); with exactly one live session it can be left out.
   kill [ID]                 end the session and wait until it has ended
   signal NAME               send a signal to the program (--stop is what kill sends)
   gc [--all]                remove ended sessions (--all: regardless of age)
-  help [TOPIC]              tips, keys, wait, shell, messages, exit-status, commands
+  help [TOPIC]              tips, keys, wait, shell, sharing, messages, exit-status,
+                            commands
 
 Any command that prints a screen takes --json for the full response, and
 --style ansi to keep colour codes in the screen text. Programs often mark the
@@ -144,6 +151,8 @@ Commands that print the screen wait first. --until says for what:
   exit     the program you are typing into has exited: the session's own
            program, or one started inside it, such as vim in a shell. Typed
            at a shell prompt, that program is the shell itself.
+  broadcast  another client of the session has said something
+           (waldo-term help sharing)
   none     (default for screen) do not wait
 
 --timeout MS sets the deadline: default 10000, at most 600000. On the
@@ -195,6 +204,44 @@ What agents who used waldo before you learned the slow way.
 11. Output that has scrolled off: waldo-term output --tail N
 12. One send can carry text, keys, pastes and pauses in any order. Batch
     keys where the program takes them reliably.
+";
+
+pub const SHARING: &str = "\
+Several clients can use one session at once: agents, and people watching
+with 'waldo-term attach'. Each request's input is typed whole, and the
+status line says 'interleaved' when someone else acted during yours.
+
+To say something to the others, broadcast it. A broadcast is one line. It
+is not typed into the program and never appears on its screen:
+  $ waldo-wrap --detach --name room -- bash
+  $ waldo-term broadcast -s room --as ann 'vim is closed; the shell is yours'
+
+To hear the others, give your own name with --as on send, screen and wait
+(or set WALDO_AS once). What they have said since your last request is
+printed first, above the status line:
+  $ waldo-term screen -s room --as bob
+  broadcast from ann: vim is closed; the shell is yours
+  [room none gen=3 120x30 cursor=1,3 running fg=bash]
+
+Each broadcast is given to a name once, and you are not given your own.
+Without a name you are given none. Lines above the status line come from
+waldo and the other clients, never from the program.
+
+A person attached sees each broadcast in the status bar, and while viewing
+presses s to write one: Enter says it, Escape gives up.
+
+A session started with 'waldo-wrap --no-broadcast' has no broadcasts: the
+commands above are refused, and say so.
+
+A broadcast says who sent it; waldo does not check the name, and does not
+decide whose word counts. Whether to act on one is for your own
+instructions to say.
+
+To stop and wait until someone speaks, for example after asking a person
+to type a password themselves:
+  $ waldo-term broadcast -s room --as ann 'typed it, carry on'
+  $ waldo-term wait -s room --as bob --until broadcast --timeout 60000
+  $ waldo-term kill room
 ";
 
 pub const SHELL: &str = "\
@@ -302,6 +349,7 @@ pub fn topic(name: &str) -> Option<&'static str> {
         "keys" | "input" => KEYS,
         "wait" => WAIT,
         "shell" | "run" => SHELL,
+        "sharing" | "broadcast" => SHARING,
         "messages" | "will" => MESSAGES,
         "exit-status" | "exit" | "status" => EXIT_STATUS,
         "commands" => COMMANDS,
