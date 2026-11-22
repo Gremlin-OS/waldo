@@ -62,6 +62,7 @@ const MAX_BROADCASTS: usize = 32;
 const MAX_BROADCAST_BYTES: usize = 1000;
 /// How many client names are remembered.
 const MAX_NAMES: usize = 64;
+const BROADCASTS_OFF: &str = "broadcasts are off for this session: it was started with --no-broadcast. Its other clients cannot be reached through it.";
 const NAME_RULE: &str = "a name is 1 to 32 characters from a-z, A-Z, 0-9, _ and -";
 const DRAIN_QUIET: Duration = Duration::from_millis(100);
 const DRAIN_CAP: Duration = Duration::from_secs(2);
@@ -102,6 +103,8 @@ pub struct Config {
     pub on_settle: bool,
     /// Send `stream` messages with output lines as they are committed.
     pub on_stream: bool,
+    /// Clients may broadcast to each other (off with --no-broadcast).
+    pub broadcasts: bool,
     /// Keep answering read-only requests this long after the program exits.
     pub linger: Option<Duration>,
     pub started_wall: String,
@@ -1298,6 +1301,9 @@ impl Host {
     }
 
     fn handle_broadcast_list(&mut self, id: u64, req: &Request) {
+        if !self.cfg.broadcasts {
+            return self.error(id, req, 409, "broadcasts_off", BROADCASTS_OFF);
+        }
         let since = req
             .query_get("since")
             .and_then(|s| s.parse::<u64>().ok())
@@ -1312,6 +1318,9 @@ impl Host {
     }
 
     fn handle_broadcast(&mut self, id: u64, req: &Request) {
+        if !self.cfg.broadcasts {
+            return self.error(id, req, 409, "broadcasts_off", BROADCASTS_OFF);
+        }
         let Some(body) = self.body_json(id, req) else {
             return;
         };
@@ -2360,6 +2369,7 @@ impl Host {
             "rows": self.emu.rows(),
             "gen": self.gen,
             "child": self.child_json(),
+            "broadcasts": self.cfg.broadcasts,
             "messages": {
                 "settle": self.cfg.on_settle,
                 "stream": self.cfg.on_stream,
@@ -2408,6 +2418,9 @@ impl Host {
             Some("match") => Until::Match,
             Some("exit") => Until::Exit,
             Some("none") => Until::None,
+            Some("broadcast") if !self.cfg.broadcasts => {
+                return self.error(id, req, 409, "broadcasts_off", BROADCASTS_OFF);
+            }
             Some("broadcast") => Until::Broadcast,
             Some("change") => match field("since_gen").as_ref().and_then(as_u64) {
                 Some(g) => Until::Change(g),
@@ -3123,7 +3136,7 @@ impl Host {
                     });
                 }
             }
-            if let Some(b) = msg.get("broadcast") {
+            if let Some(b) = msg.get("broadcast").filter(|_| self.cfg.broadcasts) {
                 // The same rules as POST /v1/broadcasts. There is nowhere
                 // to send an error on this stream, so one that breaks them
                 // is dropped; the viewer is expected to check first.
@@ -3217,6 +3230,7 @@ impl Host {
                 "title": self.emu.title(),
                 "alt_screen": self.emu.alt_screen(),
                 "busy": self.waits.len(),
+                "broadcasting": self.cfg.broadcasts,
                 "modes": {
                     "app_cursor": self.emu.dec_mode(1),
                     "app_keypad": self.emu.dec_mode(66),

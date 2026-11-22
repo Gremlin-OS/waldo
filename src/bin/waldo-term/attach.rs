@@ -12,9 +12,12 @@ use std::os::unix::io::AsRawFd;
 use std::os::unix::net::UnixStream;
 use std::time::{Duration, Instant};
 
-const DETACH_KEY: u8 = 0x1d; // Ctrl-]
-const DRIVE_KEY: u8 = 0x1c; // Ctrl-\
-const SAY_KEY: u8 = 0x1f; // Ctrl-_, which most terminals also send for Ctrl-/
+/// Ctrl-], the one key attach keeps for itself: it switches between
+/// viewing and interacting. Whoever has the keyboard gets every other key.
+/// While interacting that is the program. While viewing it is this viewer,
+/// so Ctrl-C leaves, as it would leave any program.
+const MODE_KEY: u8 = 0x1d;
+const LEAVE_KEY: u8 = 0x03; // Ctrl-C
 /// How long something another client said stays in the status bar.
 const NOTICE_TIME: Duration = Duration::from_secs(12);
 /// The most a broadcast may hold (PROTOCOL.md section 4.10).
@@ -132,7 +135,8 @@ impl View {
             return bar(&format!(" say: {}", String::from_utf8_lossy(line)));
         }
         if let Some((said, _)) = self.notice.as_ref() {
-            return bar(&format!(" {said}   |  Ctrl-_ to answer"));
+            let how = if self.drive { "Ctrl-] then s" } else { "s" };
+            return bar(&format!(" {said}   |  {how} to answer"));
         }
         let view = frame.get("view").cloned().unwrap_or(Value::Null);
         // The most important things first: a narrow terminal cuts the rest.
@@ -154,14 +158,23 @@ impl View {
         if n(frame, "busy") > 0 {
             parts.push("agent request in flight".into());
         }
-        parts.push(if self.drive {
-            "TYPING (Ctrl-\\ to stop)".into()
+        if self.drive {
+            parts.push("TYPING (Ctrl-] to stop)".into());
         } else {
-            "view only (Ctrl-\\ to type)".into()
-        });
-        parts.push("Ctrl-_ say".into());
-        parts.push("Ctrl-] detach".into());
+            parts.push("view only".into());
+            parts.push("Ctrl-] type".into());
+            if Self::can_say(frame) {
+                parts.push("s say".into());
+            }
+            parts.push("Ctrl-C leave".into());
+        }
         bar(&parts.join("  |  "))
+    }
+
+    /// Whether the session lets its clients broadcast. A host that does
+    /// not say is one from before the option existed, where they could.
+    fn can_say(frame: &Value) -> bool {
+        frame.get("broadcasting").and_then(|b| b.as_bool()) != Some(false)
     }
 
     /// Draw the status bar again from the last frame, without its rows.
@@ -365,13 +378,6 @@ pub fn run(mut stream: UnixStream, leftover: Vec<u8>, opts: Options) -> Outcome 
                                 }
                             }
                         }
-                        // The key again on an empty line: it was meant for
-                        // the program.
-                        SAY_KEY if line.is_empty() => {
-                            if view.drive {
-                                typed.push(b);
-                            }
-                        }
                         // Escape by itself, or Ctrl-C, gives up. An escape
                         // with more after it is an arrow or function key;
                         // the rest of what was read belongs to it.
@@ -400,24 +406,25 @@ pub fn run(mut stream: UnixStream, leftover: Vec<u8>, opts: Options) -> Outcome 
                     continue;
                 }
                 match b {
-                    SAY_KEY => {
-                        view.compose = Some(Vec::new());
-                        view.notice = None;
-                        view.redraw(term);
-                    }
-                    DETACH_KEY => {
-                        let _ = send(&mut stream, &json!({"detach": true}));
-                        return Outcome::Detached;
-                    }
-                    DRIVE_KEY => {
+                    // Typing: everything is the program's but the one key.
+                    MODE_KEY => {
                         view.drive = !view.drive;
                         view.redraw(term);
                     }
                     _ if view.drive => typed.push(b),
-                    // Not typing: q also leaves, as in a pager.
-                    b'q' => {
+                    // Viewing: the keyboard is this viewer's.
+                    LEAVE_KEY => {
+                        if !typed.is_empty() {
+                            let hex: String = typed.iter().map(|b| format!("{b:02x}")).collect();
+                            let _ = send(&mut stream, &json!({"keys_hex": hex}));
+                        }
                         let _ = send(&mut stream, &json!({"detach": true}));
                         return Outcome::Detached;
+                    }
+                    b's' if view.last.as_ref().map(View::can_say).unwrap_or(true) => {
+                        view.compose = Some(Vec::new());
+                        view.notice = None;
+                        view.redraw(term);
                     }
                     _ => {}
                 }

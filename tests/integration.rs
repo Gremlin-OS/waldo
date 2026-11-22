@@ -1423,7 +1423,7 @@ fn attach_shows_the_session_and_is_view_only() {
     assert!(
         v.out.contains("waldo a  60x10")
             && v.out.contains("view only")
-            && v.out.contains("Ctrl-] detach"),
+            && v.out.contains("Ctrl-C leave"),
         "{}",
         v.out
     );
@@ -1455,13 +1455,13 @@ fn attach_shows_the_session_and_is_view_only() {
     std::thread::sleep(Duration::from_millis(300));
     assert_eq!(before, t.term(&["screen", "-s", "a"]).out);
 
-    // Ctrl-\ switches to typing.
+    // Ctrl-] switches to typing.
     let v = t.term(&[
         "send",
         "-s",
         "v",
         "--keys",
-        r"<C-\>",
+        "<C-]>",
         "--until",
         "match",
         "--pattern",
@@ -1488,8 +1488,25 @@ fn attach_shows_the_session_and_is_view_only() {
     ]);
     assert_eq!(a.code, 0, "{}", a.out);
 
-    // Ctrl-] detaches; the session carries on.
-    let v = t.term(&["send", "-s", "v", "--keys", "<C-]>", "--until", "exit"]);
+    // Ctrl-] again stops typing, and nothing more reaches the session.
+    // Ctrl-C then leaves the viewer, and the session carries on.
+    let v = t.term(&[
+        "send",
+        "-s",
+        "v",
+        "--keys",
+        "<C-]>",
+        "--until",
+        "match",
+        "--pattern",
+        "view only",
+    ]);
+    assert_eq!(v.code, 0, "{}", v.out);
+    let before = t.term(&["screen", "-s", "a"]).out;
+    t.term(&["send", "-s", "v", "--text", "xyz"]);
+    std::thread::sleep(Duration::from_millis(200));
+    assert_eq!(before, t.term(&["screen", "-s", "a"]).out);
+    let v = t.term(&["send", "-s", "v", "--keys", "<C-c>", "--until", "exit"]);
     assert_eq!(v.code, 0, "{}\n{}", v.out, v.err);
     let will = t.will("v");
     assert_eq!(will["exit_code"], 0);
@@ -1497,7 +1514,7 @@ fn attach_shows_the_session_and_is_view_only() {
         will["output"]["text"]
             .as_str()
             .unwrap()
-            .contains("detached from 'a'; it is still running"),
+            .contains("left 'a'; it is still running"),
         "{}",
         will["output"]["text"]
     );
@@ -1627,7 +1644,7 @@ fn attach_resize_takes_the_viewers_size_and_gives_it_back() {
     assert_eq!(v.code, 0, "{}", v.out);
     assert_eq!(t.sh("a", "stty size").out, "19 100");
     assert_eq!(
-        t.term(&["send", "-s", "v", "--keys", "<C-]>", "--until", "exit"])
+        t.term(&["send", "-s", "v", "--keys", "<C-c>", "--until", "exit"])
             .code,
         0
     );
@@ -2983,11 +3000,11 @@ fn typing_reaches_the_bottom_of_two_attaches() {
         "-s",
         "b1",
         "--keys",
-        "<C-]>",
+        "<C-]><C-c>",
         "--until",
         "match",
         "--pattern",
-        "^detached from 'b2'",
+        "^left 'b2'",
     ]);
     assert_eq!(r.code, 0, "{}\n{}", r.out, r.err);
 }
@@ -3270,6 +3287,7 @@ fn protocol_endpoints_and_parameters_are_as_documented() {
         "rows",
         "gen",
         "child",
+        "broadcasts",
         "messages",
     ] {
         assert!(
@@ -3279,7 +3297,7 @@ fn protocol_endpoints_and_parameters_are_as_documented() {
     }
     assert_eq!(
         status.as_object().unwrap().len(),
-        15,
+        16,
         "status has fields PROTOCOL.md does not list: {status}"
     );
 
@@ -3338,6 +3356,24 @@ fn every_documented_error_can_be_provoked() {
     assert_eq!(t.term(&["wait", "-s", "lg", "--until", "exit"]).code, 0);
     let lingering = t
         .session_dir("lg")
+        .join("sock")
+        .to_str()
+        .unwrap()
+        .to_string();
+
+    // A session without broadcasts, for `broadcasts_off`.
+    let r = t.wrap(&[
+        "--detach",
+        "--name",
+        "quiet",
+        "--no-broadcast",
+        "--",
+        "sleep",
+        "60",
+    ]);
+    assert_eq!(r.code, 0, "{}", r.err);
+    let quiet = t
+        .session_dir("quiet")
         .join("sock")
         .to_str()
         .unwrap()
@@ -3477,6 +3513,11 @@ fn every_documented_error_can_be_provoked() {
             "bad_name",
             &sock,
             post("/v1/broadcasts", r#"{"text": "hello", "as": "two words"}"#),
+        ),
+        (
+            "broadcasts_off",
+            &quiet,
+            post("/v1/broadcasts", r#"{"text": "hello"}"#),
         ),
         (
             "missing_text",
@@ -4020,7 +4061,11 @@ fn a_person_attached_hears_and_says_broadcasts() {
     t.bash("room");
     t.attach("v", "110x16", "room", &["--as", "chris"]);
     let bar = |out: &str| out.lines().last().unwrap_or("").to_string();
-    assert!(bar(&t.term(&["screen", "-s", "v"]).out).contains("Ctrl-_ say"));
+    let first = bar(&t.term(&["screen", "-s", "v"]).out);
+    assert!(
+        first.contains("Ctrl-] type") && first.contains("s say") && first.contains("Ctrl-C leave"),
+        "{first}"
+    );
 
     // What an agent says shows in the viewer's status bar, though nothing
     // on the session's screen changed.
@@ -4046,16 +4091,16 @@ fn a_person_attached_hears_and_says_broadcasts() {
         "ann: please type the password",
     ]);
     assert_eq!(v.code, 0, "{}", v.out);
-    assert!(bar(&v.out).contains("Ctrl-_ to answer"), "{}", v.out);
+    assert!(bar(&v.out).contains("s to answer"), "{}", v.out);
 
-    // Ctrl-_ opens the editor; the line is edited, then said. The viewer is
+    // s opens the editor; the line is edited, then said. The viewer is
     // view only: saying is not typing.
     let v = t.term(&[
         "send",
         "-s",
         "v",
         "--text",
-        "\u{1f}",
+        "s",
         "--pause",
         "200",
         "--text",
@@ -4099,7 +4144,7 @@ fn a_person_attached_hears_and_says_broadcasts() {
         "-s",
         "v",
         "--text",
-        "\u{1f}",
+        "s",
         "--pause",
         "200",
         "--text",
@@ -4111,29 +4156,34 @@ fn a_person_attached_hears_and_says_broadcasts() {
     ]);
     let v = t.term(&["wait", "-s", "v", "--until", "settle"]);
     assert!(!bar(&v.out).contains("never mind"), "{}", v.out);
-    let (_, all) = {
-        let sock = t.session_dir("room").join("sock");
-        let resp = raw_http(
-            sock.to_str().unwrap(),
-            "GET /v1/broadcasts HTTP/1.1\r\nHost: waldo\r\nConnection: close\r\n\r\n",
-        );
-        (
-            0,
-            serde_json::from_str::<Value>(resp.split("\r\n\r\n").nth(1).unwrap()).unwrap(),
-        )
-    };
+    let sock = t.session_dir("room").join("sock");
+    let resp = raw_http(
+        sock.to_str().unwrap(),
+        "GET /v1/broadcasts HTTP/1.1\r\nHost: waldo\r\nConnection: close\r\n\r\n",
+    );
+    let all: Value = serde_json::from_str(resp.split("\r\n\r\n").nth(1).unwrap()).unwrap();
     assert_eq!(all["last"], 2, "{all}");
 
-    // While typing is on, Ctrl-_ twice passes one Ctrl-_ to the program.
-    t.term(&["send", "-s", "v", "--text", "\u{1c}"]);
+    // While typing, s and the keys attach used to keep are the program's.
+    let v = t.term(&[
+        "send",
+        "-s",
+        "v",
+        "--keys",
+        "<C-]>",
+        "--until",
+        "match",
+        "--pattern",
+        "TYPING",
+    ]);
+    assert_eq!(v.code, 0, "{}", v.out);
     assert_eq!(
         t.term(&["send", "-s", "room", "--text", "cat -v", "--keys", "<Enter>"])
             .code,
         0
     );
     t.term(&[
-        "send", "-s", "v", "--text", "\u{1f}", "--pause", "200", "--text", "\u{1f}", "--pause",
-        "200", "--keys", "<Enter>",
+        "send", "-s", "v", "--text", "s\u{1f}", "--pause", "100", "--keys", "<Enter>",
     ]);
     let r = t.term(&[
         "wait",
@@ -4142,7 +4192,103 @@ fn a_person_attached_hears_and_says_broadcasts() {
         "--until",
         "match",
         "--pattern",
-        r"^\^_$",
+        r"^s\^_$",
     ]);
     assert_eq!(r.code, 0, "{}", r.out);
+    // An answer while typing takes Ctrl-] first, and the bar says so.
+    assert_eq!(
+        t.term(&["broadcast", "-s", "room", "--as", "ann", "thanks"])
+            .code,
+        0
+    );
+    let v = t.term(&[
+        "wait",
+        "-s",
+        "v",
+        "--until",
+        "match",
+        "--pattern",
+        "ann: thanks",
+    ]);
+    assert!(bar(&v.out).contains("Ctrl-] then s to answer"), "{}", v.out);
+}
+
+#[test]
+fn a_session_can_be_started_without_broadcasts() {
+    let t = T::new();
+    let r = t.wrap(&[
+        "--detach",
+        "--name",
+        "nb",
+        "--no-broadcast",
+        "--",
+        "bash",
+        "--norc",
+        "--noprofile",
+    ]);
+    assert_eq!(r.code, 0, "{}", r.err);
+    assert_eq!(
+        t.term(&[
+            "wait",
+            "-s",
+            "nb",
+            "--until",
+            "match",
+            "--pattern",
+            r"^\$ $"
+        ])
+        .code,
+        0
+    );
+
+    // Saying and waiting to hear are refused, with the reason.
+    let r = t.term(&["broadcast", "-s", "nb", "--as", "ann", "anyone?"]);
+    assert_eq!(r.code, 1, "{}", r.err);
+    assert!(
+        r.err.contains("--no-broadcast") && r.err.contains("(broadcasts_off)"),
+        "{}",
+        r.err
+    );
+    let r = t.term(&["wait", "-s", "nb", "--as", "ann", "--until", "broadcast"]);
+    assert_eq!(r.code, 1, "{}", r.err);
+    assert!(r.err.contains("(broadcasts_off)"), "{}", r.err);
+
+    // A client that names itself still works, and is given nothing.
+    let r = t.term(&[
+        "send",
+        "-s",
+        "nb",
+        "--as",
+        "ann",
+        "--text",
+        "echo fine",
+        "--keys",
+        "<Enter>",
+    ]);
+    assert_eq!(r.code, 0, "{}", r.err);
+    assert!(status_line(&r.out).starts_with("[nb settle "), "{}", r.out);
+
+    // The session says what kind it is.
+    let sock = t.session_dir("nb").join("sock");
+    let get = |path: &str| {
+        raw_http(
+            sock.to_str().unwrap(),
+            &format!("GET {path} HTTP/1.1\r\nHost: waldo\r\nConnection: close\r\n\r\n"),
+        )
+    };
+    assert!(get("/v1/status").contains("\"broadcasts\":false"));
+    assert!(get("/v1/broadcasts").starts_with("HTTP/1.1 409 "));
+
+    // A person attached is not offered the editor, and s does nothing.
+    t.attach("v", "110x16", "nb", &[]);
+    let v = t.term(&["screen", "-s", "v"]);
+    assert!(
+        v.out.contains("Ctrl-] type") && !v.out.contains("s say"),
+        "{}",
+        v.out
+    );
+    let v = t.term(&[
+        "send", "-s", "v", "--text", "s", "--pause", "200", "--text", "hello",
+    ]);
+    assert!(!v.out.contains(" say: "), "{}", v.out);
 }

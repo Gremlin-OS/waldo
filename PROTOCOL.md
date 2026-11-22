@@ -40,6 +40,7 @@ waldo-wrap [options] -- PROGRAM [ARGS...]
 | `--name NAME` | Session id: 1 to 32 of `a-z 0-9 _ -`, starting with a letter or digit. Default: six random characters |
 | `--dest URI` | Where messages go (section 8). Default: `file:<session dir>/events.ndjson` |
 | `--no-probe` | Do not require the destination to accept `hello` at startup |
+| `--no-broadcast` | Clients cannot broadcast to each other (section 4.10) |
 | `--on LIST` | Also send `settle` and/or `stream` messages. Comma separated |
 | `--heartbeat SECS` | Send a `heartbeat` after that long without another message |
 | `--linger SECS` | Keep answering read-only requests that long after the program exits |
@@ -365,11 +366,13 @@ endpoints in its text.
   "rows": 30,
   "gen": 41,
   "child": {"state": "running", "pid": 48211, "foreground": "vim"},
+  "broadcasts": true,
   "messages": {"settle": false, "stream": false, "triggers": 1}
 }
 ```
 
 `messages` says which optional messages are on and how many triggers exist.
+`broadcasts` is false for a session started with `--no-broadcast`.
 
 ### 4.2 GET /v1/screen
 
@@ -575,6 +578,12 @@ its stream (section 7.2). Any other client:
  "broadcasts": [{"n": 3, "from": "ann", "text": "vim is closed; the shell is yours", "t_ms": 61250}]}
 ```
 
+A session started with `--no-broadcast` has none of this. Both endpoints
+and `until: broadcast` answer 409 `broadcasts_off`, a broadcast sent over
+the attach stream is dropped, and `as` is accepted and does nothing, so a
+client that always names itself still works. `GET /v1/status` says which
+kind of session it is.
+
 Each broadcast also goes to the destination (section 8.9). The name is
 what the sender says it is: every client of a session is the same user,
 and the host does not check it.
@@ -765,6 +774,7 @@ the `Upgrade` header the answer is 400 `upgrade_required`.
 | `view` | The part of the screen this viewer is shown: its size, and the offset of its top left corner in the session's screen. The view is the viewer's size or the session's, whichever is smaller. When the session is larger, the view follows the cursor |
 | `cursor` | The cursor's place in the view |
 | `busy` | How many API requests are waiting. Non-zero means an agent is at work |
+| `broadcasting` | False for a session started with `--no-broadcast`. A frame without the field is from a host that allows them |
 | `modes` | Terminal modes the viewer's terminal should copy, so that the person's keys are encoded as the program expects |
 | `lines` | Pairs of row and text, only for rows that changed since the last frame. The first frame has every row |
 | `broadcasts` | Only when a client has said something since this viewer's last frame: the broadcasts (section 4.10), oldest first, the viewer's own among them. A frame is sent for them even if nothing on screen changed |
@@ -999,6 +1009,7 @@ that says what to do next; its wording may change.
 | 404 | `no_such_trigger` | Removing a trigger that does not exist |
 | 400 | `bad_name` | `as` is not 1 to 32 allowed characters |
 | 400 | `missing_text` | A broadcast without `text`, or with only space in it |
+| 409 | `broadcasts_off` | A broadcast, a request for them, or `until: broadcast`, on a session started with `--no-broadcast` |
 | 400 | `bad_text` | A broadcast's `text` is over 1000 bytes or has a control character, such as a newline |
 | 400 | `upgrade_required` | `/v1/attach` without `Upgrade: waldo-attach` |
 | 409 | `exited` | The program has exited and the session is lingering; only requests that read or wait are answered |
@@ -1041,9 +1052,12 @@ itself.
 - **`attach`.** It puts the terminal in raw mode on the alternate screen,
   draws frames in the area above a one-line status bar, copies the three
   modes of section 7.2 to the terminal, and sends the person's keys as
-  `keys_hex`. Ctrl-\ switches typing on and off; Ctrl-], or `q` while not
-  typing, detaches. What other clients broadcast is shown in the status bar
-  for 12 s. Ctrl-_ opens a one-line editor in the status bar: Enter sends
-  the line as a broadcast, Escape or Ctrl-C gives up, Ctrl-U clears it, and
-  Ctrl-_ again on an empty line passes a Ctrl-_ to the program instead. The
+  `keys_hex`. It has two modes and keeps one key for itself, Ctrl-], which
+  switches between them. While interacting, every other key goes to the
+  program. While viewing, none does: Ctrl-C leaves, sending `detach`, and
+  `s` opens a one-line editor in the status bar. In the editor Enter sends
+  the line as a broadcast, Escape or Ctrl-C gives up, and Ctrl-U clears it;
+  on a session with broadcasts off there is no `s`. What other clients
+  broadcast is shown in the status bar for 12 s. Ctrl-] cannot be typed into
+  the program from attach; `waldo-term send --keys '<C-]>'` does it. The
   broadcast carries `--as NAME`, or `WALDO_AS`, or else the login name.

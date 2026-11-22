@@ -847,7 +847,7 @@ fn cmd_attach(args: &[String]) -> ! {
         },
     ) {
         attach::Outcome::Detached => {
-            println!("detached from '{id}'; it is still running");
+            println!("left '{id}'; it is still running");
             std::process::exit(EXIT_OK);
         }
         attach::Outcome::Lost(e) => die(EXIT_OTHER, &e),

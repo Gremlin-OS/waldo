@@ -769,9 +769,18 @@ the request replaces that, and `{"until": "none"}` answers at once.
 
 ### 7.3 Human and agent input
 
-- Attach is view-only by default. `attach --drive`, or Ctrl-\ inside attach,
-  lets the human type; Ctrl-\ again stops. Ctrl-] detaches, and so does `q`
-  while not typing.
+- Attach has two modes, viewing and interacting, and starts in viewing
+  unless `--drive` is given. It keeps one key for itself, Ctrl-], which
+  switches between them. The rule for every other key is that whoever has
+  the keyboard gets it. While interacting that is the program, Ctrl-C
+  included. While viewing it is the viewer, so Ctrl-C leaves, as it would
+  leave any program, and `s` says something to the other clients. Leaving
+  ends only the viewer; the session carries on.
+- There used to be three reserved keys, Ctrl-] to detach, Ctrl-\ to switch
+  typing on and off and Ctrl-_ to speak, and the first two could not be
+  typed into the program at all. A key only has to be reserved while the
+  program has the keyboard, and one is enough for that. "Detach" was
+  tmux's word; what it means is that the viewer quits.
 - The viewer's keystrokes are sent as its terminal encoded them. So that they
   are encoded the way the program expects, the viewer's terminal is put in
   the same cursor-key, keypad and bracketed-paste modes as the session. The
@@ -822,9 +831,15 @@ The reference is PROTOCOL.md section 4.10.
 - **A person attached gets them in the status bar** and writes one in a
   one-line editor there. They ride on an ordinary frame, as one more
   field, so a viewer that does not know about them draws the frame as
-  before. The editor's key is Ctrl-_ because Ctrl-\ and Ctrl-] were taken;
-  pressed twice it goes to the program, so the key is not lost. A person
-  who is only watching can still speak: saying is not typing.
+  before. The editor opens with `s` while watching (7.3). A person who is
+  only watching can still speak: saying is not typing.
+- **On by default, with a switch to turn it off.** Hearing is already a
+  choice each client makes by naming itself, and saying needs no access
+  that typing does not. The use that matters most is unplanned: an agent
+  meets a password prompt and asks for help, which only works if nobody
+  had to foresee it. But whoever starts a session may need to promise that
+  nothing reaches its agent except the program, so `waldo-wrap
+  --no-broadcast` removes the channel, and `status` says so.
 - **Names are not checked.** Every client is the same user and can already
   type into the program; a false name gains nothing that typing does not.
 
