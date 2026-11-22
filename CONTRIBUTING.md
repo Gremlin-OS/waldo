@@ -11,7 +11,7 @@ vulnerability" on the repository's Security tab.
 `README.md` has the commands, with Nix and without. The short form:
 
 ```sh
-nix flake check                 # build, clippy with warnings as errors, all tests
+nix flake check                 # build, format check, clippy, all tests
 ```
 
 or, without Nix:
@@ -20,6 +20,7 @@ or, without Nix:
 scripts/build-vt.sh             # once
 cargo test --release --locked -- --test-threads=1
 cargo clippy --all-targets -- -D warnings
+cargo fmt --check
 ```
 
 The tests start real programs (`bash`, `vim`, `ps`) in ptys and are
@@ -43,10 +44,8 @@ waldo, not in the test.
   only a fix. `PROTOCOL.md` says what waldo does; `DESIGN.md` says why.
 - **A line in `CHANGELOG.md`** under `[Unreleased]`, for anything a user
   would notice.
-- **Clippy clean.** CI fails on any warning.
-
-The code is not formatted with `rustfmt`; please do not run `cargo fmt`
-over files you touch, and keep to the style around your change.
+- **Clippy clean and formatted.** CI fails on any clippy warning and on
+  anything `cargo fmt` would change. The formatting is rustfmt's default.
 
 ## What waldo is, and is not
 

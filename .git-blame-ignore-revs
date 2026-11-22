@@ -1,0 +1,5 @@
+# Commits that only reformat. GitHub's blame view skips them; for the
+# command line: git config blame.ignoreRevsFile .git-blame-ignore-revs
+
+# Format the code with rustfmt
+ac3d59e2a84712bcd881147d9e1989d09940ed5f

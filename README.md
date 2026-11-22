@@ -71,7 +71,7 @@ With Nix:
 
 ```sh
 nix build            # both binaries, in ./result/bin
-nix flake check      # build, clippy, and all tests
+nix flake check      # build, format check, clippy, and all tests
 nix develop          # a shell with cargo and the test programs
 ```
 

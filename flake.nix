@@ -79,10 +79,22 @@
       );
 
       # Building the package runs the unit and integration tests. The clippy
-      # check fails on any warning.
+      # check fails on any warning, and the fmt check on any file that
+      # `cargo fmt` would change.
       checks = forAll (
         system: pkgs: {
           waldo = self.packages.${system}.waldo;
+          fmt = self.packages.${system}.waldo.overrideAttrs (old: {
+            pname = "waldo-fmt";
+            nativeBuildInputs = old.nativeBuildInputs ++ [ pkgs.rustfmt ];
+            buildPhase = ''
+              cargo fmt --check
+            '';
+            doCheck = false;
+            installPhase = ''
+              touch $out
+            '';
+          });
           clippy = self.packages.${system}.waldo.overrideAttrs (old: {
             pname = "waldo-clippy";
             nativeBuildInputs = old.nativeBuildInputs ++ [ pkgs.clippy ];
