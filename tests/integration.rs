@@ -4421,3 +4421,96 @@ fn the_panel_scrolls_back() {
     assert_eq!(v.code, 0, "{}", v.out);
     assert!(v.out.contains("ann: line number 12\n"), "{}", v.out);
 }
+
+#[test]
+fn status_says_what_the_session_is() {
+    let t = T::new();
+    t.bash("st");
+    let r = t.term(&["status", "-s", "st"]);
+    assert_eq!(r.code, 0, "{}", r.err);
+    let first = status_line(&r.out);
+    assert!(
+        first.starts_with("[st running fg=bash 120x30 gen="),
+        "{}",
+        r.out
+    );
+    assert!(
+        r.out.contains("\nprogram     bash --norc --noprofile\n"),
+        "{}",
+        r.out
+    );
+    assert!(
+        r.out.contains(&format!(
+            "\nsocket      {}\n",
+            t.session_dir("st").join("sock").display()
+        )),
+        "{}",
+        r.out
+    );
+    assert!(
+        r.out
+            .contains("\nmessages    settle off, stream off, 0 match trigger(s)\n"),
+        "{}",
+        r.out
+    );
+    assert!(r.out.contains("\nbroadcasts  on\n"), "{}", r.out);
+    for line in ["cwd ", "pid ", "started ", "dest "] {
+        assert!(
+            r.out.lines().any(|l| l.starts_with(line)),
+            "no {line}: {}",
+            r.out
+        );
+    }
+
+    // The same as JSON, and for a session without broadcasts.
+    let (code, v) = t.json(&["status", "-s", "st"]);
+    assert_eq!(code, 0);
+    assert_eq!(v["broadcasts"], true);
+    assert_eq!(v["child"]["state"], "running");
+    let r = t.wrap(&[
+        "--detach",
+        "--name",
+        "st2",
+        "--no-broadcast",
+        "--",
+        "sleep",
+        "30",
+    ]);
+    assert_eq!(r.code, 0, "{}", r.err);
+    assert!(t
+        .term(&["status", "-s", "st2"])
+        .out
+        .contains("\nbroadcasts  off\n"));
+
+    // A session that has ended prints how it ended, as other commands do.
+    assert_eq!(t.term(&["kill", "st2"]).code, 0);
+    let r = t.term(&["status", "-s", "st2"]);
+    assert_eq!(r.code, 3, "{}\n{}", r.out, r.err);
+    assert!(status_line(&r.out).starts_with("[st2 exit "), "{}", r.out);
+}
+
+#[test]
+fn every_command_the_help_lists_exists() {
+    let t = T::new();
+    let listed = t.term(&["help", "commands"]).out;
+    let mut names: Vec<&str> = listed
+        .lines()
+        .filter(|l| l.starts_with("  ") && !l.starts_with("   "))
+        .filter_map(|l| l.split_whitespace().next())
+        .filter(|w| w.chars().all(|c| c.is_ascii_lowercase()))
+        .collect();
+    names.dedup();
+    assert!(names.len() >= 12 && names.contains(&"status"), "{names:?}");
+    for name in names {
+        let r = t.term(&[name, "--no-such-option"]);
+        assert!(
+            !r.err.contains("unknown command"),
+            "help lists '{name}', which is not a command: {}",
+            r.err
+        );
+    }
+    // And the other way: a command that does not exist says so.
+    let r = t.term(&["frobnicate"]);
+    assert_eq!(r.code, 2);
+    assert!(r.err.contains("unknown command 'frobnicate'"), "{}", r.err);
+}

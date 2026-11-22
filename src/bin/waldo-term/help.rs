@@ -69,6 +69,8 @@ or a socket path); with exactly one live session it can be left out.
                             say a line to the other clients of the session; it is
                             not typed into the program (help sharing)
   output [--tail N]         what the program has printed so far
+  status                    what the session is: its program, directory, socket,
+                            destination, and whether broadcasts are on
   resize COLSxROWS          change the terminal size, then print the screen once the
                             program has redrawn (--until-none: at once)
   attach [--drive] [--resize] [--as NAME]

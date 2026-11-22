@@ -29,6 +29,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `--until-broadcast-from NAME` limits a wait for a broadcast to one sender, and each
   broadcast records how it arrived (`via`: `attach` or `api`).
 
+- `waldo-term status`: what the session is, from the host's status
+  endpoint. The 0.1.0 notes listed this command, but it did not exist.
+
 ### Changed
 
 - **Wait conditions are spelled differently, in the command line and in
@@ -67,8 +70,9 @@ The first release.
   naming the session, the terminal size, lingering after exit, and
   recording the output as an asciicast.
 - `waldo-term`: the command-line client. `send`, `screen`, `output`,
-  `wait`, `status`, `list`, `resize`, `signal`, `kill`, `gc`, `match`,
-  `attach` and `help`.
+  `wait`, `list`, `resize`, `signal`, `kill`, `gc`, `match`, `attach` and
+  `help`. (The notes published with this release also listed `status`.
+  There was no such command until the next release.)
 - Input as text, named keys, bracketed pastes and file contents, in any
   order in one request. A request is typed whole, even when several
   clients type into one session. Signals and resizes queue behind input.

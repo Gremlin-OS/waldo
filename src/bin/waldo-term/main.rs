@@ -643,6 +643,73 @@ fn cmd_broadcast(args: &[String]) -> ! {
     std::process::exit(EXIT_OK);
 }
 
+/// What the session is: its program, where it runs, how to reach it, and
+/// which of the optional things are on.
+fn cmd_status(args: &[String]) -> ! {
+    let o = parse_opts("status", args, &["--session", "--json"], false);
+    let (id, status, v) = call(
+        o.session.as_deref(),
+        "GET",
+        "/v1/status",
+        None,
+        o.json,
+        EXIT_CHILD_EXITED,
+    );
+    check_status(status, &v);
+    if o.json {
+        println!("{v}");
+        std::process::exit(EXIT_OK);
+    }
+    let text = |k: &str| v.get(k).and_then(|x| x.as_str()).unwrap_or("").to_string();
+    let num = |k: &str| v.get(k).and_then(|x| x.as_u64()).unwrap_or(0);
+    let on = |x: Option<&Value>| {
+        if x.and_then(|b| b.as_bool()) == Some(true) {
+            "on"
+        } else {
+            "off"
+        }
+    };
+    let child = v.get("child").cloned().unwrap_or(Value::Null);
+    let state = child.get("state").and_then(|s| s.as_str()).unwrap_or("?");
+    let mut words = vec![id, state.to_string()];
+    if let Some(fg) = child.get("foreground").and_then(|f| f.as_str()) {
+        words.push(format!("fg={fg}"));
+    }
+    words.push(format!("{}x{}", num("cols"), num("rows")));
+    words.push(format!("gen={}", num("gen")));
+    words.push(format!("up={}", age((num("uptime_ms") / 1000) as i64)));
+    println!("[{}]", words.join(" "));
+    let argv: Vec<String> = v
+        .get("argv")
+        .and_then(|a| a.as_array())
+        .into_iter()
+        .flatten()
+        .map(|a| a.as_str().unwrap_or("").to_string())
+        .collect();
+    let messages = v.get("messages").cloned().unwrap_or(Value::Null);
+    println!("program     {}", argv.join(" "));
+    println!("cwd         {}", text("cwd"));
+    println!(
+        "pid         {} (host {})",
+        child.get("pid").and_then(|p| p.as_u64()).unwrap_or(0),
+        num("host_pid")
+    );
+    println!("started     {}", text("started"));
+    println!("socket      {}", text("socket"));
+    println!("dest        {}", text("dest"));
+    println!(
+        "messages    settle {}, stream {}, {} match trigger(s)",
+        on(messages.get("settle")),
+        on(messages.get("stream")),
+        messages
+            .get("triggers")
+            .and_then(|n| n.as_u64())
+            .unwrap_or(0)
+    );
+    println!("broadcasts  {}", on(v.get("broadcasts")));
+    std::process::exit(EXIT_OK);
+}
+
 fn cmd_output(args: &[String]) -> ! {
     let o = parse_opts("output", args, &["--session", "--tail", "--json"], false);
     let path = match o.tail {
@@ -1109,6 +1176,7 @@ fn main() {
         "send" => cmd_send(rest),
         "screen" => cmd_screen(rest),
         "wait" => cmd_wait(rest),
+        "status" => cmd_status(rest),
         "broadcast" | "say" => cmd_broadcast(rest),
         "run" => die(EXIT_USAGE, "there is no 'run' command; to run a shell command and learn how it ended, see: waldo-term help shell"),
         "output" => cmd_output(rest),
