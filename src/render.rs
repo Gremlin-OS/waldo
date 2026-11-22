@@ -34,7 +34,10 @@ fn exit_words(exit: &Value) -> String {
 
 /// A response from the control API as text.
 pub fn response(resp: &Value) -> String {
-    let mut words: Vec<String> = vec![s(resp, "session").to_string(), s(resp, "reason").to_string()];
+    let mut words: Vec<String> = vec![
+        s(resp, "session").to_string(),
+        s(resp, "reason").to_string(),
+    ];
     if let Some(screen) = resp.get("screen") {
         words.push(format!("gen={}", n(screen, "gen")));
         words.push(format!("{}x{}", n(screen, "cols"), n(screen, "rows")));
@@ -123,18 +126,26 @@ mod tests {
         );
         let mut ignored = r.clone();
         ignored["changed"] = false.into();
-        assert!(response(&ignored).starts_with("[k3f9q2 settle gen=41 80x24 cursor=1,19 alt running fg=vim unchanged]\n"));
+        assert!(response(&ignored).starts_with(
+            "[k3f9q2 settle gen=41 80x24 cursor=1,19 alt running fg=vim unchanged]\n"
+        ));
         ignored["changed"] = true.into();
-        assert!(response(&ignored).starts_with("[k3f9q2 settle gen=41 80x24 cursor=1,19 alt running fg=vim]\n"));
+        assert!(response(&ignored)
+            .starts_with("[k3f9q2 settle gen=41 80x24 cursor=1,19 alt running fg=vim]\n"));
         let mut shared = r.clone();
         shared["interleaved"] = true.into();
-        assert!(response(&shared).starts_with("[k3f9q2 settle gen=41 80x24 cursor=1,19 alt running fg=vim interleaved]\n"));
+        assert!(response(&shared).starts_with(
+            "[k3f9q2 settle gen=41 80x24 cursor=1,19 alt running fg=vim interleaved]\n"
+        ));
     }
 
     #[test]
     fn will_text() {
         let w = json!({"session":"a","trigger":"exit","exit_code":null,"signal":"SIGSEGV","core_dumped":true,
             "killed_by_waldo":false,"duration_ms":1250,"output":{"text":"boom"}});
-        assert_eq!(will(&w), "[a exit signal=SIGSEGV core_dumped 1.2s exited]\nboom\n");
+        assert_eq!(
+            will(&w),
+            "[a exit signal=SIGSEGV core_dumped 1.2s exited]\nboom\n"
+        );
     }
 }

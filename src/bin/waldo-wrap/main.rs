@@ -117,7 +117,8 @@ fn parse_args() -> Args {
     let mut it = std::env::args().skip(1);
     while let Some(arg) = it.next() {
         let mut value = |name: &str| -> String {
-            it.next().unwrap_or_else(|| usage_error(&format!("{name} needs a value")))
+            it.next()
+                .unwrap_or_else(|| usage_error(&format!("{name} needs a value")))
         };
         match arg.as_str() {
             "-h" | "--help" => {
@@ -141,10 +142,13 @@ fn parse_args() -> Args {
             "--dest" => a.dest = Some(value("--dest")),
             "--size" => {
                 let v = value("--size");
-                let parsed = v.split_once(['x', 'X']).and_then(|(c, r)| Some((c.parse::<u16>().ok()?, r.parse::<u16>().ok()?)));
+                let parsed = v
+                    .split_once(['x', 'X'])
+                    .and_then(|(c, r)| Some((c.parse::<u16>().ok()?, r.parse::<u16>().ok()?)));
                 match parsed {
                     Some((c, r))
-                        if (host::MIN_COLS..=host::MAX_COLS).contains(&c) && (host::MIN_ROWS..=host::MAX_ROWS).contains(&r) =>
+                        if (host::MIN_COLS..=host::MAX_COLS).contains(&c)
+                            && (host::MIN_ROWS..=host::MAX_ROWS).contains(&r) =>
                     {
                         a.cols = c;
                         a.rows = r;
@@ -163,17 +167,25 @@ fn parse_args() -> Args {
                     .parse()
                     .ok()
                     .filter(|n| *n >= 1024)
-                    .unwrap_or_else(|| usage_error("--output-cap takes a number of bytes, at least 1024"));
+                    .unwrap_or_else(|| {
+                        usage_error("--output-cap takes a number of bytes, at least 1024")
+                    });
             }
             "--quiet-ms" => {
                 a.quiet_ms = value("--quiet-ms")
                     .parse()
                     .ok()
                     .filter(|n| (10..=10_000).contains(n))
-                    .unwrap_or_else(|| usage_error("--quiet-ms takes milliseconds between 10 and 10000"));
+                    .unwrap_or_else(|| {
+                        usage_error("--quiet-ms takes milliseconds between 10 and 10000")
+                    });
             }
             "--on" => {
-                for word in value("--on").split(',').map(|w| w.trim()).filter(|w| !w.is_empty()) {
+                for word in value("--on")
+                    .split(',')
+                    .map(|w| w.trim())
+                    .filter(|w| !w.is_empty())
+                {
                     match word {
                         "settle" => a.on_settle = true,
                         "stream" => a.on_stream = true,
@@ -188,7 +200,9 @@ fn parse_args() -> Args {
                         .parse::<u64>()
                         .ok()
                         .filter(|n| (1..=3600).contains(n))
-                        .unwrap_or_else(|| usage_error("--heartbeat takes seconds between 1 and 3600")),
+                        .unwrap_or_else(|| {
+                            usage_error("--heartbeat takes seconds between 1 and 3600")
+                        }),
                 );
             }
             "--linger" => {
@@ -197,7 +211,9 @@ fn parse_args() -> Args {
                         .parse::<u64>()
                         .ok()
                         .filter(|n| (1..=86_400).contains(n))
-                        .unwrap_or_else(|| usage_error("--linger takes seconds between 1 and 86400")),
+                        .unwrap_or_else(|| {
+                            usage_error("--linger takes seconds between 1 and 86400")
+                        }),
                 );
             }
             "--record" => a.record = Some(value("--record")),
@@ -221,7 +237,10 @@ fn parse_args() -> Args {
 /// Find the program now, so a missing one fails before a session exists.
 fn resolve_program(name: &str) -> Result<PathBuf, String> {
     let runnable = |p: &Path| {
-        p.is_file() && CString::new(p.as_os_str().as_bytes()).map(|c| unsafe { libc::access(c.as_ptr(), libc::X_OK) } == 0).unwrap_or(false)
+        p.is_file()
+            && CString::new(p.as_os_str().as_bytes())
+                .map(|c| unsafe { libc::access(c.as_ptr(), libc::X_OK) } == 0)
+                .unwrap_or(false)
     };
     if name.contains('/') {
         let p = PathBuf::from(name);
@@ -279,12 +298,18 @@ impl Report {
 fn detach() -> Report {
     let mut fds = [0 as RawFd; 2];
     if unsafe { libc::pipe2(fds.as_mut_ptr(), libc::O_CLOEXEC) } != 0 {
-        eprintln!("waldo-wrap: cannot create a pipe: {}", std::io::Error::last_os_error());
+        eprintln!(
+            "waldo-wrap: cannot create a pipe: {}",
+            std::io::Error::last_os_error()
+        );
         std::process::exit(1);
     }
     let pid = unsafe { libc::fork() };
     if pid < 0 {
-        eprintln!("waldo-wrap: cannot fork: {}", std::io::Error::last_os_error());
+        eprintln!(
+            "waldo-wrap: cannot fork: {}",
+            std::io::Error::last_os_error()
+        );
         std::process::exit(1);
     }
     if pid > 0 {
@@ -370,7 +395,11 @@ fn create_session_dir(name: Option<&str>) -> Result<SessionDir, String> {
         for f in ["sock", "meta.json", "will.json", "events.ndjson", "log"] {
             let _ = fs::remove_file(dir.join(f));
         }
-        return Ok(SessionDir { id: name.to_string(), dir, lock });
+        return Ok(SessionDir {
+            id: name.to_string(),
+            dir,
+            lock,
+        });
     }
     for _ in 0..20 {
         let id = util::random_id(6);
@@ -403,7 +432,14 @@ fn bind_socket(dir: &Path) -> Result<UnixListener, String> {
 }
 
 fn remove_session_dir(dir: &Path) {
-    for f in ["sock", "meta.json", "will.json", "events.ndjson", "log", "lock"] {
+    for f in [
+        "sock",
+        "meta.json",
+        "will.json",
+        "events.ndjson",
+        "log",
+        "lock",
+    ] {
         let _ = fs::remove_file(dir.join(f));
     }
     let _ = fs::remove_dir(dir);
@@ -450,7 +486,11 @@ fn main() {
     });
 
     // Step 2: detach, before any thread exists.
-    let mut report = if args.detach { detach() } else { Report::Direct };
+    let mut report = if args.detach {
+        detach()
+    } else {
+        Report::Direct
+    };
     let start = Instant::now();
     let started_wall = util::rfc3339_now();
 
@@ -471,15 +511,25 @@ fn main() {
         }
         eprintln!("waldo-wrap: internal error: {info}");
     }));
-    let log = OpenOptions::new().create(true).append(true).mode(0o600).open(&log_path).ok();
+    let log = OpenOptions::new()
+        .create(true)
+        .append(true)
+        .mode(0o600)
+        .open(&log_path)
+        .ok();
 
     let dest_is_default = dest_arg.is_none();
     let dest = dest_arg.unwrap_or_else(|| Dest::File(sd.dir.join("events.ndjson")));
-    let cwd = std::env::current_dir().map(|p| p.display().to_string()).unwrap_or_default();
+    let cwd = std::env::current_dir()
+        .map(|p| p.display().to_string())
+        .unwrap_or_default();
 
     // Step 4: the hello message, which is also the destination probe.
     let mut hello = Map::new();
-    hello.insert("name".into(), args.name.clone().map(Value::from).unwrap_or(Value::Null));
+    hello.insert(
+        "name".into(),
+        args.name.clone().map(Value::from).unwrap_or(Value::Null),
+    );
     hello.insert("argv".into(), json!(args.program));
     hello.insert("cwd".into(), cwd.clone().into());
     hello.insert("socket".into(), socket.display().to_string().into());
@@ -491,7 +541,9 @@ fn main() {
     if !args.no_probe {
         let mut probe = dest::envelope(&sd.id, 0, "hello", start);
         probe.extend(hello.clone());
-        if let Err(e) = sink.deliver(&serde_json::to_string(&Value::Object(probe)).unwrap_or_default()) {
+        if let Err(e) =
+            sink.deliver(&serde_json::to_string(&Value::Object(probe)).unwrap_or_default())
+        {
             remove_session_dir(&sd.dir);
             report.fail(&format!(
                 "cannot deliver to {}: {e}; fix the destination, or pass --no-probe to start without checking it",
@@ -527,7 +579,11 @@ fn main() {
 
     // Step 6: the child.
     let program_c = CString::new(program.as_os_str().as_bytes()).unwrap_or_default();
-    let argv: Vec<CString> = args.program.iter().filter_map(|a| CString::new(a.as_bytes()).ok()).collect();
+    let argv: Vec<CString> = args
+        .program
+        .iter()
+        .filter_map(|a| CString::new(a.as_bytes()).ok())
+        .collect();
     let envp = child_env(&sd.id, &socket);
     let child = match sys::spawn(&program_c, &argv, &envp, &pty.slave_path) {
         Ok(c) => c,
@@ -552,11 +608,18 @@ fn main() {
     // With a probe, hello has gone out already as message 0.
     let first_seq = if args.no_probe { 0 } else { 1 };
     let heartbeat = args.heartbeat.map(Duration::from_secs);
-    let delivery = Delivery::start(sink, sd.id.clone(), start, first_seq, heartbeat, move |msg| {
-        if let Some(mut f) = log_for_thread.as_ref() {
-            let _ = writeln!(f, "{} {msg}", util::rfc3339_now());
-        }
-    });
+    let delivery = Delivery::start(
+        sink,
+        sd.id.clone(),
+        start,
+        first_seq,
+        heartbeat,
+        move |msg| {
+            if let Some(mut f) = log_for_thread.as_ref() {
+                let _ = writeln!(f, "{} {msg}", util::rfc3339_now());
+            }
+        },
+    );
     if args.no_probe {
         delivery.send(Kind::Hello, hello);
     }
@@ -575,12 +638,26 @@ fn main() {
         "socket": socket.display().to_string(),
         "dest": dest.uri(),
     });
-    let _ = fs::write(sd.dir.join("meta.json"), format!("{}\n", serde_json::to_string_pretty(&meta).unwrap_or_default()));
+    let _ = fs::write(
+        sd.dir.join("meta.json"),
+        format!(
+            "{}\n",
+            serde_json::to_string_pretty(&meta).unwrap_or_default()
+        ),
+    );
 
     let coordinates = if args.json {
-        format!("{}\n", json!({"session": sd.id, "socket": socket.display().to_string(), "dest": dest.uri()}))
+        format!(
+            "{}\n",
+            json!({"session": sd.id, "socket": socket.display().to_string(), "dest": dest.uri()})
+        )
     } else {
-        format!("session={}\nsocket={}\ndest={}\n", sd.id, socket.display(), dest.uri())
+        format!(
+            "session={}\nsocket={}\ndest={}\n",
+            sd.id,
+            socket.display(),
+            dest.uri()
+        )
     };
 
     let cfg = host::Config {
@@ -600,7 +677,9 @@ fn main() {
         started_wall,
         lock_fd: sd.lock.as_raw_fd(),
     };
-    let host = match host::Host::new(cfg, pty.master, child, sigfd, listener, emu, log, delivery, recorder, start) {
+    let host = match host::Host::new(
+        cfg, pty.master, child, sigfd, listener, emu, log, delivery, recorder, start,
+    ) {
         Ok(h) => h,
         Err(e) => {
             remove_session_dir(&sd.dir);

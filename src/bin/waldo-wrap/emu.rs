@@ -143,8 +143,11 @@ mod ffi {
             cell_width_px: u32,
             cell_height_px: u32,
         ) -> c_int;
-        pub fn ghostty_terminal_set(terminal: Terminal, option: c_int, value: *const c_void)
-            -> c_int;
+        pub fn ghostty_terminal_set(
+            terminal: Terminal,
+            option: c_int,
+            value: *const c_void,
+        ) -> c_int;
         pub fn ghostty_terminal_get(terminal: Terminal, data: c_int, out: *mut c_void) -> c_int;
         pub fn ghostty_terminal_vt_write(terminal: Terminal, data: *const u8, len: usize);
         pub fn ghostty_terminal_grid_ref(
@@ -165,8 +168,11 @@ mod ffi {
             tag: c_int,
             out_point: *mut PointCoordinate,
         ) -> c_int;
-        pub fn ghostty_tracked_grid_ref_set(r: TrackedRef, terminal: Terminal, point: Point)
-            -> c_int;
+        pub fn ghostty_tracked_grid_ref_set(
+            r: TrackedRef,
+            terminal: Terminal,
+            point: Point,
+        ) -> c_int;
 
         pub fn ghostty_grid_ref_cell(r: *const GridRef, out_cell: *mut u64) -> c_int;
         pub fn ghostty_grid_ref_style(r: *const GridRef, out_style: *mut Style) -> c_int;
@@ -385,7 +391,8 @@ impl Drop for Tracked {
 unsafe extern "C" fn on_write_pty(_t: ffi::Terminal, ud: *mut c_void, data: *const u8, len: usize) {
     let ev = &mut *(ud as *mut Events);
     if !data.is_null() && len > 0 {
-        ev.replies.extend_from_slice(std::slice::from_raw_parts(data, len));
+        ev.replies
+            .extend_from_slice(std::slice::from_raw_parts(data, len));
     }
 }
 
@@ -425,9 +432,15 @@ impl Emu {
             };
             set(ffi::OPT_USERDATA, events as *const c_void)?;
             set(ffi::OPT_WRITE_PTY, on_write_pty as *const c_void)?;
-            set(ffi::OPT_SCROLLBACK_MAX_BYTES, &scrollback_bytes as *const usize as *const c_void)?;
+            set(
+                ffi::OPT_SCROLLBACK_MAX_BYTES,
+                &scrollback_bytes as *const usize as *const c_void,
+            )?;
             set(ffi::OPT_RENDER_HOLD, on_render_hold as *const c_void)?;
-            set(ffi::OPT_SEMANTIC_PROMPT, on_semantic_prompt as *const c_void)?;
+            set(
+                ffi::OPT_SEMANTIC_PROMPT,
+                on_semantic_prompt as *const c_void,
+            )?;
 
             let mut encoder: ffi::KeyEncoder = ptr::null_mut();
             let mut event: ffi::KeyEvent = ptr::null_mut();
@@ -436,7 +449,14 @@ impl Emu {
             {
                 return Err("could not create the key encoder".into());
             }
-            Ok(Emu { t, events, encoder, event, cols, rows })
+            Ok(Emu {
+                t,
+                events,
+                encoder,
+                event,
+                cols,
+                rows,
+            })
         }
     }
 
@@ -475,7 +495,9 @@ impl Emu {
     pub fn resize(&mut self, cols: u16, rows: u16) -> Result<(), String> {
         let r = unsafe { ffi::ghostty_terminal_resize(self.t, cols, rows, 0, 0) };
         if r != ffi::SUCCESS {
-            return Err(format!("the terminal emulator refused the size {cols}x{rows}"));
+            return Err(format!(
+                "the terminal emulator refused the size {cols}x{rows}"
+            ));
         }
         self.cols = cols;
         self.rows = rows;
@@ -490,7 +512,10 @@ impl Emu {
 
     /// Cursor column and row on the visible screen, 0-based.
     pub fn cursor(&self) -> (u16, u16) {
-        (self.get::<u16>(ffi::DATA_CURSOR_X), self.get::<u16>(ffi::DATA_CURSOR_Y))
+        (
+            self.get::<u16>(ffi::DATA_CURSOR_X),
+            self.get::<u16>(ffi::DATA_CURSOR_Y),
+        )
     }
 
     pub fn cursor_visible(&self) -> bool {
@@ -511,7 +536,10 @@ impl Emu {
     }
 
     pub fn title(&self) -> String {
-        let mut s = ffi::GString { ptr: ptr::null(), len: 0 };
+        let mut s = ffi::GString {
+            ptr: ptr::null(),
+            len: 0,
+        };
         unsafe {
             ffi::ghostty_terminal_get(self.t, ffi::DATA_TITLE, &mut s as *mut _ as *mut c_void);
             if s.ptr.is_null() || s.len == 0 {
@@ -523,7 +551,10 @@ impl Emu {
 
     /// The value of a DEC private mode, such as 2004 for bracketed paste.
     pub fn dec_mode(&self, mode: u16) -> bool {
-        let mut cfg = ffi::ModeConfig { mode: mode & 0x7fff, value: false };
+        let mut cfg = ffi::ModeConfig {
+            mode: mode & 0x7fff,
+            value: false,
+        };
         unsafe {
             ffi::ghostty_terminal_get(self.t, ffi::DATA_MODE, &mut cfg as *mut _ as *mut c_void);
         }
@@ -533,7 +564,10 @@ impl Emu {
     fn point(space: Space, x: u16, y: u32) -> ffi::Point {
         let mut value = ffi::PointValue { _padding: [0; 2] };
         value.coordinate = ffi::PointCoordinate { x, y };
-        ffi::Point { tag: space.tag(), value }
+        ffi::Point {
+            tag: space.tag(),
+            value,
+        }
     }
 
     /// Read one row. `None` if the row does not exist. If `hasher` is given,
@@ -543,8 +577,14 @@ impl Emu {
         let mut end = 0usize;
         let mut wrap = false;
         for x in 0..self.cols {
-            let mut gref = ffi::GridRef { node: ptr::null_mut(), x: 0, y: 0 };
-            let r = unsafe { ffi::ghostty_terminal_grid_ref(self.t, Self::point(space, x, y), &mut gref) };
+            let mut gref = ffi::GridRef {
+                node: ptr::null_mut(),
+                x: 0,
+                y: 0,
+            };
+            let r = unsafe {
+                ffi::ghostty_terminal_grid_ref(self.t, Self::point(space, x, y), &mut gref)
+            };
             if r != ffi::SUCCESS || gref.node.is_null() {
                 if x == 0 {
                     return None;
@@ -555,7 +595,11 @@ impl Emu {
                 if x == 0 {
                     let mut row: u64 = 0;
                     if ffi::ghostty_grid_ref_row(&gref, &mut row) == ffi::SUCCESS {
-                        ffi::ghostty_row_get(row, ffi::ROW_DATA_WRAP, &mut wrap as *mut bool as *mut c_void);
+                        ffi::ghostty_row_get(
+                            row,
+                            ffi::ROW_DATA_WRAP,
+                            &mut wrap as *mut bool as *mut c_void,
+                        );
                     }
                 }
                 let mut cell: u64 = 0;
@@ -566,26 +610,37 @@ impl Emu {
                     h.write_u64(cell);
                 }
                 let mut wide: c_int = 0;
-                ffi::ghostty_cell_get(cell, ffi::CELL_DATA_WIDE, &mut wide as *mut c_int as *mut c_void);
+                ffi::ghostty_cell_get(
+                    cell,
+                    ffi::CELL_DATA_WIDE,
+                    &mut wide as *mut c_int as *mut c_void,
+                );
                 if wide == ffi::CELL_WIDE_SPACER_TAIL || wide == ffi::CELL_WIDE_SPACER_HEAD {
                     continue;
                 }
                 let mut has_text = false;
-                ffi::ghostty_cell_get(cell, ffi::CELL_DATA_HAS_TEXT, &mut has_text as *mut bool as *mut c_void);
+                ffi::ghostty_cell_get(
+                    cell,
+                    ffi::CELL_DATA_HAS_TEXT,
+                    &mut has_text as *mut bool as *mut c_void,
+                );
                 if !has_text {
                     text.push(' ');
                     continue;
                 }
                 let mut stack = [0u32; 8];
                 let mut n: usize = 0;
-                let r = ffi::ghostty_grid_ref_graphemes(&gref, stack.as_mut_ptr(), stack.len(), &mut n);
+                let r =
+                    ffi::ghostty_grid_ref_graphemes(&gref, stack.as_mut_ptr(), stack.len(), &mut n);
                 let mut heap: Vec<u32> = Vec::new();
                 let cps: &[u32] = if r == ffi::SUCCESS {
                     &stack[..n.min(stack.len())]
                 } else if r == ffi::OUT_OF_SPACE {
                     heap.resize(n, 0);
                     let mut m: usize = 0;
-                    if ffi::ghostty_grid_ref_graphemes(&gref, heap.as_mut_ptr(), heap.len(), &mut m) == ffi::SUCCESS {
+                    if ffi::ghostty_grid_ref_graphemes(&gref, heap.as_mut_ptr(), heap.len(), &mut m)
+                        == ffi::SUCCESS
+                    {
                         &heap[..m.min(heap.len())]
                     } else {
                         &[]
@@ -597,7 +652,11 @@ impl Emu {
                     if let Some(h) = hasher.as_deref_mut() {
                         h.write_u32(cp);
                     }
-                    text.push(char::from_u32(cp).filter(|c| !c.is_control()).unwrap_or('\u{fffd}'));
+                    text.push(
+                        char::from_u32(cp)
+                            .filter(|c| !c.is_control())
+                            .unwrap_or('\u{fffd}'),
+                    );
                 }
                 end = text.len();
             }
@@ -617,8 +676,14 @@ impl Emu {
         let mut current = Style::default();
         let last = self.cols.min(x0.saturating_add(max_cols));
         for x in x0..last {
-            let mut gref = ffi::GridRef { node: ptr::null_mut(), x: 0, y: 0 };
-            let r = unsafe { ffi::ghostty_terminal_grid_ref(self.t, Self::point(space, x, y), &mut gref) };
+            let mut gref = ffi::GridRef {
+                node: ptr::null_mut(),
+                x: 0,
+                y: 0,
+            };
+            let r = unsafe {
+                ffi::ghostty_terminal_grid_ref(self.t, Self::point(space, x, y), &mut gref)
+            };
             if r != ffi::SUCCESS || gref.node.is_null() {
                 if x == x0 {
                     return None;
@@ -631,13 +696,21 @@ impl Emu {
                     continue;
                 }
                 let mut wide: c_int = 0;
-                ffi::ghostty_cell_get(cell, ffi::CELL_DATA_WIDE, &mut wide as *mut c_int as *mut c_void);
+                ffi::ghostty_cell_get(
+                    cell,
+                    ffi::CELL_DATA_WIDE,
+                    &mut wide as *mut c_int as *mut c_void,
+                );
                 if wide == ffi::CELL_WIDE_SPACER_TAIL || wide == ffi::CELL_WIDE_SPACER_HEAD {
                     continue;
                 }
                 let mut style = Style::default();
                 let mut styled = false;
-                ffi::ghostty_cell_get(cell, ffi::CELL_DATA_HAS_STYLING, &mut styled as *mut bool as *mut c_void);
+                ffi::ghostty_cell_get(
+                    cell,
+                    ffi::CELL_DATA_HAS_STYLING,
+                    &mut styled as *mut bool as *mut c_void,
+                );
                 if styled {
                     let mut raw: ffi::Style = std::mem::zeroed();
                     if ffi::ghostty_grid_ref_style(&gref, &mut raw) == ffi::SUCCESS {
@@ -646,14 +719,26 @@ impl Emu {
                 }
                 // A cell can also be nothing but a background colour.
                 let mut tag: c_int = 0;
-                ffi::ghostty_cell_get(cell, ffi::CELL_DATA_CONTENT_TAG, &mut tag as *mut c_int as *mut c_void);
+                ffi::ghostty_cell_get(
+                    cell,
+                    ffi::CELL_DATA_CONTENT_TAG,
+                    &mut tag as *mut c_int as *mut c_void,
+                );
                 if tag == ffi::CELL_CONTENT_BG_COLOR_PALETTE {
                     let mut idx: u8 = 0;
-                    ffi::ghostty_cell_get(cell, ffi::CELL_DATA_COLOR_PALETTE, &mut idx as *mut u8 as *mut c_void);
+                    ffi::ghostty_cell_get(
+                        cell,
+                        ffi::CELL_DATA_COLOR_PALETTE,
+                        &mut idx as *mut u8 as *mut c_void,
+                    );
                     style.bg = Color::Palette(idx);
                 } else if tag == ffi::CELL_CONTENT_BG_COLOR_RGB {
                     let mut rgb = [0u8; 3];
-                    ffi::ghostty_cell_get(cell, ffi::CELL_DATA_COLOR_RGB, rgb.as_mut_ptr() as *mut c_void);
+                    ffi::ghostty_cell_get(
+                        cell,
+                        ffi::CELL_DATA_COLOR_RGB,
+                        rgb.as_mut_ptr() as *mut c_void,
+                    );
                     style.bg = Color::Rgb(rgb[0], rgb[1], rgb[2]);
                 }
                 if style != current {
@@ -661,7 +746,11 @@ impl Emu {
                     current = style;
                 }
                 let mut has_text = false;
-                ffi::ghostty_cell_get(cell, ffi::CELL_DATA_HAS_TEXT, &mut has_text as *mut bool as *mut c_void);
+                ffi::ghostty_cell_get(
+                    cell,
+                    ffi::CELL_DATA_HAS_TEXT,
+                    &mut has_text as *mut bool as *mut c_void,
+                );
                 if !has_text {
                     out.push(' ');
                     if style != Style::default() {
@@ -671,14 +760,17 @@ impl Emu {
                 }
                 let mut stack = [0u32; 8];
                 let mut n: usize = 0;
-                let r = ffi::ghostty_grid_ref_graphemes(&gref, stack.as_mut_ptr(), stack.len(), &mut n);
+                let r =
+                    ffi::ghostty_grid_ref_graphemes(&gref, stack.as_mut_ptr(), stack.len(), &mut n);
                 let mut heap: Vec<u32> = Vec::new();
                 let cps: &[u32] = if r == ffi::SUCCESS {
                     &stack[..n.min(stack.len())]
                 } else if r == ffi::OUT_OF_SPACE {
                     heap.resize(n, 0);
                     let mut m: usize = 0;
-                    if ffi::ghostty_grid_ref_graphemes(&gref, heap.as_mut_ptr(), heap.len(), &mut m) == ffi::SUCCESS {
+                    if ffi::ghostty_grid_ref_graphemes(&gref, heap.as_mut_ptr(), heap.len(), &mut m)
+                        == ffi::SUCCESS
+                    {
                         &heap[..m.min(heap.len())]
                     } else {
                         &[]
@@ -687,7 +779,11 @@ impl Emu {
                     &[]
                 };
                 for &cp in cps {
-                    out.push(char::from_u32(cp).filter(|c| !c.is_control()).unwrap_or('\u{fffd}'));
+                    out.push(
+                        char::from_u32(cp)
+                            .filter(|c| !c.is_control())
+                            .unwrap_or('\u{fffd}'),
+                    );
                 }
                 // A written space in the default style is still trailing
                 // blank; anything else is content.
@@ -706,7 +802,9 @@ impl Emu {
     /// Start tracking a row.
     pub fn track(&self, space: Space, y: u32) -> Option<Tracked> {
         let mut r: ffi::TrackedRef = ptr::null_mut();
-        let res = unsafe { ffi::ghostty_terminal_grid_ref_track(self.t, Self::point(space, 0, y), &mut r) };
+        let res = unsafe {
+            ffi::ghostty_terminal_grid_ref_track(self.t, Self::point(space, 0, y), &mut r)
+        };
         if res == ffi::SUCCESS && !r.is_null() {
             Some(Tracked(r))
         } else {
@@ -722,7 +820,9 @@ impl Emu {
                 return None;
             }
             let mut p = ffi::PointCoordinate::default();
-            if ffi::ghostty_tracked_grid_ref_point(tracked.0, Space::Screen.tag(), &mut p) == ffi::SUCCESS {
+            if ffi::ghostty_tracked_grid_ref_point(tracked.0, Space::Screen.tag(), &mut p)
+                == ffi::SUCCESS
+            {
                 Some(p.y)
             } else {
                 None
@@ -732,7 +832,10 @@ impl Emu {
 
     /// Point a tracked reference at another row.
     pub fn tracked_set(&self, tracked: &Tracked, space: Space, y: u32) -> bool {
-        unsafe { ffi::ghostty_tracked_grid_ref_set(tracked.0, self.t, Self::point(space, 0, y)) == ffi::SUCCESS }
+        unsafe {
+            ffi::ghostty_tracked_grid_ref_set(tracked.0, self.t, Self::point(space, 0, y))
+                == ffi::SUCCESS
+        }
     }
 
     /// Encode a key press the way the program currently expects it. `text`
@@ -750,17 +853,41 @@ impl Emu {
             match text {
                 Some(c) => {
                     let s = c.encode_utf8(&mut utf8);
-                    ffi::ghostty_key_event_set_utf8(self.event, ffi::GString { ptr: s.as_ptr(), len: s.len() });
+                    ffi::ghostty_key_event_set_utf8(
+                        self.event,
+                        ffi::GString {
+                            ptr: s.as_ptr(),
+                            len: s.len(),
+                        },
+                    );
                     ffi::ghostty_key_event_set_unshifted_codepoint(self.event, c as u32);
                 }
                 None => {
-                    ffi::ghostty_key_event_set_utf8(self.event, ffi::GString { ptr: ptr::null(), len: 0 });
+                    ffi::ghostty_key_event_set_utf8(
+                        self.event,
+                        ffi::GString {
+                            ptr: ptr::null(),
+                            len: 0,
+                        },
+                    );
                     ffi::ghostty_key_event_set_unshifted_codepoint(self.event, 0);
                 }
             }
-            let r = ffi::ghostty_key_encoder_encode(self.encoder, self.event, out.as_mut_ptr(), out.len(), &mut n);
+            let r = ffi::ghostty_key_encoder_encode(
+                self.encoder,
+                self.event,
+                out.as_mut_ptr(),
+                out.len(),
+                &mut n,
+            );
             // The event borrows `utf8`; clear it before the buffer goes away.
-            ffi::ghostty_key_event_set_utf8(self.event, ffi::GString { ptr: ptr::null(), len: 0 });
+            ffi::ghostty_key_event_set_utf8(
+                self.event,
+                ffi::GString {
+                    ptr: ptr::null(),
+                    len: 0,
+                },
+            );
             if r != ffi::SUCCESS {
                 return Vec::new();
             }
@@ -776,10 +903,24 @@ impl Emu {
         let mut out = vec![0u8; input.len() + 16];
         let mut n: usize = 0;
         unsafe {
-            let mut r = ffi::ghostty_paste_encode(input.as_mut_ptr(), input.len(), bracketed, out.as_mut_ptr(), out.len(), &mut n);
+            let mut r = ffi::ghostty_paste_encode(
+                input.as_mut_ptr(),
+                input.len(),
+                bracketed,
+                out.as_mut_ptr(),
+                out.len(),
+                &mut n,
+            );
             if r == ffi::OUT_OF_SPACE {
                 out.resize(n, 0);
-                r = ffi::ghostty_paste_encode(input.as_mut_ptr(), input.len(), bracketed, out.as_mut_ptr(), out.len(), &mut n);
+                r = ffi::ghostty_paste_encode(
+                    input.as_mut_ptr(),
+                    input.len(),
+                    bracketed,
+                    out.as_mut_ptr(),
+                    out.len(),
+                    &mut n,
+                );
             }
             if r != ffi::SUCCESS {
                 return Vec::new();
@@ -826,7 +967,10 @@ mod tests {
     fn wide_and_combining_characters() {
         let mut e = emu();
         e.feed("a\u{4e16}b e\u{301}".as_bytes());
-        assert_eq!(e.row(Space::Active, 0, None).unwrap().text, "a\u{4e16}b e\u{301}");
+        assert_eq!(
+            e.row(Space::Active, 0, None).unwrap().text,
+            "a\u{4e16}b e\u{301}"
+        );
         assert_eq!(e.cursor().0, 6);
     }
 
@@ -846,7 +990,11 @@ mod tests {
         let mut e = emu();
         e.feed(b"\x1b[c");
         let da1 = e.take_replies();
-        assert!(da1.starts_with(b"\x1b[?"), "DA1 reply was {:?}", String::from_utf8_lossy(&da1));
+        assert!(
+            da1.starts_with(b"\x1b[?"),
+            "DA1 reply was {:?}",
+            String::from_utf8_lossy(&da1)
+        );
         e.feed(b"\x1b[5n");
         assert_eq!(e.take_replies(), b"\x1b[0n");
         e.feed(b"ab\x1b[6n");
@@ -891,7 +1039,10 @@ mod tests {
         assert_eq!(e.encode_key(key::TAB, MOD_SHIFT, None), b"\x1b[Z");
         assert_eq!(e.encode_key(key::BACKSPACE, 0, None), b"\x7f");
         assert_eq!(e.encode_key(key::ARROW_UP, 0, None), b"\x1b[A");
-        assert_eq!(e.encode_key(key::ARROW_LEFT, MOD_CTRL | MOD_SHIFT, None), b"\x1b[1;6D");
+        assert_eq!(
+            e.encode_key(key::ARROW_LEFT, MOD_CTRL | MOD_SHIFT, None),
+            b"\x1b[1;6D"
+        );
         assert_eq!(e.encode_key(key::DELETE, 0, None), b"\x1b[3~");
         assert_eq!(e.encode_key(key::PAGE_DOWN, 0, None), b"\x1b[6~");
         assert_eq!(e.encode_key(key::F1, 0, None), b"\x1bOP");
@@ -913,7 +1064,11 @@ mod tests {
         // A paste cannot close its own bracket.
         let evil = e.encode_paste(b"x\x1b[201~rm -rf");
         let inner = &evil[6..evil.len() - 6];
-        assert!(!inner.windows(6).any(|w| w == b"\x1b[201~"), "{:?}", String::from_utf8_lossy(&evil));
+        assert!(
+            !inner.windows(6).any(|w| w == b"\x1b[201~"),
+            "{:?}",
+            String::from_utf8_lossy(&evil)
+        );
     }
 
     #[test]
@@ -924,17 +1079,29 @@ mod tests {
         assert_eq!(e.row_ansi(Space::Active, 0, 0, 80).unwrap(), "plain");
         // Colour and attributes, each run introduced by a full SGR.
         e.feed(b"a \x1b[1;31mred\x1b[0m b \x1b[7msel\x1b[0m\r\n");
-        assert_eq!(e.row_ansi(Space::Active, 1, 0, 80).unwrap(), "a \x1b[0;1;31mred\x1b[0m b \x1b[0;7msel\x1b[0m");
+        assert_eq!(
+            e.row_ansi(Space::Active, 1, 0, 80).unwrap(),
+            "a \x1b[0;1;31mred\x1b[0m b \x1b[0;7msel\x1b[0m"
+        );
         // 256-colour and true colour.
         e.feed(b"\x1b[38;5;208;48;2;1;2;3mx\x1b[0m\r\n");
-        assert_eq!(e.row_ansi(Space::Active, 2, 0, 80).unwrap(), "\x1b[0;38;5;208;48;2;1;2;3mx\x1b[0m");
+        assert_eq!(
+            e.row_ansi(Space::Active, 2, 0, 80).unwrap(),
+            "\x1b[0;38;5;208;48;2;1;2;3mx\x1b[0m"
+        );
         // A highlighted bar: erased cells that carry only a background.
         e.feed(b"\x1b[44mbar\x1b[K\x1b[0m\r\n");
         let bar = e.row_ansi(Space::Active, 3, 0, 80).unwrap();
-        assert!(bar.starts_with("\x1b[0;44mbar") && bar.ends_with("\x1b[0m"), "{bar:?}");
+        assert!(
+            bar.starts_with("\x1b[0;44mbar") && bar.ends_with("\x1b[0m"),
+            "{bar:?}"
+        );
         assert_eq!(bar.matches(' ').count(), 77, "{bar:?}");
         // A slice of the row.
-        assert_eq!(e.row_ansi(Space::Active, 1, 2, 3).unwrap(), "\x1b[0;1;31mred\x1b[0m");
+        assert_eq!(
+            e.row_ansi(Space::Active, 1, 2, 3).unwrap(),
+            "\x1b[0;1;31mred\x1b[0m"
+        );
         assert_eq!(e.row_ansi(Space::Active, 0, 2, 2).unwrap(), "ai");
         // The plain reader is unchanged by styles.
         assert_eq!(e.row(Space::Active, 1, None).unwrap().text, "a red b sel");

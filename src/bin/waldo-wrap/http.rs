@@ -21,7 +21,10 @@ pub struct Request {
 
 impl Request {
     pub fn query_get(&self, key: &str) -> Option<&str> {
-        self.query.iter().find(|(k, _)| k == key).map(|(_, v)| v.as_str())
+        self.query
+            .iter()
+            .find(|(k, _)| k == key)
+            .map(|(_, v)| v.as_str())
     }
 }
 
@@ -45,7 +48,9 @@ fn percent_decode(s: &str) -> String {
         match b[i] {
             b'+' => out.push(b' '),
             b'%' => {
-                let hex = b.get(i + 1..i + 3).and_then(|h| std::str::from_utf8(h).ok());
+                let hex = b
+                    .get(i + 1..i + 3)
+                    .and_then(|h| std::str::from_utf8(h).ok());
                 match hex.and_then(|h| u8::from_str_radix(h, 16).ok()) {
                     Some(v) => {
                         out.push(v);
@@ -79,7 +84,11 @@ pub fn parse(buf: &[u8], continue_sent: bool) -> Parsed {
         Ok(httparse::Status::Complete(n)) => n,
         Ok(httparse::Status::Partial) => {
             if buf.len() > MAX_HEAD {
-                return Parsed::Bad(431, "headers_too_large", "request headers are larger than 64 KiB".into());
+                return Parsed::Bad(
+                    431,
+                    "headers_too_large",
+                    "request headers are larger than 64 KiB".into(),
+                );
             }
             return Parsed::Incomplete;
         }
@@ -87,7 +96,10 @@ pub fn parse(buf: &[u8], continue_sent: bool) -> Parsed {
     };
 
     let mut content_length: Option<usize> = None;
-    let mut out = Request { keep_alive: req.version == Some(1), ..Default::default() };
+    let mut out = Request {
+        keep_alive: req.version == Some(1),
+        ..Default::default()
+    };
     let mut expect_continue = false;
     for h in req.headers.iter() {
         let value = String::from_utf8_lossy(h.value);
@@ -95,7 +107,9 @@ pub fn parse(buf: &[u8], continue_sent: bool) -> Parsed {
         if h.name.eq_ignore_ascii_case("content-length") {
             match value.parse::<usize>() {
                 Ok(n) => content_length = Some(n),
-                Err(_) => return Parsed::Bad(400, "bad_request", "Content-Length is not a number".into()),
+                Err(_) => {
+                    return Parsed::Bad(400, "bad_request", "Content-Length is not a number".into())
+                }
             }
         } else if h.name.eq_ignore_ascii_case("transfer-encoding") {
             return Parsed::Bad(
@@ -218,7 +232,10 @@ mod tests {
     fn post_body_in_pieces() {
         let raw = b"POST /v1/input HTTP/1.1\r\nContent-Type: application/json\r\nContent-Length: 13\r\n\r\n{\"input\": []}";
         assert!(matches!(parse(&raw[..20], false), Parsed::Incomplete));
-        assert!(matches!(parse(&raw[..raw.len() - 3], false), Parsed::Incomplete));
+        assert!(matches!(
+            parse(&raw[..raw.len() - 3], false),
+            Parsed::Incomplete
+        ));
         match parse(raw, false) {
             Parsed::Ready(r, _) => {
                 assert!(r.json_body);
@@ -231,7 +248,10 @@ mod tests {
     #[test]
     fn chunked_is_refused() {
         let raw = b"POST /v1/input HTTP/1.1\r\nTransfer-Encoding: chunked\r\n\r\n";
-        assert!(matches!(parse(raw, false), Parsed::Bad(411, "length_required", _)));
+        assert!(matches!(
+            parse(raw, false),
+            Parsed::Bad(411, "length_required", _)
+        ));
     }
 
     #[test]
@@ -244,7 +264,10 @@ mod tests {
     #[test]
     fn body_cap() {
         let raw = b"POST /v1/input HTTP/1.1\r\nContent-Length: 2000000\r\n\r\n";
-        assert!(matches!(parse(raw, false), Parsed::Bad(413, "body_too_large", _)));
+        assert!(matches!(
+            parse(raw, false),
+            Parsed::Bad(413, "body_too_large", _)
+        ));
     }
 
     #[test]

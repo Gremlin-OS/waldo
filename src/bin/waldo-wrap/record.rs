@@ -14,7 +14,13 @@ pub struct Recorder {
 
 impl Recorder {
     /// Write the header. `timestamp` is seconds since the epoch.
-    pub fn start(file: File, cols: u16, rows: u16, timestamp: i64, start: Instant) -> io::Result<Recorder> {
+    pub fn start(
+        file: File,
+        cols: u16,
+        rows: u16,
+        timestamp: i64,
+        start: Instant,
+    ) -> io::Result<Recorder> {
         let mut out = BufWriter::new(file);
         let header = serde_json::json!({
             "version": 2,
@@ -25,12 +31,21 @@ impl Recorder {
         });
         writeln!(out, "{header}")?;
         out.flush()?;
-        Ok(Recorder { out, start, pending: Vec::new() })
+        Ok(Recorder {
+            out,
+            start,
+            pending: Vec::new(),
+        })
     }
 
     fn event(&mut self, code: &str, data: &str) -> io::Result<()> {
         let t = self.start.elapsed().as_secs_f64();
-        writeln!(self.out, "[{t:.6}, {}, {}]", serde_json::Value::from(code), serde_json::Value::from(data))
+        writeln!(
+            self.out,
+            "[{t:.6}, {}, {}]",
+            serde_json::Value::from(code),
+            serde_json::Value::from(data)
+        )
     }
 
     /// Record bytes the program wrote. Events hold text, so a character
@@ -92,7 +107,10 @@ mod tests {
         let e = "é".as_bytes();
         assert_eq!(split_utf8(b"abc"), ("abc".to_string(), &b""[..]));
         assert_eq!(split_utf8(&[b'a', e[0]]), ("a".to_string(), &e[..1]));
-        assert_eq!(split_utf8(&[b'a', 0xff, b'b']), ("a\u{FFFD}b".to_string(), &b""[..]));
+        assert_eq!(
+            split_utf8(&[b'a', 0xff, b'b']),
+            ("a\u{FFFD}b".to_string(), &b""[..])
+        );
         let crab = "🦀".as_bytes();
         assert_eq!(split_utf8(&crab[..3]), (String::new(), &crab[..3]));
     }
@@ -109,7 +127,10 @@ mod tests {
         r.flush().unwrap();
         let text = std::fs::read_to_string(&path).unwrap();
         let _ = std::fs::remove_file(&path);
-        let lines: Vec<serde_json::Value> = text.lines().map(|l| serde_json::from_str(l).unwrap()).collect();
+        let lines: Vec<serde_json::Value> = text
+            .lines()
+            .map(|l| serde_json::from_str(l).unwrap())
+            .collect();
         assert_eq!(lines[0]["version"], 2);
         assert_eq!(lines[0]["width"], 80);
         assert_eq!(lines[0]["height"], 24);

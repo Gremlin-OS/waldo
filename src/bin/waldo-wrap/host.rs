@@ -106,13 +106,22 @@ pub struct Config {
 
 enum QKind {
     Bytes(Vec<u8>),
-    Key { key: i32, mods: u16, text: Option<char>, is_esc: bool },
+    Key {
+        key: i32,
+        mods: u16,
+        text: Option<char>,
+        is_esc: bool,
+    },
     Paste(Vec<u8>),
     /// A signal for the program. Not input, but it takes its turn in the
     /// queue so that it never lands in the middle of a request's input.
     Signal(i32),
     /// A change of terminal size, in the queue for the same reason.
-    Resize { cols: u16, rows: u16, why: Resize },
+    Resize {
+        cols: u16,
+        rows: u16,
+        why: Resize,
+    },
 }
 
 /// Who asked for a resize, which decides what size the session goes back to.
@@ -485,7 +494,10 @@ impl Host {
         }
         let held = self.hold_since.filter(|h| now < *h + HOLD_CAP);
         if !self.triggers.is_empty() && self.trig_gen != self.gen {
-            consider(held.map(|h| h + HOLD_CAP).unwrap_or(self.trig_last + TRIG_EVERY));
+            consider(
+                held.map(|h| h + HOLD_CAP)
+                    .unwrap_or(self.trig_last + TRIG_EVERY),
+            );
         }
         if self.settle_pending && (self.cfg.on_settle || !self.triggers.is_empty()) {
             if let Some(t) = settle_timer {
@@ -524,8 +536,15 @@ impl Host {
 
     fn tick(&mut self) {
         if let Some((since, stage)) = self.stopping {
-            if self.exit_status.is_none() && stage < 2 && since.elapsed() >= KILL_STEP * (stage as u32 + 1) {
-                let sig = if stage == 0 { libc::SIGTERM } else { libc::SIGKILL };
+            if self.exit_status.is_none()
+                && stage < 2
+                && since.elapsed() >= KILL_STEP * (stage as u32 + 1)
+            {
+                let sig = if stage == 0 {
+                    libc::SIGTERM
+                } else {
+                    libc::SIGKILL
+                };
                 self.signal_child(sig);
                 self.stopping = Some((since, stage + 1));
             }
@@ -602,7 +621,10 @@ impl Host {
             return;
         }
         let sb = self.emu.scrollback_rows() as u32;
-        let tracked = self.watermark.as_ref().and_then(|w| self.emu.tracked_row(w));
+        let tracked = self
+            .watermark
+            .as_ref()
+            .and_then(|w| self.emu.tracked_row(w));
         let start = match tracked {
             Some(y) => y,
             None => {
@@ -615,7 +637,9 @@ impl Host {
         let mut acc = String::new();
         let mut y = start;
         while y < sb {
-            let Some(row) = self.emu.row(Space::Screen, y, None) else { break };
+            let Some(row) = self.emu.row(Space::Screen, y, None) else {
+                break;
+            };
             acc.push_str(&row.text);
             y += 1;
             // A logical line ends at a row that does not wrap. A line that
@@ -647,7 +671,11 @@ impl Host {
     fn refresh(&mut self) {
         let mut h = DefaultHasher::new();
         let rows: Vec<Row> = (0..self.emu.rows() as u32)
-            .map(|y| self.emu.row(Space::Active, y, Some(&mut h)).unwrap_or_default())
+            .map(|y| {
+                self.emu
+                    .row(Space::Active, y, Some(&mut h))
+                    .unwrap_or_default()
+            })
             .collect();
         let (cx, cy) = self.emu.cursor();
         h.write_u16(cx);
@@ -678,13 +706,20 @@ impl Host {
     fn screen_json(&self, ansi: bool) -> Value {
         let styled: Vec<String> = if ansi {
             (0..self.emu.rows() as u32)
-                .map(|y| self.emu.row_ansi(Space::Active, y, 0, self.emu.cols()).unwrap_or_default())
+                .map(|y| {
+                    self.emu
+                        .row_ansi(Space::Active, y, 0, self.emu.cols())
+                        .unwrap_or_default()
+                })
                 .collect()
         } else {
             Vec::new()
         };
-        let mut lines: Vec<&str> =
-            if ansi { styled.iter().map(|s| s.as_str()).collect() } else { self.rows.iter().map(|r| trimmed(&r.text)).collect() };
+        let mut lines: Vec<&str> = if ansi {
+            styled.iter().map(|s| s.as_str()).collect()
+        } else {
+            self.rows.iter().map(|r| trimmed(&r.text)).collect()
+        };
         while lines.last().map(|l| l.is_empty()).unwrap_or(false) {
             lines.pop();
         }
@@ -704,7 +739,11 @@ impl Host {
     /// The cursor's line is padded to the cursor so a prompt that ends in a
     /// space the program never drew still ends in one.
     fn visible_lines(&self) -> Vec<Logical> {
-        let base = if self.emu.alt_screen() { ALT_BASE } else { self.abs_base };
+        let base = if self.emu.alt_screen() {
+            ALT_BASE
+        } else {
+            self.abs_base
+        };
         let (cx, cy) = self.emu.cursor();
         let mut out = Vec::new();
         let mut acc = String::new();
@@ -722,7 +761,11 @@ impl Host {
             }
             acc.push_str(&text);
             if !row.wrap || i + 1 == self.rows.len() {
-                out.push(Logical { text: std::mem::take(&mut acc), first_row: first, abs: base + first as u64 });
+                out.push(Logical {
+                    text: std::mem::take(&mut acc),
+                    first_row: first,
+                    abs: base + first as u64,
+                });
             }
         }
         out
@@ -734,7 +777,11 @@ impl Host {
         if self.emu.alt_screen() {
             return Vec::new();
         }
-        let mut lines: Vec<String> = self.visible_lines().into_iter().map(|l| trimmed(&l.text).to_string()).collect();
+        let mut lines: Vec<String> = self
+            .visible_lines()
+            .into_iter()
+            .map(|l| trimmed(&l.text).to_string())
+            .collect();
         while lines.last().map(|l| l.is_empty()).unwrap_or(false) {
             lines.pop();
         }
@@ -772,7 +819,12 @@ impl Host {
             // waits for the program to take in what was typed before it: a
             // signal travels faster than input, and would otherwise overtake
             // the last keys of the request ahead of it.
-            if self.queue.front().map(|q| q.kind.is_action()).unwrap_or(false) {
+            if self
+                .queue
+                .front()
+                .map(|q| q.kind.is_action())
+                .unwrap_or(false)
+            {
                 if !self.input_absorbed() {
                     self.pause_until = Some(Instant::now() + KEY_POLL);
                     break;
@@ -790,9 +842,12 @@ impl Host {
                 self.pause_until = None;
             }
             let absorbed = self.input_absorbed();
-            let Some(front) = self.queue.front_mut() else { break };
+            let Some(front) = self.queue.front_mut() else {
+                break;
+            };
             if !self.typed {
-                let ready = self.drawn && self.last_change.elapsed() >= Duration::from_millis(self.cfg.quiet_ms);
+                let ready = self.drawn
+                    && self.last_change.elapsed() >= Duration::from_millis(self.cfg.quiet_ms);
                 if !ready && Instant::now() < self.start + FIRST_DRAW_MAX {
                     self.pause_until = Some(Instant::now() + KEY_POLL);
                     break;
@@ -816,7 +871,12 @@ impl Host {
             // follow the modes the program has set by then.
             match &front.kind {
                 QKind::Bytes(_) => {}
-                QKind::Key { key, mods, text, is_esc } => {
+                QKind::Key {
+                    key,
+                    mods,
+                    text,
+                    is_esc,
+                } => {
                     let (key, mods, text, is_esc) = (*key, *mods, *text, *is_esc);
                     let mut bytes = self.emu.encode_key(key, mods, text);
                     if bytes.is_empty() {
@@ -831,7 +891,9 @@ impl Host {
                 }
                 QKind::Signal(_) | QKind::Resize { .. } => unreachable!(),
             }
-            let QKind::Bytes(bytes) = &front.kind else { unreachable!() };
+            let QKind::Bytes(bytes) = &front.kind else {
+                unreachable!()
+            };
             if front.off < bytes.len() {
                 match sys::write(self.master, &bytes[front.off..]) {
                     Ok(Some(n)) => {
@@ -862,7 +924,11 @@ impl Host {
                 }
             }
             let done = match self.queue.front() {
-                Some(QItem { kind: QKind::Bytes(b), off, .. }) => *off >= b.len(),
+                Some(QItem {
+                    kind: QKind::Bytes(b),
+                    off,
+                    ..
+                }) => *off >= b.len(),
                 _ => false,
             };
             if done {
@@ -926,7 +992,11 @@ impl Host {
                 }
                 // The wait for the redraw starts now, not when it was asked.
                 let now = Instant::now();
-                for w in self.waits.iter_mut().filter(|w| w.req_id == item.owner && w.soft) {
+                for w in self
+                    .waits
+                    .iter_mut()
+                    .filter(|w| w.req_id == item.owner && w.soft)
+                {
                     w.deadline = now + RESIZE_WAIT;
                 }
             }
@@ -941,7 +1011,9 @@ impl Host {
 
     /// Whether a request's signal or resize is still waiting its turn.
     fn action_pending(&self, owner: u64) -> bool {
-        self.queue.iter().any(|q| q.owner == owner && q.kind.is_action())
+        self.queue
+            .iter()
+            .any(|q| q.owner == owner && q.kind.is_action())
     }
 
     fn input_idle(&self) -> bool {
@@ -951,7 +1023,11 @@ impl Host {
     // ---- settle and waits -------------------------------------------------
 
     fn quiet(&self) -> Duration {
-        Duration::from_millis(if self.prompt_seen { PROMPT_QUIET_MS.min(self.cfg.quiet_ms) } else { self.cfg.quiet_ms })
+        Duration::from_millis(if self.prompt_seen {
+            PROMPT_QUIET_MS.min(self.cfg.quiet_ms)
+        } else {
+            self.cfg.quiet_ms
+        })
     }
 
     fn settle_at(&self) -> Instant {
@@ -959,7 +1035,9 @@ impl Host {
     }
 
     fn held(&self, now: Instant) -> bool {
-        self.hold_since.map(|h| now.duration_since(h) < HOLD_CAP).unwrap_or(false)
+        self.hold_since
+            .map(|h| now.duration_since(h) < HOLD_CAP)
+            .unwrap_or(false)
     }
 
     fn settled(&self, now: Instant) -> bool {
@@ -1047,7 +1125,11 @@ impl Host {
         } else {
             let due = self.trig_gen != self.gen && now >= self.trig_last + TRIG_EVERY;
             let look = last || (!self.held(now) && (at_settle || due));
-            let lines = if look { self.visible_lines() } else { Vec::new() };
+            let lines = if look {
+                self.visible_lines()
+            } else {
+                Vec::new()
+            };
             let fresh = std::mem::take(&mut self.trig_fresh);
             let committed = self.rows_committed;
             let mut triggers = std::mem::take(&mut self.triggers);
@@ -1067,7 +1149,8 @@ impl Host {
                 if look {
                     let found = self.matches_now(&t.re, &lines);
                     if at_settle {
-                        t.known.retain(|k| found.iter().any(|f| f.line == k.0 && f.text == k.1));
+                        t.known
+                            .retain(|k| found.iter().any(|f| f.line == k.0 && f.text == k.1));
                     }
                     for f in found {
                         if !t.known.iter().any(|k| k.0 == f.line && k.1 == f.text) {
@@ -1081,7 +1164,11 @@ impl Host {
                 self.trig_gen = self.gen;
                 self.trig_last = now;
             }
-            let screen = if fired.is_empty() { Value::Null } else { self.screen_json(false) };
+            let screen = if fired.is_empty() {
+                Value::Null
+            } else {
+                self.screen_json(false)
+            };
             let mut spent: Vec<usize> = Vec::new();
             for (i, m) in fired {
                 let t = &mut triggers[i];
@@ -1147,7 +1234,9 @@ impl Host {
     }
 
     fn handle_trigger_add(&mut self, id: u64, req: &Request) {
-        let Some(body) = self.body_json(id, req) else { return };
+        let Some(body) = self.body_json(id, req) else {
+            return;
+        };
         let Some(pattern) = body.get("pattern").and_then(|p| p.as_str()) else {
             return self.error(
                 id,
@@ -1157,14 +1246,33 @@ impl Host {
                 "the body needs a pattern, such as {\"pattern\": \"[Pp]assword: $\"}: a regular expression matched against one line",
             );
         };
-        let re = match regex_lite::RegexBuilder::new(pattern).size_limit(1 << 20).build() {
+        let re = match regex_lite::RegexBuilder::new(pattern)
+            .size_limit(1 << 20)
+            .build()
+        {
             Ok(re) => re,
-            Err(e) => return self.error(id, req, 400, "bad_pattern", &format!("the pattern is not a valid regular expression: {e}")),
+            Err(e) => {
+                return self.error(
+                    id,
+                    req,
+                    400,
+                    "bad_pattern",
+                    &format!("the pattern is not a valid regular expression: {e}"),
+                )
+            }
         };
         let once = match body.get("mode").and_then(|m| m.as_str()) {
             None | Some("edge") => false,
             Some("once") => true,
-            Some(other) => return self.error(id, req, 400, "unknown_mode", &format!("unknown mode '{other}'; use edge or once")),
+            Some(other) => {
+                return self.error(
+                    id,
+                    req,
+                    400,
+                    "unknown_mode",
+                    &format!("unknown mode '{other}'; use edge or once"),
+                )
+            }
         };
         let name = match body.get("id") {
             None | Some(Value::Null) => loop {
@@ -1175,11 +1283,19 @@ impl Host {
                 }
             },
             Some(v) => match v.as_str().filter(|s| {
-                (1..=32).contains(&s.len()) && s.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'_' || b == b'-')
+                (1..=32).contains(&s.len())
+                    && s.bytes()
+                        .all(|b| b.is_ascii_alphanumeric() || b == b'_' || b == b'-')
             }) {
                 Some(s) => s.to_string(),
                 None => {
-                    return self.error(id, req, 400, "bad_id", "a trigger id is 1 to 32 characters from a-z, A-Z, 0-9, _ and -");
+                    return self.error(
+                        id,
+                        req,
+                        400,
+                        "bad_id",
+                        "a trigger id is 1 to 32 characters from a-z, A-Z, 0-9, _ and -",
+                    );
                 }
             },
         };
@@ -1201,7 +1317,14 @@ impl Host {
                 &format!("a session takes at most {MAX_TRIGGERS} triggers; remove one with 'waldo-term match rm ID'"),
             );
         }
-        let t = Trigger { id: name, re, pattern: pattern.to_string(), once, count: 0, known: Vec::new() };
+        let t = Trigger {
+            id: name,
+            re,
+            pattern: pattern.to_string(),
+            once,
+            count: 0,
+            known: Vec::new(),
+        };
         let added = Host::trigger_json(&t);
         self.triggers.push(t);
         // Look at the screen for it straight away: text that is already
@@ -1213,8 +1336,18 @@ impl Host {
     fn handle_trigger_remove(&mut self, id: u64, req: &Request, name: &str) {
         let Some(i) = self.triggers.iter().position(|t| t.id == name) else {
             let have: Vec<&str> = self.triggers.iter().map(|t| t.id.as_str()).collect();
-            let list = if have.is_empty() { "there are none".to_string() } else { format!("there are: {}", have.join(", ")) };
-            return self.error(id, req, 404, "no_such_trigger", &format!("no trigger '{name}'; {list}"));
+            let list = if have.is_empty() {
+                "there are none".to_string()
+            } else {
+                format!("there are: {}", have.join(", "))
+            };
+            return self.error(
+                id,
+                req,
+                404,
+                "no_such_trigger",
+                &format!("no trigger '{name}'; {list}"),
+            );
         };
         let removed = Host::trigger_json(&self.triggers.remove(i));
         self.triggers_reply(id, req, Some(("removed", removed)));
@@ -1232,7 +1365,11 @@ impl Host {
                 out.push(MatchInfo {
                     text: m.as_str().to_string(),
                     groups: (1..caps.len())
-                        .map(|i| caps.get(i).map(|g| Value::from(g.as_str())).unwrap_or(Value::Null))
+                        .map(|i| {
+                            caps.get(i)
+                                .map(|g| Value::from(g.as_str()))
+                                .unwrap_or(Value::Null)
+                        })
                         .collect(),
                     line: l.abs,
                     row: Some(l.first_row + col0 / cols + 1),
@@ -1254,7 +1391,11 @@ impl Host {
                     return Some(MatchInfo {
                         text: key.1,
                         groups: (1..caps.len())
-                            .map(|i| caps.get(i).map(|g| Value::from(g.as_str())).unwrap_or(Value::Null))
+                            .map(|i| {
+                                caps.get(i)
+                                    .map(|g| Value::from(g.as_str()))
+                                    .unwrap_or(Value::Null)
+                            })
                             .collect(),
                         line: *abs,
                         row: None,
@@ -1266,8 +1407,11 @@ impl Host {
         let found = self.matches_now(re, lines);
         // A match that was there at the start stops counting as known once it
         // is gone, so the same text appearing again later is a new match.
-        w.known.retain(|k| found.iter().any(|f| f.line == k.0 && f.text == k.1));
-        found.into_iter().find(|f| !w.known.contains(&(f.line, f.text.clone())))
+        w.known
+            .retain(|k| found.iter().any(|f| f.line == k.0 && f.text == k.1));
+        found
+            .into_iter()
+            .find(|f| !w.known.contains(&(f.line, f.text.clone())))
     }
 
     fn evaluate_waits(&mut self) {
@@ -1277,7 +1421,11 @@ impl Host {
         }
         let now = Instant::now();
         let settled = self.settled(now);
-        let lines = if self.waits.iter().any(|w| w.until == Until::Match) { self.visible_lines() } else { Vec::new() };
+        let lines = if self.waits.iter().any(|w| w.until == Until::Match) {
+            self.visible_lines()
+        } else {
+            Vec::new()
+        };
         let mut waits = std::mem::take(&mut self.waits);
         let mut keep = Vec::with_capacity(waits.len());
         for mut w in waits.drain(..) {
@@ -1288,12 +1436,24 @@ impl Host {
                 Until::Change(g) if self.gen != g => Some(Reason::Change),
                 // The program inside the session that was being typed into
                 // is gone, and what replaced it has finished drawing.
-                Until::Exit if settled && w.exit_of.as_ref().map(|(pg, _)| !sys::group_exists(*pg)).unwrap_or(false) => Some(Reason::Exit),
+                Until::Exit
+                    if settled
+                        && w.exit_of
+                            .as_ref()
+                            .map(|(pg, _)| !sys::group_exists(*pg))
+                            .unwrap_or(false) =>
+                {
+                    Some(Reason::Exit)
+                }
                 Until::Match => self.check_match(&mut w, &lines).map(Reason::Match),
                 _ => None,
             };
             let reason = reason.or_else(|| {
-                (now >= w.deadline).then_some(if w.soft && !self.action_pending(w.req_id) { Reason::None } else { Reason::Timeout })
+                (now >= w.deadline).then_some(if w.soft && !self.action_pending(w.req_id) {
+                    Reason::None
+                } else {
+                    Reason::Timeout
+                })
             });
             match reason {
                 Some(r) => self.respond_wait(w, r),
@@ -1317,16 +1477,34 @@ impl Host {
 
     /// The fields that describe how the child ended (PROTOCOL.md section 8.6).
     fn exit_fields(&self, output: Value) -> Map<String, Value> {
-        let st = self.exit_status.unwrap_or(ExitStatus { code: None, signal: None, core_dumped: false });
+        let st = self.exit_status.unwrap_or(ExitStatus {
+            code: None,
+            signal: None,
+            core_dumped: false,
+        });
         let mut m = Map::new();
-        m.insert("exit_code".into(), st.code.map(Value::from).unwrap_or(Value::Null));
-        m.insert("signal".into(), st.signal.map(|s| Value::from(sys::signal_name(s))).unwrap_or(Value::Null));
+        m.insert(
+            "exit_code".into(),
+            st.code.map(Value::from).unwrap_or(Value::Null),
+        );
+        m.insert(
+            "signal".into(),
+            st.signal
+                .map(|s| Value::from(sys::signal_name(s)))
+                .unwrap_or(Value::Null),
+        );
         m.insert("core_dumped".into(), st.core_dumped.into());
         m.insert("killed_by_waldo".into(), self.kill_reason.is_some().into());
-        m.insert("kill_reason".into(), self.kill_reason.map(Value::from).unwrap_or(Value::Null));
+        m.insert(
+            "kill_reason".into(),
+            self.kill_reason.map(Value::from).unwrap_or(Value::Null),
+        );
         m.insert("spawn_error".into(), Value::Null);
         let end = self.exited_at.unwrap_or_else(Instant::now);
-        m.insert("duration_ms".into(), (end.duration_since(self.start).as_millis() as u64).into());
+        m.insert(
+            "duration_ms".into(),
+            (end.duration_since(self.start).as_millis() as u64).into(),
+        );
         m.insert("output".into(), output);
         m
     }
@@ -1377,16 +1555,25 @@ impl Host {
                 // screen.
                 if hint.is_none() && w.fg_before.is_some() {
                     let fg = sys::foreground_pgrp(self.master);
-                    if let Some(pg) = fg.filter(|pg| *pg != self.child.pid && Some(*pg) != w.fg_before) {
+                    if let Some(pg) =
+                        fg.filter(|pg| *pg != self.child.pid && Some(*pg) != w.fg_before)
+                    {
                         let name = sys::process_name(pg).unwrap_or_else(|| "a command".into());
                         hint = Some(format!(
                             "'{name}' is still running; settle only means the screen went quiet. To wait for it to end, see 'waldo-term help shell'."
                         ));
-                    } else if let Some(was) = w.fg_name_before.as_ref().filter(|_| fg == Some(self.child.pid)) {
+                    } else if let Some(was) = w
+                        .fg_name_before
+                        .as_ref()
+                        .filter(|_| fg == Some(self.child.pid))
+                    {
                         // The mirror case: the program the input was meant
                         // for has left the foreground during the request.
-                        let now = sys::process_name(self.child.pid).unwrap_or_else(|| "the session's program".into());
-                        hint = Some(format!("'{was}' is no longer in the foreground; input now goes to '{now}'."));
+                        let now = sys::process_name(self.child.pid)
+                            .unwrap_or_else(|| "the session's program".into());
+                        hint = Some(format!(
+                            "'{was}' is no longer in the foreground; input now goes to '{now}'."
+                        ));
                     }
                 }
             }
@@ -1468,9 +1655,13 @@ impl Host {
     }
 
     fn ready_to_finish(&self) -> bool {
-        let Some(exited) = self.exited_at else { return false };
+        let Some(exited) = self.exited_at else {
+            return false;
+        };
         let now = Instant::now();
-        self.pty_eof || self.drain_until.map(|d| now >= d).unwrap_or(true) || now.duration_since(exited) >= DRAIN_CAP
+        self.pty_eof
+            || self.drain_until.map(|d| now >= d).unwrap_or(true)
+            || now.duration_since(exited) >= DRAIN_CAP
     }
 
     /// The child is gone and its output is drained: send the will, answer
@@ -1478,8 +1669,15 @@ impl Host {
     fn finish(mut self) -> i32 {
         self.refresh();
         self.collect();
-        let st = self.exit_status.unwrap_or(ExitStatus { code: Some(1), signal: None, core_dumped: false });
-        self.log(&format!("child exited: code={:?} signal={:?}", st.code, st.signal));
+        let st = self.exit_status.unwrap_or(ExitStatus {
+            code: Some(1),
+            signal: None,
+            core_dumped: false,
+        });
+        self.log(&format!(
+            "child exited: code={:?} signal={:?}",
+            st.code, st.signal
+        ));
 
         // Whatever the last output matched, and the end of the stream: the
         // lines still on screen never scroll off, so they are sent now.
@@ -1629,13 +1827,29 @@ impl Host {
         }
         // The session goes back to its own size when the last client that
         // resized it detaches.
-        if resized && !self.conns.values().any(|c| c.attach.as_ref().map(|a| a.resized).unwrap_or(false)) {
+        if resized
+            && !self
+                .conns
+                .values()
+                .any(|c| c.attach.as_ref().map(|a| a.resized).unwrap_or(false))
+        {
             if let Some((cols, rows)) = self.restore_size.take() {
                 if self.exit_status.is_none() {
                     let owner = self.next_req;
                     self.next_req += 1;
-                    let kind = QKind::Resize { cols, rows, why: Resize::Restore };
-                    self.queue.push_back(QItem { owner, kind, off: 0, pause_after: false, pause_before: false, gap: Duration::ZERO });
+                    let kind = QKind::Resize {
+                        cols,
+                        rows,
+                        why: Resize::Restore,
+                    };
+                    self.queue.push_back(QItem {
+                        owner,
+                        kind,
+                        off: 0,
+                        pause_after: false,
+                        pause_before: false,
+                        gap: Duration::ZERO,
+                    });
                 }
             }
         }
@@ -1654,7 +1868,9 @@ impl Host {
         if ev & (sys::IN | sys::HUP) != 0 {
             let mut buf = [0u8; 16384];
             loop {
-                let Some(c) = self.conns.get_mut(&id) else { return };
+                let Some(c) = self.conns.get_mut(&id) else {
+                    return;
+                };
                 match sys::read(c.fd, &mut buf) {
                     Ok(Some(0)) | Err(_) => {
                         self.drop_conn(id);
@@ -1677,12 +1893,19 @@ impl Host {
     /// Handle as many complete requests as the connection has buffered, one
     /// at a time.
     fn process_conn(&mut self, id: u64) {
-        if self.conns.get(&id).map(|c| c.attach.is_some()).unwrap_or(false) {
+        if self
+            .conns
+            .get(&id)
+            .map(|c| c.attach.is_some())
+            .unwrap_or(false)
+        {
             return self.attach_input(id);
         }
         loop {
             let parsed = {
-                let Some(c) = self.conns.get_mut(&id) else { return };
+                let Some(c) = self.conns.get_mut(&id) else {
+                    return;
+                };
                 if c.busy || c.close_after || c.inbuf.is_empty() {
                     return;
                 }
@@ -1718,16 +1941,30 @@ impl Host {
         let bytes = if wants_text && status == 200 {
             let text = if value.get("reason").is_some() {
                 waldo::render::response(value)
-            } else if let Some(t) = value.get("output").and_then(|o| o.get("text")).and_then(|t| t.as_str()) {
+            } else if let Some(t) = value
+                .get("output")
+                .and_then(|o| o.get("text"))
+                .and_then(|t| t.as_str())
+            {
                 format!("{t}\n")
             } else {
-                format!("{}\n", serde_json::to_string_pretty(value).unwrap_or_default())
+                format!(
+                    "{}\n",
+                    serde_json::to_string_pretty(value).unwrap_or_default()
+                )
             };
-            http::response(200, "text/plain; charset=utf-8", text.as_bytes(), keep_alive)
+            http::response(
+                200,
+                "text/plain; charset=utf-8",
+                text.as_bytes(),
+                keep_alive,
+            )
         } else {
             http::json_response(status, value, keep_alive)
         };
-        let Some(c) = self.conns.get_mut(&id) else { return };
+        let Some(c) = self.conns.get_mut(&id) else {
+            return;
+        };
         c.outbuf.extend_from_slice(&bytes);
         c.busy = false;
         if !keep_alive {
@@ -1738,11 +1975,19 @@ impl Host {
     }
 
     fn error(&mut self, id: u64, req: &Request, status: u16, code: &str, text: &str) {
-        self.reply(id, status, &http::error_value(code, text), false, req.keep_alive);
+        self.reply(
+            id,
+            status,
+            &http::error_value(code, text),
+            false,
+            req.keep_alive,
+        );
     }
 
     fn flush_conn(&mut self, id: u64) {
-        let Some(c) = self.conns.get_mut(&id) else { return };
+        let Some(c) = self.conns.get_mut(&id) else {
+            return;
+        };
         while !c.outbuf.is_empty() {
             match sys::write(c.fd, &c.outbuf) {
                 Ok(Some(n)) => {
@@ -1758,7 +2003,11 @@ impl Host {
         let wants_out = !c.outbuf.is_empty();
         if wants_out != c.wants_out {
             c.wants_out = wants_out;
-            let ev = if wants_out { sys::IN | sys::OUT } else { sys::IN };
+            let ev = if wants_out {
+                sys::IN | sys::OUT
+            } else {
+                sys::IN
+            };
             let _ = self.epoll.modify(c.fd, ev, id);
         }
         if !wants_out && c.close_after {
@@ -1770,7 +2019,12 @@ impl Host {
     fn flush_all(&mut self, limit: Duration) {
         let end = Instant::now() + limit;
         loop {
-            let ids: Vec<u64> = self.conns.iter().filter(|(_, c)| !c.outbuf.is_empty()).map(|(id, _)| *id).collect();
+            let ids: Vec<u64> = self
+                .conns
+                .iter()
+                .filter(|(_, c)| !c.outbuf.is_empty())
+                .map(|(id, _)| *id)
+                .collect();
             if ids.is_empty() || Instant::now() >= end {
                 return;
             }
@@ -1801,7 +2055,9 @@ impl Host {
         ];
         if self.lingering {
             // A wait types nothing, so it counts as reading.
-            let read_only = (req.method == "GET" && ["/v1/status", "/v1/screen", "/v1/output", "/v1/triggers"].contains(&req.path.as_str()))
+            let read_only = (req.method == "GET"
+                && ["/v1/status", "/v1/screen", "/v1/output", "/v1/triggers"]
+                    .contains(&req.path.as_str()))
                 || (req.method == "POST" && req.path == "/v1/wait");
             if req.method == "POST" && req.path == "/v1/signal" {
                 // Whatever was asked, there is no program to signal; the
@@ -1835,15 +2091,37 @@ impl Host {
                 self.handle_trigger_remove(id, &req, &name);
             }
             (m, p) if known.iter().any(|(_, kp)| *kp == p) => {
-                let right: Vec<&str> = known.iter().filter(|(_, kp)| *kp == p).map(|(km, _)| *km).collect();
-                self.error(id, &req, 405, "method_not_allowed", &format!("{p} takes {}, not {m}", right.join(" or ")));
+                let right: Vec<&str> = known
+                    .iter()
+                    .filter(|(_, kp)| *kp == p)
+                    .map(|(km, _)| *km)
+                    .collect();
+                self.error(
+                    id,
+                    &req,
+                    405,
+                    "method_not_allowed",
+                    &format!("{p} takes {}, not {m}", right.join(" or ")),
+                );
             }
             (m, p) if p.starts_with("/v1/triggers/") => {
-                self.error(id, &req, 405, "method_not_allowed", &format!("{p} takes DELETE, not {m}; GET /v1/triggers lists them"));
+                self.error(
+                    id,
+                    &req,
+                    405,
+                    "method_not_allowed",
+                    &format!("{p} takes DELETE, not {m}; GET /v1/triggers lists them"),
+                );
             }
             (_, p) => {
                 let list: Vec<String> = known.iter().map(|(m, p)| format!("{m} {p}")).collect();
-                self.error(id, &req, 404, "not_found", &format!("no such endpoint {p}; endpoints: {}", list.join(", ")));
+                self.error(
+                    id,
+                    &req,
+                    404,
+                    "not_found",
+                    &format!("no such endpoint {p}; endpoints: {}", list.join(", ")),
+                );
             }
         }
     }
@@ -1855,11 +2133,23 @@ impl Host {
         match serde_json::from_slice::<Value>(&req.body) {
             Ok(v) if v.is_object() => Some(v),
             Ok(_) => {
-                self.error(id, req, 400, "bad_json", "the request body must be a JSON object");
+                self.error(
+                    id,
+                    req,
+                    400,
+                    "bad_json",
+                    "the request body must be a JSON object",
+                );
                 None
             }
             Err(e) => {
-                self.error(id, req, 400, "bad_json", &format!("the request body is not valid JSON: {e}"));
+                self.error(
+                    id,
+                    req,
+                    400,
+                    "bad_json",
+                    &format!("the request body is not valid JSON: {e}"),
+                );
                 None
             }
         }
@@ -1892,13 +2182,22 @@ impl Host {
 
     /// Register a wait for a request. `body` is the parsed JSON body, if the
     /// request had one. `owner` is the id of the input this request queued.
-    fn handle_wait(&mut self, id: u64, req: &Request, default: Until, body: Option<Value>, owner: Option<(u64, Option<String>)>) {
+    fn handle_wait(
+        &mut self,
+        id: u64,
+        req: &Request,
+        default: Until,
+        body: Option<Value>,
+        owner: Option<(u64, Option<String>)>,
+    ) {
         let body = match body {
             Some(b) => b,
-            None if req.method == "POST" && (req.json_body || !req.body.is_empty()) => match self.body_json(id, req) {
-                Some(b) => b,
-                None => return,
-            },
+            None if req.method == "POST" && (req.json_body || !req.body.is_empty()) => {
+                match self.body_json(id, req) {
+                    Some(b) => b,
+                    None => return,
+                }
+            }
             None => json!({}),
         };
         let wait_obj = body.get("wait").cloned().unwrap_or(Value::Null);
@@ -1908,7 +2207,10 @@ impl Host {
                 .or_else(|| wait_obj.get(name).cloned())
                 .or_else(|| body.get(name).cloned())
         };
-        let as_u64 = |v: &Value| v.as_u64().or_else(|| v.as_str().and_then(|s| s.parse().ok()));
+        let as_u64 = |v: &Value| {
+            v.as_u64()
+                .or_else(|| v.as_str().and_then(|s| s.parse().ok()))
+        };
 
         let until_name = field("until").and_then(|v| v.as_str().map(|s| s.to_string()));
         let until = match until_name.as_deref() {
@@ -1927,15 +2229,26 @@ impl Host {
                     req,
                     400,
                     "unknown_until",
-                    &format!("unknown wait condition '{other}'; use settle, match, change, exit or none"),
+                    &format!(
+                        "unknown wait condition '{other}'; use settle, match, change, exit or none"
+                    ),
                 );
             }
         };
-        let ansi = match field("style").and_then(|v| v.as_str().map(|s| s.to_string())).as_deref() {
+        let ansi = match field("style")
+            .and_then(|v| v.as_str().map(|s| s.to_string()))
+            .as_deref()
+        {
             None | Some("plain") => false,
             Some("ansi") => true,
             Some(other) => {
-                return self.error(id, req, 400, "unknown_style", &format!("unknown style '{other}'; use plain or ansi"));
+                return self.error(
+                    id,
+                    req,
+                    400,
+                    "unknown_style",
+                    &format!("unknown style '{other}'; use plain or ansi"),
+                );
             }
         };
         let default_timeout = DEFAULT_TIMEOUT_MS;
@@ -1943,7 +2256,15 @@ impl Host {
             None => default_timeout,
             Some(v) => match as_u64(&v) {
                 Some(n) => n.min(MAX_TIMEOUT_MS),
-                None => return self.error(id, req, 400, "bad_timeout", "timeout_ms must be a whole number of milliseconds"),
+                None => {
+                    return self.error(
+                        id,
+                        req,
+                        400,
+                        "bad_timeout",
+                        "timeout_ms must be a whole number of milliseconds",
+                    )
+                }
             },
         };
         let mut pattern = None;
@@ -1957,9 +2278,20 @@ impl Host {
                     "until=match needs a pattern: a regular expression matched against one line of the screen (--pattern RE)",
                 );
             };
-            match regex_lite::RegexBuilder::new(&p).size_limit(1 << 20).build() {
+            match regex_lite::RegexBuilder::new(&p)
+                .size_limit(1 << 20)
+                .build()
+            {
                 Ok(re) => pattern = Some((re, p)),
-                Err(e) => return self.error(id, req, 400, "bad_pattern", &format!("the pattern is not a valid regular expression: {e}")),
+                Err(e) => {
+                    return self.error(
+                        id,
+                        req,
+                        400,
+                        "bad_pattern",
+                        &format!("the pattern is not a valid regular expression: {e}"),
+                    )
+                }
             }
         }
 
@@ -1995,17 +2327,29 @@ impl Host {
         if until == Until::Exit {
             w.exit_of = sys::foreground_pgrp(self.master)
                 .filter(|pg| *pg != self.child.pid)
-                .map(|pg| (pg, sys::process_name(pg).unwrap_or_else(|| "the program".into())));
+                .map(|pg| {
+                    (
+                        pg,
+                        sys::process_name(pg).unwrap_or_else(|| "the program".into()),
+                    )
+                });
         }
         if sends_input {
             w.fg_before = sys::foreground_pgrp(self.master);
-            w.fg_name_before = w.fg_before.filter(|pg| *pg != self.child.pid).and_then(sys::process_name);
+            w.fg_name_before = w
+                .fg_before
+                .filter(|pg| *pg != self.child.pid)
+                .and_then(sys::process_name);
         }
         // With input, text that is already on screen does not count: the
         // caller is waiting for what its input causes.
         if owner_has_input(&self.queue, req_id) {
             if let Some((re, _)) = w.pattern.as_ref() {
-                w.known = self.matches_now(re, &self.visible_lines()).into_iter().map(|m| (m.line, m.text)).collect();
+                w.known = self
+                    .matches_now(re, &self.visible_lines())
+                    .into_iter()
+                    .map(|m| (m.line, m.text))
+                    .collect();
             }
         }
         if self.exit_status.is_some() && until != Until::None {
@@ -2024,8 +2368,12 @@ impl Host {
         let mut pause = Duration::ZERO;
         let mut hint: Option<String> = None;
         let body: Value;
-        let delay_of = |v: Option<u64>| v.filter(|ms| *ms <= MAX_DELAY_MS).map(Duration::from_millis);
-        let bad_delay = format!("key_delay_ms must be a whole number of milliseconds, at most {MAX_DELAY_MS}");
+        let delay_of = |v: Option<u64>| {
+            v.filter(|ms| *ms <= MAX_DELAY_MS)
+                .map(Duration::from_millis)
+        };
+        let bad_delay =
+            format!("key_delay_ms must be a whole number of milliseconds, at most {MAX_DELAY_MS}");
         let mut key_delay = Duration::ZERO;
         if let Some(q) = req.query_get("key_delay_ms") {
             match delay_of(q.parse().ok()) {
@@ -2049,15 +2397,25 @@ impl Host {
                 );
             };
             if let Some(v) = body.get("key_delay_ms") {
-                match delay_of(v.as_u64().or_else(|| v.as_str().and_then(|s| s.parse().ok()))) {
+                match delay_of(
+                    v.as_u64()
+                        .or_else(|| v.as_str().and_then(|s| s.parse().ok())),
+                ) {
                     Some(d) => key_delay = d,
                     None => return self.error(id, req, 400, "bad_delay", &bad_delay),
                 }
             }
             for (n, item) in list.iter().enumerate() {
                 // A pause is not typed: it delays whatever comes after it.
-                if let Some(v) = item.as_object().filter(|o| o.len() == 1).and_then(|o| o.get("pause")) {
-                    match delay_of(v.as_u64().or_else(|| v.as_str().and_then(|s| s.parse().ok()))) {
+                if let Some(v) = item
+                    .as_object()
+                    .filter(|o| o.len() == 1)
+                    .and_then(|o| o.get("pause"))
+                {
+                    match delay_of(
+                        v.as_u64()
+                            .or_else(|| v.as_str().and_then(|s| s.parse().ok())),
+                    ) {
                         Some(d) => pause += d,
                         None => {
                             let text = format!("input item {n}: the value of 'pause' must be a whole number of milliseconds, at most {MAX_DELAY_MS}");
@@ -2094,13 +2452,27 @@ impl Host {
             let is_key = matches!(kind, QKind::Key { .. });
             // The key delay goes between this request's own items.
             let gap = before + if first { Duration::ZERO } else { key_delay };
-            self.queue.push_back(QItem { owner: req_id, kind, off: 0, pause_after: false, pause_before: is_key && after_text, gap });
+            self.queue.push_back(QItem {
+                owner: req_id,
+                kind,
+                off: 0,
+                pause_after: false,
+                pause_before: is_key && after_text,
+                gap,
+            });
             after_text = !is_key;
             first = false;
         }
         if !pause.is_zero() {
             // A pause at the end holds back whatever is typed next.
-            self.queue.push_back(QItem { owner: req_id, kind: QKind::Bytes(Vec::new()), off: 0, pause_after: false, pause_before: false, gap: pause });
+            self.queue.push_back(QItem {
+                owner: req_id,
+                kind: QKind::Bytes(Vec::new()),
+                off: 0,
+                pause_after: false,
+                pause_before: false,
+                gap: pause,
+            });
         }
         self.handle_wait(id, req, Until::Settle, Some(body), Some((req_id, hint)));
         if !self.waits.iter().any(|w| w.req_id == req_id) {
@@ -2111,13 +2483,20 @@ impl Host {
 
     /// Turn one input item into what goes in the queue. Files are read here,
     /// before anything is sent.
-    fn read_item(&self, item: &Value, each_key: bool) -> Result<(Vec<QKind>, Option<String>), ItemError> {
+    fn read_item(
+        &self,
+        item: &Value,
+        each_key: bool,
+    ) -> Result<(Vec<QKind>, Option<String>), ItemError> {
         let obj = item.as_object().filter(|o| o.len() == 1).ok_or((
             "bad_item",
             "each item is an object with exactly one of: text, keys, paste, text_file, keys_file, paste_file, pause".to_string(),
         ))?;
         let (kind, value) = obj.iter().next().unwrap();
-        let s = value.as_str().ok_or(("bad_item", format!("the value of '{kind}' must be a string")))?;
+        let s = value.as_str().ok_or((
+            "bad_item",
+            format!("the value of '{kind}' must be a string"),
+        ))?;
         let content: String = if let Some(base) = kind.strip_suffix("_file") {
             if !["text", "keys", "paste"].contains(&base) {
                 return Err(("bad_item", format!("unknown item kind '{kind}'; use text, keys, paste, text_file, keys_file or paste_file")));
@@ -2143,7 +2522,15 @@ impl Host {
             None => None,
             Some(t) => match t.parse::<usize>() {
                 Ok(n) => Some(n),
-                Err(_) => return self.error(id, req, 400, "bad_tail", "tail must be a number of lines, such as ?tail=50"),
+                Err(_) => {
+                    return self.error(
+                        id,
+                        req,
+                        400,
+                        "bad_tail",
+                        "tail must be a number of lines, such as ?tail=50",
+                    )
+                }
             },
         };
         let v = json!({
@@ -2155,12 +2542,22 @@ impl Host {
     }
 
     fn handle_resize(&mut self, id: u64, req: &Request) {
-        let Some(body) = self.body_json(id, req) else { return };
+        let Some(body) = self.body_json(id, req) else {
+            return;
+        };
         let dim = |k: &str| body.get(k).and_then(|v| v.as_u64());
         let (Some(cols), Some(rows)) = (dim("cols"), dim("rows")) else {
-            return self.error(id, req, 400, "bad_size", "the body needs cols and rows, such as {\"cols\": 100, \"rows\": 30}");
+            return self.error(
+                id,
+                req,
+                400,
+                "bad_size",
+                "the body needs cols and rows, such as {\"cols\": 100, \"rows\": 30}",
+            );
         };
-        if !(MIN_COLS as u64..=MAX_COLS as u64).contains(&cols) || !(MIN_ROWS as u64..=MAX_ROWS as u64).contains(&rows) {
+        if !(MIN_COLS as u64..=MAX_COLS as u64).contains(&cols)
+            || !(MIN_ROWS as u64..=MAX_ROWS as u64).contains(&rows)
+        {
             return self.error(
                 id,
                 req,
@@ -2173,17 +2570,38 @@ impl Host {
         // lands in the middle of another request's typing.
         let req_id = self.next_req;
         self.next_req += 1;
-        let kind = QKind::Resize { cols: cols as u16, rows: rows as u16, why: Resize::Explicit };
-        self.queue.push_back(QItem { owner: req_id, kind, off: 0, pause_after: false, pause_before: false, gap: Duration::ZERO });
+        let kind = QKind::Resize {
+            cols: cols as u16,
+            rows: rows as u16,
+            why: Resize::Explicit,
+        };
+        self.queue.push_back(QItem {
+            owner: req_id,
+            kind,
+            off: 0,
+            pause_after: false,
+            pause_before: false,
+            gap: Duration::ZERO,
+        });
         // The program redraws for the new size, so the answer waits for
         // that. A program that has drawn nothing has nothing to redraw.
         // It does not wait long: a screen that never goes quiet is no reason
         // for a resize to fail.
         // A request that names its own wait gets that one as it is.
-        let until = if self.seen_output { Until::Settle } else { Until::None };
+        let until = if self.seen_output {
+            Until::Settle
+        } else {
+            Until::None
+        };
         let own_wait = body.get("wait").map(|w| json!({"wait": w}));
         let chosen = own_wait.is_some();
-        self.handle_wait(id, req, until, Some(own_wait.unwrap_or_else(|| json!({}))), Some((req_id, None)));
+        self.handle_wait(
+            id,
+            req,
+            until,
+            Some(own_wait.unwrap_or_else(|| json!({}))),
+            Some((req_id, None)),
+        );
         match self.waits.iter_mut().find(|w| w.req_id == req_id) {
             // The short deadline is set when the resize happens.
             Some(w) if !chosen => w.soft = true,
@@ -2194,20 +2612,43 @@ impl Host {
     }
 
     fn handle_signal(&mut self, id: u64, req: &Request) {
-        let Some(body) = self.body_json(id, req) else { return };
+        let Some(body) = self.body_json(id, req) else {
+            return;
+        };
         if body.get("stop").and_then(|s| s.as_bool()) == Some(true) {
             self.stop("request");
         } else if let Some(name) = body.get("signal").and_then(|s| s.as_str()) {
             let Some(sig) = sys::signal_number(name) else {
-                return self.error(id, req, 400, "unknown_signal", &format!("unknown signal '{name}'; use a name such as SIGINT, SIGTERM or SIGKILL"));
+                return self.error(
+                    id,
+                    req,
+                    400,
+                    "unknown_signal",
+                    &format!(
+                        "unknown signal '{name}'; use a name such as SIGINT, SIGTERM or SIGKILL"
+                    ),
+                );
             };
             // Like a resize, a signal takes its turn behind queued input.
             let req_id = self.next_req;
             self.next_req += 1;
-            self.queue.push_back(QItem { owner: req_id, kind: QKind::Signal(sig), off: 0, pause_after: false, pause_before: false, gap: Duration::ZERO });
+            self.queue.push_back(QItem {
+                owner: req_id,
+                kind: QKind::Signal(sig),
+                off: 0,
+                pause_after: false,
+                pause_before: false,
+                gap: Duration::ZERO,
+            });
             return self.handle_wait(id, req, Until::None, Some(json!({})), Some((req_id, None)));
         } else {
-            return self.error(id, req, 400, "bad_signal", "the body needs {\"signal\": \"SIGINT\"} or {\"stop\": true}");
+            return self.error(
+                id,
+                req,
+                400,
+                "bad_signal",
+                "the body needs {\"signal\": \"SIGINT\"} or {\"stop\": true}",
+            );
         }
         self.handle_wait(id, req, Until::None, Some(json!({})), None);
     }
@@ -2228,9 +2669,21 @@ fn parse_keys(notation: &str, each_key: bool) -> Result<Vec<QKind>, String> {
     let mut out = Vec::new();
     for t in keys::parse(notation)? {
         match t {
-            Tok::Text(s) if each_key => out.extend(s.chars().map(|c| QKind::Bytes(text_bytes(&c.to_string())))),
+            Tok::Text(s) if each_key => {
+                out.extend(s.chars().map(|c| QKind::Bytes(text_bytes(&c.to_string()))))
+            }
             Tok::Text(s) => out.push(QKind::Bytes(text_bytes(&s))),
-            Tok::Key { key, mods, text, is_esc } => out.push(QKind::Key { key, mods, text, is_esc }),
+            Tok::Key {
+                key,
+                mods,
+                text,
+                is_esc,
+            } => out.push(QKind::Key {
+                key,
+                mods,
+                text,
+                is_esc,
+            }),
         }
     }
     Ok(out)
@@ -2238,14 +2691,18 @@ fn parse_keys(notation: &str, each_key: bool) -> Result<Vec<QKind>, String> {
 
 fn read_file_item(path: &str) -> Result<String, String> {
     if !path.starts_with('/') {
-        return Err(format!("{path}: the path must be absolute, because the host reads the file"));
+        return Err(format!(
+            "{path}: the path must be absolute, because the host reads the file"
+        ));
     }
     let md = std::fs::metadata(path).map_err(|e| format!("{path}: {e}"))?;
     if !md.is_file() {
         return Err(format!("{path}: not a regular file"));
     }
     if md.size() > MAX_FILE_ITEM {
-        return Err(format!("{path}: larger than 1 MiB; split it into several requests"));
+        return Err(format!(
+            "{path}: larger than 1 MiB; split it into several requests"
+        ));
     }
     let bytes = std::fs::read(path).map_err(|e| format!("{path}: {e}"))?;
     String::from_utf8(bytes).map_err(|_| format!("{path}: not UTF-8 text"))
@@ -2259,7 +2716,13 @@ fn line_match(re: &Regex, abs: u64, line: &str) -> Option<MatchInfo> {
     let m = caps.get(0)?;
     Some(MatchInfo {
         text: m.as_str().to_string(),
-        groups: (1..caps.len()).map(|i| caps.get(i).map(|g| Value::from(g.as_str())).unwrap_or(Value::Null)).collect(),
+        groups: (1..caps.len())
+            .map(|i| {
+                caps.get(i)
+                    .map(|g| Value::from(g.as_str()))
+                    .unwrap_or(Value::Null)
+            })
+            .collect(),
         line: abs,
         row: None,
         col: subject[..m.start()].chars().count() + 1,
@@ -2298,7 +2761,10 @@ fn unhex(s: &str) -> Option<Vec<u8>> {
     if !s.len().is_multiple_of(2) {
         return None;
     }
-    (0..s.len()).step_by(2).map(|i| u8::from_str_radix(s.get(i..i + 2)?, 16).ok()).collect()
+    (0..s.len())
+        .step_by(2)
+        .map(|i| u8::from_str_radix(s.get(i..i + 2)?, 16).ok())
+        .collect()
 }
 
 impl Host {
@@ -2335,7 +2801,11 @@ impl Host {
             let lines = self.visible_lines();
             let mut triggers = std::mem::take(&mut self.triggers);
             for t in triggers.iter_mut() {
-                t.known = self.matches_now(&t.re, &lines).into_iter().map(|m| (m.line, m.text)).collect();
+                t.known = self
+                    .matches_now(&t.re, &lines)
+                    .into_iter()
+                    .map(|m| (m.line, m.text))
+                    .collect();
             }
             self.triggers = triggers;
             self.trig_gen = self.gen;
@@ -2354,7 +2824,11 @@ impl Host {
             );
         }
         let dim = |name: &str, default: u16| -> u16 {
-            req.query_get(name).and_then(|v| v.parse::<u16>().ok()).filter(|n| *n >= 1).unwrap_or(default).min(1000)
+            req.query_get(name)
+                .and_then(|v| v.parse::<u16>().ok())
+                .filter(|n| *n >= 1)
+                .unwrap_or(default)
+                .min(1000)
         };
         let attach = Attach {
             view_cols: dim("cols", self.emu.cols()),
@@ -2365,7 +2839,9 @@ impl Host {
             last_sent: Instant::now() - FRAME_INTERVAL,
             resized: false,
         };
-        let Some(c) = self.conns.get_mut(&id) else { return };
+        let Some(c) = self.conns.get_mut(&id) else {
+            return;
+        };
         c.outbuf.extend_from_slice(b"HTTP/1.1 101 Switching Protocols\r\nUpgrade: waldo-attach\r\nConnection: Upgrade\r\n\r\n");
         c.attach = Some(attach);
         self.flush_conn(id);
@@ -2376,7 +2852,9 @@ impl Host {
     fn attach_input(&mut self, id: u64) {
         loop {
             let line = {
-                let Some(c) = self.conns.get_mut(&id) else { return };
+                let Some(c) = self.conns.get_mut(&id) else {
+                    return;
+                };
                 let Some(nl) = c.inbuf.iter().position(|b| *b == b'\n') else {
                     if c.inbuf.len() > (1 << 20) {
                         self.drop_conn(id);
@@ -2385,9 +2863,14 @@ impl Host {
                 };
                 c.inbuf.drain(..=nl).collect::<Vec<u8>>()
             };
-            let Ok(msg) = serde_json::from_slice::<Value>(&line) else { continue };
+            let Ok(msg) = serde_json::from_slice::<Value>(&line) else {
+                continue;
+            };
             let size = |v: &Value| -> Option<(u16, u16)> {
-                Some((v.get("cols")?.as_u64()? as u16, v.get("rows")?.as_u64()? as u16))
+                Some((
+                    v.get("cols")?.as_u64()? as u16,
+                    v.get("rows")?.as_u64()? as u16,
+                ))
             };
             if let Some((cols, rows)) = msg.get("viewport").and_then(size) {
                 if let Some(a) = self.conns.get_mut(&id).and_then(|c| c.attach.as_mut()) {
@@ -2399,11 +2882,25 @@ impl Host {
                 }
             }
             if let Some((cols, rows)) = msg.get("resize").and_then(size) {
-                let (cols, rows) = (cols.clamp(MIN_COLS, MAX_COLS), rows.clamp(MIN_ROWS, MAX_ROWS));
+                let (cols, rows) = (
+                    cols.clamp(MIN_COLS, MAX_COLS),
+                    rows.clamp(MIN_ROWS, MAX_ROWS),
+                );
                 let owner = self.next_req;
                 self.next_req += 1;
-                let kind = QKind::Resize { cols, rows, why: Resize::Viewer };
-                self.queue.push_back(QItem { owner, kind, off: 0, pause_after: false, pause_before: false, gap: Duration::ZERO });
+                let kind = QKind::Resize {
+                    cols,
+                    rows,
+                    why: Resize::Viewer,
+                };
+                self.queue.push_back(QItem {
+                    owner,
+                    kind,
+                    off: 0,
+                    pause_after: false,
+                    pause_before: false,
+                    gap: Duration::ZERO,
+                });
                 if let Some(a) = self.conns.get_mut(&id).and_then(|c| c.attach.as_mut()) {
                     a.resized = true;
                 }
@@ -2414,7 +2911,14 @@ impl Host {
                     // in flight learn that someone else typed.
                     let owner = self.next_req;
                     self.next_req += 1;
-                    self.queue.push_back(QItem { owner, kind: QKind::Bytes(bytes), off: 0, pause_after: false, pause_before: false, gap: Duration::ZERO });
+                    self.queue.push_back(QItem {
+                        owner,
+                        kind: QKind::Bytes(bytes),
+                        off: 0,
+                        pause_after: false,
+                        pause_before: false,
+                        gap: Duration::ZERO,
+                    });
                 }
             }
             if msg.get("detach").and_then(|d| d.as_bool()) == Some(true) {
@@ -2430,7 +2934,11 @@ impl Host {
             return;
         }
         let now = Instant::now();
-        if self.hold_since.map(|h| now.duration_since(h) < HOLD_CAP).unwrap_or(false) {
+        if self
+            .hold_since
+            .map(|h| now.duration_since(h) < HOLD_CAP)
+            .unwrap_or(false)
+        {
             // The program asked for its updates to be shown together.
             return;
         }
@@ -2441,13 +2949,19 @@ impl Host {
             .filter(|(_, c)| {
                 c.attach
                     .as_ref()
-                    .map(|a| a.key != Some(key) && now >= a.last_sent + FRAME_INTERVAL && c.outbuf.len() < ATTACH_BACKLOG)
+                    .map(|a| {
+                        a.key != Some(key)
+                            && now >= a.last_sent + FRAME_INTERVAL
+                            && c.outbuf.len() < ATTACH_BACKLOG
+                    })
                     .unwrap_or(false)
             })
             .map(|(id, _)| *id)
             .collect();
         for id in ids {
-            let Some(a) = self.conns.get(&id).and_then(|c| c.attach.as_ref()) else { continue };
+            let Some(a) = self.conns.get(&id).and_then(|c| c.attach.as_ref()) else {
+                continue;
+            };
             let cols = a.view_cols.min(self.emu.cols());
             let rows = a.view_rows.min(self.emu.rows());
             let (cx, cy) = self.emu.cursor();
@@ -2457,7 +2971,10 @@ impl Host {
             let mut lines: Vec<Value> = Vec::new();
             let mut hashes: Vec<u64> = Vec::with_capacity(rows as usize);
             for r in 0..rows {
-                let text = self.emu.row_ansi(Space::Active, (r + off_y) as u32, off_x, cols).unwrap_or_default();
+                let text = self
+                    .emu
+                    .row_ansi(Space::Active, (r + off_y) as u32, off_x, cols)
+                    .unwrap_or_default();
                 let h = hash_str(&text);
                 if a.sent.get(r as usize) != Some(&h) {
                     lines.push(json!([r, text]));
@@ -2483,7 +3000,9 @@ impl Host {
             let changed = !lines.is_empty() || meta_hash != a.sent_meta;
             let mut frame = meta;
             frame["lines"] = Value::Array(lines);
-            let Some(c) = self.conns.get_mut(&id) else { continue };
+            let Some(c) = self.conns.get_mut(&id) else {
+                continue;
+            };
             if let Some(a) = c.attach.as_mut() {
                 a.key = Some(key);
                 if !changed {
@@ -2501,7 +3020,12 @@ impl Host {
 
     /// Tell attached clients the session is over.
     fn end_attach(&mut self) {
-        let ids: Vec<u64> = self.conns.iter().filter(|(_, c)| c.attach.is_some()).map(|(id, _)| *id).collect();
+        let ids: Vec<u64> = self
+            .conns
+            .iter()
+            .filter(|(_, c)| c.attach.is_some())
+            .map(|(id, _)| *id)
+            .collect();
         for id in ids {
             if let Some(c) = self.conns.get_mut(&id) {
                 c.outbuf.extend_from_slice(b"{\"ended\":true}\n");

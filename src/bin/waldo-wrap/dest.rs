@@ -33,7 +33,11 @@ const HTTP_RETRIES: [Duration; 2] = [Duration::from_millis(250), Duration::from_
 pub enum Dest {
     File(PathBuf),
     Unix(PathBuf),
-    Http { host: String, port: u16, path: String },
+    Http {
+        host: String,
+        port: u16,
+        path: String,
+    },
 }
 
 impl Dest {
@@ -78,12 +82,18 @@ impl Dest {
             if host.is_empty() {
                 return Err(bad());
             }
-            return Ok(Dest::Http { host: host.to_string(), port, path: path.to_string() });
+            return Ok(Dest::Http {
+                host: host.to_string(),
+                port,
+                path: path.to_string(),
+            });
         }
         if uri.starts_with("https://") {
             return Err(format!("{uri}: https destinations are not supported; send to a local http proxy that forwards it"));
         }
-        Err(format!("{uri}: not a destination; use file:/PATH, unix:/PATH or http://HOST:PORT/PATH"))
+        Err(format!(
+            "{uri}: not a destination; use file:/PATH, unix:/PATH or http://HOST:PORT/PATH"
+        ))
     }
 
     pub fn uri(&self) -> String {
@@ -97,7 +107,11 @@ impl Dest {
     fn authority(&self) -> String {
         match self {
             Dest::Http { host, port, .. } => {
-                let host = if host.contains(':') { format!("[{host}]") } else { host.clone() };
+                let host = if host.contains(':') {
+                    format!("[{host}]")
+                } else {
+                    host.clone()
+                };
                 if *port == 80 {
                     host
                 } else {
@@ -130,7 +144,11 @@ impl Sink {
             Dest::File(path) => {
                 // One write per message, so concurrent appenders interleave
                 // whole lines.
-                let mut f = OpenOptions::new().create(true).append(true).mode(0o600).open(path)?;
+                let mut f = OpenOptions::new()
+                    .create(true)
+                    .append(true)
+                    .mode(0o600)
+                    .open(path)?;
                 let mut buf = Vec::with_capacity(line.len() + 1);
                 buf.extend_from_slice(line.as_bytes());
                 buf.push(b'\n');
@@ -145,14 +163,20 @@ impl Sink {
                 let mut buf = Vec::with_capacity(line.len() + 1);
                 buf.extend_from_slice(line.as_bytes());
                 buf.push(b'\n');
-                let result = self.unix.as_mut().map(|s| s.write_all(&buf)).unwrap_or(Ok(()));
+                let result = self
+                    .unix
+                    .as_mut()
+                    .map(|s| s.write_all(&buf))
+                    .unwrap_or(Ok(()));
                 if result.is_err() {
                     // The next message connects again.
                     self.unix = None;
                 }
                 result
             }
-            Dest::Http { host, port, path } => http_post(host, *port, &self.dest.authority(), path, line),
+            Dest::Http { host, port, path } => {
+                http_post(host, *port, &self.dest.authority(), path, line)
+            }
         }
     }
 }
@@ -171,7 +195,9 @@ fn http_post(host: &str, port: u16, authority: &str, path: &str, line: &str) -> 
             Err(e) => last = e,
         }
     }
-    let Some(mut s) = stream else { return Err(last) };
+    let Some(mut s) = stream else {
+        return Err(last);
+    };
     s.set_write_timeout(Some(IO_TIMEOUT))?;
     s.set_read_timeout(Some(IO_TIMEOUT))?;
     let head = format!(
@@ -193,7 +219,10 @@ fn http_post(host: &str, port: u16, authority: &str, path: &str, line: &str) -> 
     }
     let text = String::from_utf8_lossy(&got);
     let status = text.lines().next().unwrap_or("");
-    let code = status.strip_prefix("HTTP/").and_then(|r| r.split_whitespace().nth(1)).and_then(|c| c.parse::<u16>().ok());
+    let code = status
+        .strip_prefix("HTTP/")
+        .and_then(|r| r.split_whitespace().nth(1))
+        .and_then(|c| c.parse::<u16>().ok());
     match code {
         Some(c) if (200..300).contains(&c) => Ok(()),
         Some(c) => Err(io::Error::other(format!("the receiver answered {c}"))),
@@ -264,7 +293,14 @@ struct Queue {
 
 impl Queue {
     fn new(first_seq: u64, max_messages: usize, max_bytes: usize) -> Queue {
-        Queue { items: VecDeque::new(), bytes: 0, next_seq: first_seq, dropped: 0, max_messages, max_bytes }
+        Queue {
+            items: VecDeque::new(),
+            bytes: 0,
+            next_seq: first_seq,
+            dropped: 0,
+            max_messages,
+            max_bytes,
+        }
     }
 
     fn full(&self, incoming: usize) -> bool {
@@ -285,7 +321,8 @@ impl Queue {
             match kind {
                 // The newest screen replaces a queued one and keeps its place.
                 Kind::Settle => {
-                    if let Some(old) = self.items.iter_mut().rev().find(|m| m.kind == Kind::Settle) {
+                    if let Some(old) = self.items.iter_mut().rev().find(|m| m.kind == Kind::Settle)
+                    {
                         self.bytes = self.bytes - old.size + size;
                         old.fields = fields;
                         old.time = time;
@@ -296,12 +333,24 @@ impl Queue {
                 }
                 // Lines join the stream message they follow.
                 Kind::Stream => {
-                    if let Some(last) = self.items.back_mut().filter(|m| m.kind == Kind::Stream && m.size + size <= MERGE_BYTES) {
-                        let more = fields.get("lines").and_then(|l| l.as_array()).cloned().unwrap_or_default();
-                        if let Some(lines) = last.fields.get_mut("lines").and_then(|l| l.as_array_mut()) {
+                    if let Some(last) = self
+                        .items
+                        .back_mut()
+                        .filter(|m| m.kind == Kind::Stream && m.size + size <= MERGE_BYTES)
+                    {
+                        let more = fields
+                            .get("lines")
+                            .and_then(|l| l.as_array())
+                            .cloned()
+                            .unwrap_or_default();
+                        if let Some(lines) =
+                            last.fields.get_mut("lines").and_then(|l| l.as_array_mut())
+                        {
                             lines.extend(more);
                         }
-                        let skipped = |f: &Map<String, Value>| f.get("skipped_lines").and_then(|s| s.as_u64()).unwrap_or(0);
+                        let skipped = |f: &Map<String, Value>| {
+                            f.get("skipped_lines").and_then(|s| s.as_u64()).unwrap_or(0)
+                        };
                         let total = skipped(&last.fields) + skipped(&fields);
                         if total > 0 {
                             last.fields.insert("skipped_lines".into(), total.into());
@@ -321,7 +370,11 @@ impl Queue {
                     .items
                     .iter()
                     .position(|m| matches!(m.kind, Kind::Match | Kind::Stream))
-                    .or_else(|| self.items.iter().position(|m| matches!(m.kind, Kind::Settle | Kind::Heartbeat)));
+                    .or_else(|| {
+                        self.items
+                            .iter()
+                            .position(|m| matches!(m.kind, Kind::Settle | Kind::Heartbeat))
+                    });
                 match victim {
                     Some(i) => {
                         self.remove(i);
@@ -335,7 +388,14 @@ impl Queue {
         let seq = self.next_seq;
         self.next_seq += 1;
         self.bytes += size;
-        self.items.push_back(Queued { kind, seq, fields, time, t_ms, size });
+        self.items.push_back(Queued {
+            kind,
+            seq,
+            fields,
+            time,
+            t_ms,
+            size,
+        });
     }
 
     fn pop(&mut self) -> Option<Queued> {
@@ -384,7 +444,10 @@ impl Delivery {
         heartbeat: Option<Duration>,
         log: impl Fn(&str) + Send + 'static,
     ) -> Delivery {
-        let shared = Arc::new(Shared { queue: Mutex::new(Queue::new(first_seq, QUEUE_MESSAGES, QUEUE_BYTES)), wake: Condvar::new() });
+        let shared = Arc::new(Shared {
+            queue: Mutex::new(Queue::new(first_seq, QUEUE_MESSAGES, QUEUE_BYTES)),
+            wake: Condvar::new(),
+        });
         let (will_tx, will_result) = mpsc::channel::<bool>();
         let thread_shared = shared.clone();
         let thread_session = session.clone();
@@ -408,10 +471,19 @@ impl Delivery {
                             Some(every) => {
                                 let idle = last_sent.elapsed();
                                 if idle >= every {
-                                    q.push(Kind::Heartbeat, Map::new(), util::rfc3339_now(), start.elapsed().as_millis() as u64);
+                                    q.push(
+                                        Kind::Heartbeat,
+                                        Map::new(),
+                                        util::rfc3339_now(),
+                                        start.elapsed().as_millis() as u64,
+                                    );
                                     continue;
                                 }
-                                q = shared.wake.wait_timeout(q, every - idle).unwrap_or_else(|e| e.into_inner()).0;
+                                q = shared
+                                    .wake
+                                    .wait_timeout(q, every - idle)
+                                    .unwrap_or_else(|e| e.into_inner())
+                                    .0;
                             }
                         }
                     }
@@ -458,7 +530,9 @@ impl Delivery {
                     Err(e) => {
                         // Say so once, not for every message.
                         if !failing {
-                            log(&format!("delivery to {uri} failed, messages are being lost: {e}"));
+                            log(&format!(
+                                "delivery to {uri} failed, messages are being lost: {e}"
+                            ));
                             failing = true;
                         }
                         // The loss shows up in the next message that arrives.
@@ -468,13 +542,24 @@ impl Delivery {
                 }
             }
         });
-        Delivery { shared, session, start, will_result, handle: Some(handle) }
+        Delivery {
+            shared,
+            session,
+            start,
+            will_result,
+            handle: Some(handle),
+        }
     }
 
     /// Queue a message. It is never blocked on; see the queue rules above.
     pub fn send(&self, kind: Kind, fields: Map<String, Value>) {
         let mut q = self.shared.queue.lock().unwrap_or_else(|e| e.into_inner());
-        q.push(kind, fields, util::rfc3339_now(), self.start.elapsed().as_millis() as u64);
+        q.push(
+            kind,
+            fields,
+            util::rfc3339_now(),
+            self.start.elapsed().as_millis() as u64,
+        );
         drop(q);
         self.shared.wake.notify_one();
     }
@@ -485,14 +570,25 @@ impl Delivery {
     pub fn deliver_will(mut self, fields: Map<String, Value>) -> (bool, String) {
         let line = {
             let mut q = self.shared.queue.lock().unwrap_or_else(|e| e.into_inner());
-            q.push(Kind::Exit, fields, util::rfc3339_now(), self.start.elapsed().as_millis() as u64);
+            q.push(
+                Kind::Exit,
+                fields,
+                util::rfc3339_now(),
+                self.start.elapsed().as_millis() as u64,
+            );
             // What is still queued ahead of it may yet be dropped or fail, so
             // this copy can differ from the delivered one in `dropped` only.
-            q.items.back().map(|m| line_of(&self.session, m, q.dropped)).unwrap_or_default()
+            q.items
+                .back()
+                .map(|m| line_of(&self.session, m, q.dropped))
+                .unwrap_or_default()
         };
         self.shared.wake.notify_one();
         // Messages queued ahead of the will are sent first, so allow for them.
-        let ok = self.will_result.recv_timeout(WILL_RETRY + IO_TIMEOUT * 2).unwrap_or(false);
+        let ok = self
+            .will_result
+            .recv_timeout(WILL_RETRY + IO_TIMEOUT * 2)
+            .unwrap_or(false);
         if ok {
             if let Some(h) = self.handle.take() {
                 let _ = h.join();
@@ -515,22 +611,64 @@ mod tests {
 
     #[test]
     fn destinations_parse() {
-        assert!(matches!(Dest::parse("file:/tmp/x").unwrap(), Dest::File(p) if p == Path::new("/tmp/x")));
-        assert!(matches!(Dest::parse("file:///tmp/x").unwrap(), Dest::File(p) if p == Path::new("/tmp/x")));
-        assert!(matches!(Dest::parse("unix:/run/x.sock").unwrap(), Dest::Unix(p) if p == Path::new("/run/x.sock")));
+        assert!(
+            matches!(Dest::parse("file:/tmp/x").unwrap(), Dest::File(p) if p == Path::new("/tmp/x"))
+        );
+        assert!(
+            matches!(Dest::parse("file:///tmp/x").unwrap(), Dest::File(p) if p == Path::new("/tmp/x"))
+        );
+        assert!(
+            matches!(Dest::parse("unix:/run/x.sock").unwrap(), Dest::Unix(p) if p == Path::new("/run/x.sock"))
+        );
         assert!(Dest::parse("file:relative").is_err());
         assert!(Dest::parse("unix:relative").is_err());
-        assert!(Dest::parse("https://example.org/x").unwrap_err().contains("proxy"));
+        assert!(Dest::parse("https://example.org/x")
+            .unwrap_err()
+            .contains("proxy"));
         assert!(Dest::parse("ftp://x").is_err());
 
         let http = |u: &str| Dest::parse(u).unwrap();
-        assert_eq!(http("http://localhost:8080/hook"), Dest::Http { host: "localhost".into(), port: 8080, path: "/hook".into() });
-        assert_eq!(http("http://example.org"), Dest::Http { host: "example.org".into(), port: 80, path: "/".into() });
-        assert_eq!(http("http://[::1]:9000/a?b=c"), Dest::Http { host: "::1".into(), port: 9000, path: "/a?b=c".into() });
-        for bad in ["http://", "http://:80/x", "http://host:0/x", "http://host:port/x", "http://user@host/x", "http://[::1/x"] {
+        assert_eq!(
+            http("http://localhost:8080/hook"),
+            Dest::Http {
+                host: "localhost".into(),
+                port: 8080,
+                path: "/hook".into()
+            }
+        );
+        assert_eq!(
+            http("http://example.org"),
+            Dest::Http {
+                host: "example.org".into(),
+                port: 80,
+                path: "/".into()
+            }
+        );
+        assert_eq!(
+            http("http://[::1]:9000/a?b=c"),
+            Dest::Http {
+                host: "::1".into(),
+                port: 9000,
+                path: "/a?b=c".into()
+            }
+        );
+        for bad in [
+            "http://",
+            "http://:80/x",
+            "http://host:0/x",
+            "http://host:port/x",
+            "http://user@host/x",
+            "http://[::1/x",
+        ] {
             assert!(Dest::parse(bad).is_err(), "{bad}");
         }
-        for uri in ["file:/tmp/x", "unix:/run/x.sock", "http://localhost:8080/hook", "http://example.org/", "http://[::1]:9000/a?b=c"] {
+        for uri in [
+            "file:/tmp/x",
+            "unix:/run/x.sock",
+            "http://localhost:8080/hook",
+            "http://example.org/",
+            "http://[::1]:9000/a?b=c",
+        ] {
             assert_eq!(Dest::parse(uri).unwrap().uri(), uri);
         }
     }
@@ -542,7 +680,10 @@ mod tests {
         let mut sink = Sink::new(Dest::File(path.clone()));
         sink.deliver("{\"a\":1}").unwrap();
         sink.deliver("{\"b\":2}").unwrap();
-        assert_eq!(std::fs::read_to_string(&path).unwrap(), "{\"a\":1}\n{\"b\":2}\n");
+        assert_eq!(
+            std::fs::read_to_string(&path).unwrap(),
+            "{\"a\":1}\n{\"b\":2}\n"
+        );
         let _ = std::fs::remove_file(&path);
     }
 
@@ -560,7 +701,10 @@ mod tests {
         push(&mut q, Kind::Settle, json!({"n": 1}));
         push(&mut q, Kind::Match, json!({"n": 2}));
         push(&mut q, Kind::Settle, json!({"n": 3}));
-        assert_eq!(kinds(&q), [(Kind::Settle, 1), (Kind::Match, 2), (Kind::Settle, 3)]);
+        assert_eq!(
+            kinds(&q),
+            [(Kind::Settle, 1), (Kind::Match, 2), (Kind::Settle, 3)]
+        );
         assert_eq!(q.dropped, 0);
     }
 
@@ -572,7 +716,10 @@ mod tests {
         push(&mut q, Kind::Match, json!({"n": 2}));
         push(&mut q, Kind::Settle, json!({"n": 3}));
         // The newer screen took the older one's place and number.
-        assert_eq!(kinds(&q), [(Kind::Hello, 0), (Kind::Settle, 1), (Kind::Match, 2)]);
+        assert_eq!(
+            kinds(&q),
+            [(Kind::Hello, 0), (Kind::Settle, 1), (Kind::Match, 2)]
+        );
         assert_eq!(q.items[1].fields["n"], 3);
         assert_eq!(q.dropped, 0);
         assert_eq!(q.next_seq, 3);
@@ -582,8 +729,16 @@ mod tests {
     fn a_full_queue_merges_consecutive_stream_messages() {
         let mut q = Queue::new(0, 2, 1 << 20);
         push(&mut q, Kind::Hello, json!({}));
-        push(&mut q, Kind::Stream, json!({"from_line": 1, "lines": ["a", "b"]}));
-        push(&mut q, Kind::Stream, json!({"from_line": 3, "lines": ["c"], "skipped_lines": 4}));
+        push(
+            &mut q,
+            Kind::Stream,
+            json!({"from_line": 1, "lines": ["a", "b"]}),
+        );
+        push(
+            &mut q,
+            Kind::Stream,
+            json!({"from_line": 3, "lines": ["c"], "skipped_lines": 4}),
+        );
         assert_eq!(kinds(&q), [(Kind::Hello, 0), (Kind::Stream, 1)]);
         assert_eq!(q.items[1].fields["from_line"], 1);
         assert_eq!(q.items[1].fields["lines"], json!(["a", "b", "c"]));
@@ -598,7 +753,10 @@ mod tests {
         push(&mut q, Kind::Match, json!({"n": 1}));
         push(&mut q, Kind::Settle, json!({"n": 2}));
         push(&mut q, Kind::Match, json!({"n": 3}));
-        assert_eq!(kinds(&q), [(Kind::Hello, 0), (Kind::Settle, 2), (Kind::Match, 3)]);
+        assert_eq!(
+            kinds(&q),
+            [(Kind::Hello, 0), (Kind::Settle, 2), (Kind::Match, 3)]
+        );
         assert_eq!(q.dropped, 1);
     }
 
@@ -647,9 +805,19 @@ mod tests {
         let listener = std::os::unix::net::UnixListener::bind(&path).unwrap();
         let reader = thread::spawn(move || {
             let (conn, _) = listener.accept().unwrap();
-            io::BufReader::new(conn).lines().map(|l| serde_json::from_str::<Value>(&l.unwrap()).unwrap()).collect::<Vec<_>>()
+            io::BufReader::new(conn)
+                .lines()
+                .map(|l| serde_json::from_str::<Value>(&l.unwrap()).unwrap())
+                .collect::<Vec<_>>()
         });
-        let d = Delivery::start(Sink::new(Dest::Unix(path.clone())), "s1".into(), Instant::now(), 0, None, |_| {});
+        let d = Delivery::start(
+            Sink::new(Dest::Unix(path.clone())),
+            "s1".into(),
+            Instant::now(),
+            0,
+            None,
+            |_| {},
+        );
         d.send(Kind::Hello, obj(json!({"cols": 80})));
         d.send(Kind::Settle, obj(json!({"screen": {"text": "hi"}})));
         let (ok, line) = d.deliver_will(obj(json!({"exit_code": 0})));

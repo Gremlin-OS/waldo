@@ -41,13 +41,23 @@ pub fn ensure_base_dir() -> Result<PathBuf, String> {
 fn check_base_dir(dir: &Path) -> Result<(), String> {
     let md = fs::symlink_metadata(dir).map_err(|e| format!("cannot use {}: {e}", dir.display()))?;
     if md.file_type().is_symlink() || !md.is_dir() {
-        return Err(format!("{} is not a directory; set WALDO_DIR to one you own", dir.display()));
+        return Err(format!(
+            "{} is not a directory; set WALDO_DIR to one you own",
+            dir.display()
+        ));
     }
     if md.uid() != unsafe { libc::getuid() } {
-        return Err(format!("{} is owned by another user; set WALDO_DIR to a directory you own", dir.display()));
+        return Err(format!(
+            "{} is owned by another user; set WALDO_DIR to a directory you own",
+            dir.display()
+        ));
     }
     if md.permissions().mode() & 0o077 != 0 {
-        return Err(format!("{} is accessible to other users; run: chmod 700 {}", dir.display(), dir.display()));
+        return Err(format!(
+            "{} is accessible to other users; run: chmod 700 {}",
+            dir.display(),
+            dir.display()
+        ));
     }
     Ok(())
 }
@@ -56,7 +66,9 @@ fn check_base_dir(dir: &Path) -> Result<(), String> {
 pub fn valid_name(name: &str) -> bool {
     !name.is_empty()
         && name.len() <= 32
-        && name.bytes().all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'_' || b == b'-')
+        && name
+            .bytes()
+            .all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'_' || b == b'-')
         && name.as_bytes()[0].is_ascii_alphanumeric()
 }
 
@@ -135,7 +147,10 @@ fn last_line(path: &Path) -> Option<String> {
     let mut buf = Vec::new();
     f.read_to_end(&mut buf).ok()?;
     let text = String::from_utf8_lossy(&buf);
-    text.lines().rev().find(|l| !l.trim().is_empty()).map(|l| l.to_string())
+    text.lines()
+        .rev()
+        .find(|l| !l.trim().is_empty())
+        .map(|l| l.to_string())
 }
 
 /// The session's exit message, if it can be found in the session directory:
@@ -169,7 +184,12 @@ fn inspect(dir: PathBuf) -> Option<Session> {
     } else {
         State::Dead
     };
-    Some(Session { id, dir, state, meta })
+    Some(Session {
+        id,
+        dir,
+        state,
+        meta,
+    })
 }
 
 /// Every session directory under the base directory, sorted by id.
@@ -196,10 +216,16 @@ pub fn find(sel: &str) -> Result<Session, String> {
     let matches: Vec<&Session> = all.iter().filter(|s| s.id.starts_with(sel)).collect();
     match matches.len() {
         1 => Ok(matches[0].clone()),
-        0 => Err(format!("no session '{sel}'; run 'waldo-term list' to see sessions")),
+        0 => Err(format!(
+            "no session '{sel}'; run 'waldo-term list' to see sessions"
+        )),
         _ => Err(format!(
             "'{sel}' matches several sessions: {}",
-            matches.iter().map(|s| s.id.as_str()).collect::<Vec<_>>().join(", ")
+            matches
+                .iter()
+                .map(|s| s.id.as_str())
+                .collect::<Vec<_>>()
+                .join(", ")
         )),
     }
 }

@@ -114,15 +114,27 @@ impl View {
             n(frame, "rows")
         );
         if n(&view, "cols") < n(frame, "cols") || n(&view, "rows") < n(frame, "rows") {
-            first.push_str(&format!(" (showing {}x{})", n(&view, "cols"), n(&view, "rows")));
+            first.push_str(&format!(
+                " (showing {}x{})",
+                n(&view, "cols"),
+                n(&view, "rows")
+            ));
         }
         let mut parts = vec![first];
-        parts.push(if self.drive { "TYPING (Ctrl-\\ to stop)".into() } else { "view only (Ctrl-\\ to type)".into() });
+        parts.push(if self.drive {
+            "TYPING (Ctrl-\\ to stop)".into()
+        } else {
+            "view only (Ctrl-\\ to type)".into()
+        });
         parts.push("Ctrl-] detach".into());
         if n(frame, "busy") > 0 {
             parts.push("agent request in flight".into());
         }
-        format!("\x1b[{};1H\x1b[0;7m{}\x1b[0m", term.1, fit(&parts.join("  |  "), term.0 as usize))
+        format!(
+            "\x1b[{};1H\x1b[0;7m{}\x1b[0m",
+            term.1,
+            fit(&parts.join("  |  "), term.0 as usize)
+        )
     }
 
     /// Turn a frame into what to write to the terminal.
@@ -134,9 +146,19 @@ impl View {
         if let Some(m) = frame.get("modes") {
             let flag = |k: &str| m.get(k).and_then(|b| b.as_bool()).unwrap_or(false);
             for (now, was, on, off) in [
-                (flag("app_cursor"), &mut self.app_cursor, "\x1b[?1h", "\x1b[?1l"),
+                (
+                    flag("app_cursor"),
+                    &mut self.app_cursor,
+                    "\x1b[?1h",
+                    "\x1b[?1l",
+                ),
                 (flag("app_keypad"), &mut self.app_keypad, "\x1b=", "\x1b>"),
-                (flag("bracketed_paste"), &mut self.bracketed_paste, "\x1b[?2004h", "\x1b[?2004l"),
+                (
+                    flag("bracketed_paste"),
+                    &mut self.bracketed_paste,
+                    "\x1b[?2004h",
+                    "\x1b[?2004l",
+                ),
             ] {
                 if now != *was {
                     out.push_str(if now { on } else { off });
@@ -146,7 +168,12 @@ impl View {
         }
         if let Some(lines) = frame.get("lines").and_then(|l| l.as_array()) {
             for l in lines {
-                let (Some(row), Some(text)) = (l.get(0).and_then(|r| r.as_u64()), l.get(1).and_then(|t| t.as_str())) else { continue };
+                let (Some(row), Some(text)) = (
+                    l.get(0).and_then(|r| r.as_u64()),
+                    l.get(1).and_then(|t| t.as_str()),
+                ) else {
+                    continue;
+                };
                 if row + 1 < term.1 as u64 {
                     out.push_str(&format!("\x1b[{};1H\x1b[0m{}\x1b[0m\x1b[K", row + 1, text));
                 }
@@ -161,8 +188,14 @@ impl View {
         self.rows_drawn = rows;
         out.push_str(&self.status_bar(frame, term));
         if let Some(c) = frame.get("cursor") {
-            if c.get("visible").and_then(|v| v.as_bool()) == Some(true) && n(c, "row") + 1 < term.1 as u64 {
-                out.push_str(&format!("\x1b[{};{}H\x1b[?25h", n(c, "row") + 1, n(c, "col") + 1));
+            if c.get("visible").and_then(|v| v.as_bool()) == Some(true)
+                && n(c, "row") + 1 < term.1 as u64
+            {
+                out.push_str(&format!(
+                    "\x1b[{};{}H\x1b[?25h",
+                    n(c, "row") + 1,
+                    n(c, "col") + 1
+                ));
             }
         }
         out
@@ -180,14 +213,19 @@ pub fn run(mut stream: UnixStream, leftover: Vec<u8>, opts: Options) -> Outcome 
     let Some(_raw) = RawTerminal::enter() else {
         return Outcome::Lost("cannot put the terminal in raw mode".into());
     };
-    let mut view = View { drive: opts.drive, ..Default::default() };
+    let mut view = View {
+        drive: opts.drive,
+        ..Default::default()
+    };
     let mut inbuf = leftover;
     let sock = stream.as_raw_fd();
     loop {
         // Frames already received.
         while let Some(nl) = inbuf.iter().position(|b| *b == b'\n') {
             let line: Vec<u8> = inbuf.drain(..=nl).collect();
-            let Ok(frame) = serde_json::from_slice::<Value>(&line) else { continue };
+            let Ok(frame) = serde_json::from_slice::<Value>(&line) else {
+                continue;
+            };
             if frame.get("ended").and_then(|e| e.as_bool()) == Some(true) {
                 return Outcome::Ended;
             }
@@ -196,8 +234,16 @@ pub fn run(mut stream: UnixStream, leftover: Vec<u8>, opts: Options) -> Outcome 
         }
 
         let mut fds = [
-            libc::pollfd { fd: 0, events: libc::POLLIN, revents: 0 },
-            libc::pollfd { fd: sock, events: libc::POLLIN, revents: 0 },
+            libc::pollfd {
+                fd: 0,
+                events: libc::POLLIN,
+                revents: 0,
+            },
+            libc::pollfd {
+                fd: sock,
+                events: libc::POLLIN,
+                revents: 0,
+            },
         ];
         let n = unsafe { libc::poll(fds.as_mut_ptr(), 2, 200) };
         if n < 0 && std::io::Error::last_os_error().raw_os_error() != Some(libc::EINTR) {

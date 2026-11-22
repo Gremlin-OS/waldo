@@ -11,7 +11,8 @@ fn main() {
     println!("cargo:rerun-if-env-changed=LIBGHOSTTY_VT_LIB_DIR");
     let dir = match std::env::var("LIBGHOSTTY_VT_LIB_DIR") {
         Ok(dir) => PathBuf::from(dir),
-        Err(_) => PathBuf::from(std::env::var("CARGO_MANIFEST_DIR").unwrap()).join("target/libghostty-vt/lib"),
+        Err(_) => PathBuf::from(std::env::var("CARGO_MANIFEST_DIR").unwrap())
+            .join("target/libghostty-vt/lib"),
     };
     let lib = dir.join("libghostty-vt.a");
     println!("cargo:rerun-if-changed={}", lib.display());

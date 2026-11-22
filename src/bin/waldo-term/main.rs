@@ -68,7 +68,11 @@ fn parse_ms(v: &str) -> Option<u64> {
         return s.parse().ok();
     }
     if let Some(s) = v.strip_suffix('s') {
-        return s.parse::<f64>().ok().filter(|f| *f >= 0.0).map(|f| (f * 1000.0) as u64);
+        return s
+            .parse::<f64>()
+            .ok()
+            .filter(|f| *f >= 0.0)
+            .map(|f| (f * 1000.0) as u64);
     }
     v.parse().ok()
 }
@@ -92,7 +96,10 @@ fn parse_opts(cmd: &str, args: &[String], allowed: &[&str], positional: bool) ->
                 usage(&format!("'{cmd}' does not take {arg}"));
             }
             let mut value = || -> String {
-                let v = args.get(i).cloned().unwrap_or_else(|| usage(&format!("{arg} needs a value")));
+                let v = args
+                    .get(i)
+                    .cloned()
+                    .unwrap_or_else(|| usage(&format!("{arg} needs a value")));
                 i += 1;
                 v
             };
@@ -102,15 +109,21 @@ fn parse_opts(cmd: &str, args: &[String], allowed: &[&str], positional: bool) ->
                 "--pattern" => o.pattern = Some(value()),
                 "--timeout" => {
                     let v = value();
-                    o.timeout_ms = Some(parse_ms(&v).unwrap_or_else(|| usage("--timeout takes milliseconds, such as 5000, or seconds as 5s")));
+                    o.timeout_ms = Some(parse_ms(&v).unwrap_or_else(|| {
+                        usage("--timeout takes milliseconds, such as 5000, or seconds as 5s")
+                    }));
                 }
                 "--key-delay" => {
                     let v = value();
-                    o.key_delay_ms = Some(parse_ms(&v).unwrap_or_else(|| usage("--key-delay takes milliseconds, such as 200")));
+                    o.key_delay_ms =
+                        Some(parse_ms(&v).unwrap_or_else(|| {
+                            usage("--key-delay takes milliseconds, such as 200")
+                        }));
                 }
                 "--pause" => {
                     let v = value();
-                    let ms = parse_ms(&v).unwrap_or_else(|| usage("--pause takes milliseconds, such as 500"));
+                    let ms = parse_ms(&v)
+                        .unwrap_or_else(|| usage("--pause takes milliseconds, such as 500"));
                     o.items.push(json!({"pause": ms}));
                 }
                 "--json" => o.json = true,
@@ -123,9 +136,19 @@ fn parse_opts(cmd: &str, args: &[String], allowed: &[&str], positional: bool) ->
                 "--all" => o.all = true,
                 "--older-than" => {
                     let v = value();
-                    o.older_than = Some(parse_ms(&format!("{v}s")).map(|ms| (ms / 1000) as i64).unwrap_or_else(|| usage("--older-than takes seconds")));
+                    o.older_than = Some(
+                        parse_ms(&format!("{v}s"))
+                            .map(|ms| (ms / 1000) as i64)
+                            .unwrap_or_else(|| usage("--older-than takes seconds")),
+                    );
                 }
-                "--tail" => o.tail = Some(value().parse().unwrap_or_else(|_| usage("--tail takes a number of lines"))),
+                "--tail" => {
+                    o.tail = Some(
+                        value()
+                            .parse()
+                            .unwrap_or_else(|_| usage("--tail takes a number of lines")),
+                    )
+                }
                 "--text" | "--keys" | "--paste" => {
                     let mut v = value();
                     if v == "-" {
@@ -144,7 +167,10 @@ fn parse_opts(cmd: &str, args: &[String], allowed: &[&str], positional: bool) ->
                     // The host reads the file, so it needs the full path.
                     let abs = std::path::absolute(&v).unwrap_or_else(|_| PathBuf::from(&v));
                     let mut m = Map::new();
-                    m.insert(name[2..].replace('-', "_"), abs.display().to_string().into());
+                    m.insert(
+                        name[2..].replace('-', "_"),
+                        abs.display().to_string().into(),
+                    );
                     o.items.push(Value::Object(m));
                 }
                 _ => usage(&format!("'{cmd}' does not take {arg}")),
@@ -154,7 +180,11 @@ fn parse_opts(cmd: &str, args: &[String], allowed: &[&str], positional: bool) ->
             break;
         } else {
             if !positional {
-                let hint = if cmd == "send" { "; say what it is with --text or --keys" } else { "" };
+                let hint = if cmd == "send" {
+                    "; say what it is with --text or --keys"
+                } else {
+                    ""
+                };
                 usage(&format!("'{cmd}' does not take the argument '{arg}'{hint}"));
             }
             o.rest.push(arg.to_string());
@@ -166,7 +196,11 @@ fn parse_opts(cmd: &str, args: &[String], allowed: &[&str], positional: bool) ->
 // ---- finding the session -----------------------------------------------------
 
 enum Target {
-    Live { id: String, socket: PathBuf, dir: Option<PathBuf> },
+    Live {
+        id: String,
+        socket: PathBuf,
+        dir: Option<PathBuf>,
+    },
     Ended(Session),
 }
 
@@ -175,22 +209,46 @@ fn target(sel: Option<&str>) -> Target {
         Some(s) if s.contains('/') => {
             let socket = PathBuf::from(s);
             let dir = socket.parent().map(|p| p.to_path_buf());
-            let id = dir.as_ref().and_then(|d| d.file_name()).map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
+            let id = dir
+                .as_ref()
+                .and_then(|d| d.file_name())
+                .map(|n| n.to_string_lossy().into_owned())
+                .unwrap_or_default();
             Target::Live { id, socket, dir }
         }
         Some(s) => match session::find(s) {
-            Ok(sess) if sess.state == State::Live => Target::Live { id: sess.id.clone(), socket: sess.socket(), dir: Some(sess.dir) },
+            Ok(sess) if sess.state == State::Live => Target::Live {
+                id: sess.id.clone(),
+                socket: sess.socket(),
+                dir: Some(sess.dir),
+            },
             Ok(sess) => Target::Ended(sess),
             Err(e) => die(EXIT_NO_SESSION, &e),
         },
         None => {
-            let live: Vec<Session> = session::list().into_iter().filter(|s| s.state == State::Live).collect();
+            let live: Vec<Session> = session::list()
+                .into_iter()
+                .filter(|s| s.state == State::Live)
+                .collect();
             match live.len() {
-                1 => Target::Live { id: live[0].id.clone(), socket: live[0].socket(), dir: Some(live[0].dir.clone()) },
-                0 => die(EXIT_NO_SESSION, "no live session; start one with: waldo-wrap --detach -- PROGRAM"),
+                1 => Target::Live {
+                    id: live[0].id.clone(),
+                    socket: live[0].socket(),
+                    dir: Some(live[0].dir.clone()),
+                },
+                0 => die(
+                    EXIT_NO_SESSION,
+                    "no live session; start one with: waldo-wrap --detach -- PROGRAM",
+                ),
                 _ => die(
                     EXIT_USAGE,
-                    &format!("several sessions are live; pick one with -s: {}", live.iter().map(|s| s.id.as_str()).collect::<Vec<_>>().join(", ")),
+                    &format!(
+                        "several sessions are live; pick one with -s: {}",
+                        live.iter()
+                            .map(|s| s.id.as_str())
+                            .collect::<Vec<_>>()
+                            .join(", ")
+                    ),
                 ),
             }
         }
@@ -226,23 +284,44 @@ fn connect(socket: &Path) -> std::io::Result<UnixStream> {
     }
     // Too long for a socket address: go through a directory fd.
     let dir = socket.parent().unwrap_or(Path::new("/"));
-    let name = socket.file_name().unwrap_or_default().to_string_lossy().into_owned();
+    let name = socket
+        .file_name()
+        .unwrap_or_default()
+        .to_string_lossy()
+        .into_owned();
     let d = File::open(dir)?;
     UnixStream::connect(format!("/proc/self/fd/{}/{}", d.as_raw_fd(), name))
 }
 
-fn http(stream: &mut UnixStream, method: &str, path: &str, body: Option<&Value>) -> Result<(u16, Value), String> {
-    let body_bytes = body.map(|b| serde_json::to_vec(b).unwrap_or_default()).unwrap_or_default();
+fn http(
+    stream: &mut UnixStream,
+    method: &str,
+    path: &str,
+    body: Option<&Value>,
+) -> Result<(u16, Value), String> {
+    let body_bytes = body
+        .map(|b| serde_json::to_vec(b).unwrap_or_default())
+        .unwrap_or_default();
     let mut req = format!("{method} {path} HTTP/1.1\r\nHost: waldo\r\nConnection: close\r\nAccept: application/json\r\n");
     if body.is_some() {
-        req.push_str(&format!("Content-Type: application/json\r\nContent-Length: {}\r\n", body_bytes.len()));
+        req.push_str(&format!(
+            "Content-Type: application/json\r\nContent-Length: {}\r\n",
+            body_bytes.len()
+        ));
     }
     req.push_str("\r\n");
     // A host that exits with this request unread resets the connection.
     // That is the session ending, the same as a connection closed with no
     // answer.
-    let hung_up = |e: &std::io::Error| matches!(e.kind(), std::io::ErrorKind::ConnectionReset | std::io::ErrorKind::BrokenPipe);
-    let sent = stream.write_all(req.as_bytes()).and_then(|_| stream.write_all(&body_bytes));
+    let hung_up = |e: &std::io::Error| {
+        matches!(
+            e.kind(),
+            std::io::ErrorKind::ConnectionReset | std::io::ErrorKind::BrokenPipe
+        )
+    };
+    let sent = stream
+        .write_all(req.as_bytes())
+        .and_then(|_| stream.write_all(&body_bytes));
     match sent {
         Err(e) if hung_up(&e) => return Err("closed".into()),
         Err(e) => return Err(format!("cannot send the request: {e}")),
@@ -264,13 +343,21 @@ fn http(stream: &mut UnixStream, method: &str, path: &str, body: Option<&Value>)
         _ => return Err("the session sent a response that is not HTTP".into()),
     };
     let status = resp.code.unwrap_or(0);
-    let value: Value = serde_json::from_slice(&raw[head..]).map_err(|e| format!("the session sent a response that is not JSON: {e}"))?;
+    let value: Value = serde_json::from_slice(&raw[head..])
+        .map_err(|e| format!("the session sent a response that is not JSON: {e}"))?;
     Ok((status, value))
 }
 
 /// Send one request to a session. If the session has ended, or ends before
 /// answering, its will is printed instead and this does not return.
-fn call(sel: Option<&str>, method: &str, path: &str, body: Option<&Value>, as_json: bool, ended_status: i32) -> (String, u16, Value) {
+fn call(
+    sel: Option<&str>,
+    method: &str,
+    path: &str,
+    body: Option<&Value>,
+    as_json: bool,
+    ended_status: i32,
+) -> (String, u16, Value) {
     let (id, socket, dir) = match target(sel) {
         Target::Live { id, socket, dir } => (id, socket, dir),
         Target::Ended(sess) => ended(&sess, as_json, ended_status),
@@ -288,7 +375,10 @@ fn call(sel: Option<&str>, method: &str, path: &str, body: Option<&Value>, as_js
                 }
             }
         }
-        die(EXIT_NO_SESSION, &format!("cannot reach session '{id}' at {}: {why}", socket.display()));
+        die(
+            EXIT_NO_SESSION,
+            &format!("cannot reach session '{id}' at {}: {why}", socket.display()),
+        );
     };
     let mut stream = match connect(&socket) {
         Ok(s) => s,
@@ -306,9 +396,22 @@ fn check_status(status: u16, value: &Value) {
     if status == 200 {
         return;
     }
-    let text = value.get("text").and_then(|t| t.as_str()).unwrap_or("the session refused the request");
-    let code = value.get("error").and_then(|t| t.as_str()).unwrap_or("error");
-    die(if (400..500).contains(&status) && status != 409 { EXIT_USAGE } else { EXIT_OTHER }, &format!("{text} ({code})"));
+    let text = value
+        .get("text")
+        .and_then(|t| t.as_str())
+        .unwrap_or("the session refused the request");
+    let code = value
+        .get("error")
+        .and_then(|t| t.as_str())
+        .unwrap_or("error");
+    die(
+        if (400..500).contains(&status) && status != 409 {
+            EXIT_USAGE
+        } else {
+            EXIT_OTHER
+        },
+        &format!("{text} ({code})"),
+    );
 }
 
 /// Print a screen response and exit with the status its reason calls for.
@@ -350,7 +453,9 @@ fn wanted_exit(o: &Opts) -> bool {
 fn encode(s: &str) -> String {
     s.bytes()
         .map(|b| match b {
-            b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'_' | b'.' | b'~' => (b as char).to_string(),
+            b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'_' | b'.' | b'~' => {
+                (b as char).to_string()
+            }
             _ => format!("%{b:02X}"),
         })
         .collect()
@@ -358,11 +463,27 @@ fn encode(s: &str) -> String {
 
 // ---- commands ------------------------------------------------------------------
 
-const WAIT_OPTS: [&str; 6] = ["--session", "--until", "--pattern", "--timeout", "--json", "--style"];
+const WAIT_OPTS: [&str; 6] = [
+    "--session",
+    "--until",
+    "--pattern",
+    "--timeout",
+    "--json",
+    "--style",
+];
 
 fn cmd_send(args: &[String]) -> ! {
     let mut allowed = WAIT_OPTS.to_vec();
-    allowed.extend(["--text", "--keys", "--paste", "--text-file", "--keys-file", "--paste-file", "--pause", "--key-delay"]);
+    allowed.extend([
+        "--text",
+        "--keys",
+        "--paste",
+        "--text-file",
+        "--keys-file",
+        "--paste-file",
+        "--pause",
+        "--key-delay",
+    ]);
     let o = parse_opts("send", args, &allowed, false);
     if o.items.is_empty() {
         usage("'send' needs something to send: --text S, --keys S, --paste S, or a --*-file PATH");
@@ -374,7 +495,14 @@ fn cmd_send(args: &[String]) -> ! {
     if let Some(d) = o.key_delay_ms {
         body["key_delay_ms"] = d.into();
     }
-    let (_, status, value) = call(o.session.as_deref(), "POST", "/v1/input", Some(&body), o.json, EXIT_CHILD_EXITED);
+    let (_, status, value) = call(
+        o.session.as_deref(),
+        "POST",
+        "/v1/input",
+        Some(&body),
+        o.json,
+        EXIT_CHILD_EXITED,
+    );
     check_status(status, &value);
     finish(&value, o.json, wanted_exit(&o));
 }
@@ -388,8 +516,19 @@ fn cmd_screen(args: &[String]) -> ! {
     if let Some(t) = o.timeout_ms {
         q.push(format!("timeout_ms={t}"));
     }
-    let path = if q.is_empty() { "/v1/screen".to_string() } else { format!("/v1/screen?{}", q.join("&")) };
-    let (_, status, value) = call(o.session.as_deref(), "GET", &path, None, o.json, EXIT_CHILD_EXITED);
+    let path = if q.is_empty() {
+        "/v1/screen".to_string()
+    } else {
+        format!("/v1/screen?{}", q.join("&"))
+    };
+    let (_, status, value) = call(
+        o.session.as_deref(),
+        "GET",
+        &path,
+        None,
+        o.json,
+        EXIT_CHILD_EXITED,
+    );
     check_status(status, &value);
     finish(&value, o.json, wanted_exit(&o));
 }
@@ -401,8 +540,19 @@ fn cmd_wait(args: &[String]) -> ! {
         body["timeout_ms"] = t.into();
     }
     // Waiting for the end of a session that has already ended is a success.
-    let ended_status = if wanted_exit(&o) { EXIT_OK } else { EXIT_CHILD_EXITED };
-    let (_, status, value) = call(o.session.as_deref(), "POST", "/v1/wait", Some(&body), o.json, ended_status);
+    let ended_status = if wanted_exit(&o) {
+        EXIT_OK
+    } else {
+        EXIT_CHILD_EXITED
+    };
+    let (_, status, value) = call(
+        o.session.as_deref(),
+        "POST",
+        "/v1/wait",
+        Some(&body),
+        o.json,
+        ended_status,
+    );
     check_status(status, &value);
     finish(&value, o.json, wanted_exit(&o));
 }
@@ -419,7 +569,11 @@ fn cmd_output(args: &[String]) -> ! {
     if o.json {
         println!("{value}");
     } else {
-        let text = value.get("output").and_then(|x| x.get("text")).and_then(|t| t.as_str()).unwrap_or("");
+        let text = value
+            .get("output")
+            .and_then(|x| x.get("text"))
+            .and_then(|t| t.as_str())
+            .unwrap_or("");
         if !text.is_empty() {
             println!("{text}");
         }
@@ -429,13 +583,26 @@ fn cmd_output(args: &[String]) -> ! {
 
 fn cmd_resize(args: &[String]) -> ! {
     let o = parse_opts("resize", args, &["--session", "--until", "--json"], true);
-    let size = o.rest.first().and_then(|s| s.split_once(['x', 'X'])).and_then(|(c, r)| Some((c.parse::<u64>().ok()?, r.parse::<u64>().ok()?)));
-    let Some((cols, rows)) = size else { usage("'resize' takes COLSxROWS, such as: waldo-term resize 100x30") };
+    let size = o
+        .rest
+        .first()
+        .and_then(|s| s.split_once(['x', 'X']))
+        .and_then(|(c, r)| Some((c.parse::<u64>().ok()?, r.parse::<u64>().ok()?)));
+    let Some((cols, rows)) = size else {
+        usage("'resize' takes COLSxROWS, such as: waldo-term resize 100x30")
+    };
     let mut body = json!({"cols": cols, "rows": rows});
     if o.until.is_some() {
         body["wait"] = Value::Object(wait_object(&o));
     }
-    let (_, status, value) = call(o.session.as_deref(), "POST", "/v1/resize", Some(&body), o.json, EXIT_CHILD_EXITED);
+    let (_, status, value) = call(
+        o.session.as_deref(),
+        "POST",
+        "/v1/resize",
+        Some(&body),
+        o.json,
+        EXIT_CHILD_EXITED,
+    );
     check_status(status, &value);
     finish(&value, o.json, false);
 }
@@ -449,7 +616,14 @@ fn cmd_signal(args: &[String]) -> ! {
     } else {
         usage("'signal' takes a signal name such as SIGINT, or --stop to end the session")
     };
-    let (_, status, value) = call(o.session.as_deref(), "POST", "/v1/signal", Some(&body), o.json, EXIT_CHILD_EXITED);
+    let (_, status, value) = call(
+        o.session.as_deref(),
+        "POST",
+        "/v1/signal",
+        Some(&body),
+        o.json,
+        EXIT_CHILD_EXITED,
+    );
     check_status(status, &value);
     finish(&value, o.json, false);
 }
@@ -460,9 +634,17 @@ fn cmd_match(args: &[String]) -> ! {
     let rest = &args[1..];
     let (o, method, path, body) = match sub.as_str() {
         "add" => {
-            let o = parse_opts("match add", rest, &["--session", "--id", "--once", "--json"], true);
-            let Some(pattern) = o.rest.first() else { usage("'match add' takes a pattern: a regular expression matched against one line") };
-            let mut body = json!({"pattern": pattern, "mode": if o.once { "once" } else { "edge" }});
+            let o = parse_opts(
+                "match add",
+                rest,
+                &["--session", "--id", "--once", "--json"],
+                true,
+            );
+            let Some(pattern) = o.rest.first() else {
+                usage("'match add' takes a pattern: a regular expression matched against one line")
+            };
+            let mut body =
+                json!({"pattern": pattern, "mode": if o.once { "once" } else { "edge" }});
             if let Some(id) = o.id.as_ref() {
                 body["id"] = id.clone().into();
             }
@@ -470,33 +652,74 @@ fn cmd_match(args: &[String]) -> ! {
         }
         "rm" | "remove" => {
             let o = parse_opts("match rm", rest, &["--session", "--json"], true);
-            let Some(id) = o.rest.first() else { usage("'match rm' takes the id of a trigger; 'waldo-term match list' shows them") };
+            let Some(id) = o.rest.first() else {
+                usage("'match rm' takes the id of a trigger; 'waldo-term match list' shows them")
+            };
             let path = format!("/v1/triggers/{}", encode(id));
             (o, "DELETE", path, None)
         }
-        "list" | "ls" => (parse_opts("match list", rest, &["--session", "--json"], false), "GET", "/v1/triggers".to_string(), None),
+        "list" | "ls" => (
+            parse_opts("match list", rest, &["--session", "--json"], false),
+            "GET",
+            "/v1/triggers".to_string(),
+            None,
+        ),
         _ => usage(how),
     };
-    let (_, status, value) = call(o.session.as_deref(), method, &path, body.as_ref(), o.json, EXIT_CHILD_EXITED);
+    let (_, status, value) = call(
+        o.session.as_deref(),
+        method,
+        &path,
+        body.as_ref(),
+        o.json,
+        EXIT_CHILD_EXITED,
+    );
     check_status(status, &value);
     if o.json {
         println!("{value}");
         std::process::exit(EXIT_OK);
     }
-    let field = |t: &Value, k: &str| t.get(k).map(|v| v.as_str().map(|s| s.to_string()).unwrap_or_else(|| v.to_string())).unwrap_or_default();
+    let field = |t: &Value, k: &str| {
+        t.get(k)
+            .map(|v| {
+                v.as_str()
+                    .map(|s| s.to_string())
+                    .unwrap_or_else(|| v.to_string())
+            })
+            .unwrap_or_default()
+    };
     let dest = field(&value, "dest");
     if let Some(t) = value.get("added") {
-        println!("added trigger {} ({}): {}", field(t, "id"), field(t, "mode"), field(t, "pattern"));
+        println!(
+            "added trigger {} ({}): {}",
+            field(t, "id"),
+            field(t, "mode"),
+            field(t, "pattern")
+        );
         println!("its matches go to {dest}");
     } else if let Some(t) = value.get("removed") {
-        println!("removed trigger {} after {} matches", field(t, "id"), field(t, "count"));
+        println!(
+            "removed trigger {} after {} matches",
+            field(t, "id"),
+            field(t, "count")
+        );
     } else {
-        let list = value.get("triggers").and_then(|t| t.as_array()).cloned().unwrap_or_default();
+        let list = value
+            .get("triggers")
+            .and_then(|t| t.as_array())
+            .cloned()
+            .unwrap_or_default();
         if list.is_empty() {
             println!("no triggers; add one with: waldo-term match add PATTERN");
         }
         for t in &list {
-            println!("{}  {}  matches={}  {}", field(t, "id"), field(t, "mode"), field(t, "count"), field(t, "pattern"));
+            println!(
+                "{}  {}  matches={}  {}",
+                field(t, "id"),
+                field(t, "mode"),
+                field(t, "count"),
+                field(t, "pattern")
+            );
         }
         if !list.is_empty() {
             println!("matches go to {dest}");
@@ -514,7 +737,12 @@ fn cmd_attach(args: &[String]) -> ! {
         Target::Live { id, socket, dir } => (id, socket, dir),
         Target::Ended(sess) => ended(&sess, false, EXIT_CHILD_EXITED),
     };
-    let mut stream = connect(&socket).unwrap_or_else(|e| die(EXIT_NO_SESSION, &format!("cannot reach session '{id}': {e}")));
+    let mut stream = connect(&socket).unwrap_or_else(|e| {
+        die(
+            EXIT_NO_SESSION,
+            &format!("cannot reach session '{id}': {e}"),
+        )
+    });
     // The size goes in the request so the first frame already fits. The last
     // line of the terminal is the status bar.
     let (cols, rows) = attach::term_size();
@@ -534,16 +762,29 @@ fn cmd_attach(args: &[String]) -> ! {
         let mut buf = [0u8; 4096];
         match stream.read(&mut buf) {
             Ok(n) if n > 0 => head.extend_from_slice(&buf[..n]),
-            _ => die(EXIT_OTHER, "the session closed the connection before answering"),
+            _ => die(
+                EXIT_OTHER,
+                "the session closed the connection before answering",
+            ),
         }
     };
     if !head.starts_with(b"HTTP/1.1 101") {
         let body: Value = serde_json::from_slice(&head[split..]).unwrap_or(Value::Null);
-        let text = body.get("text").and_then(|t| t.as_str()).unwrap_or("the session refused to attach");
+        let text = body
+            .get("text")
+            .and_then(|t| t.as_str())
+            .unwrap_or("the session refused to attach");
         die(EXIT_OTHER, text);
     }
     let leftover = head[split..].to_vec();
-    match attach::run(stream, leftover, attach::Options { drive: o.drive, resize: o.resize }) {
+    match attach::run(
+        stream,
+        leftover,
+        attach::Options {
+            drive: o.drive,
+            resize: o.resize,
+        },
+    ) {
         attach::Outcome::Detached => {
             println!("detached from '{id}'; it is still running");
             std::process::exit(EXIT_OK);
@@ -579,14 +820,22 @@ fn cmd_kill(args: &[String]) -> ! {
     match connect(&socket) {
         Ok(mut stream) => {
             let _ = stream.set_read_timeout(Some(Duration::from_secs(10)));
-            match http(&mut stream, "POST", "/v1/signal", Some(&json!({"stop": true}))) {
+            match http(
+                &mut stream,
+                "POST",
+                "/v1/signal",
+                Some(&json!({"stop": true})),
+            ) {
                 Ok((status, value)) => check_status(status, &value),
                 // The host may exit before it answers; that is what was asked for.
                 Err(e) if e == "closed" => {}
                 Err(e) => die(EXIT_OTHER, &e),
             }
         }
-        Err(e) => die(EXIT_NO_SESSION, &format!("cannot reach session '{id}' at {}: {e}", socket.display())),
+        Err(e) => die(
+            EXIT_NO_SESSION,
+            &format!("cannot reach session '{id}' at {}: {e}", socket.display()),
+        ),
     }
     let Some(dir) = dir else {
         println!("asked '{id}' to stop");
@@ -597,11 +846,19 @@ fn cmd_kill(args: &[String]) -> ! {
     let end = Instant::now() + Duration::from_secs(10);
     while session::lock_is_held(&dir) {
         if Instant::now() >= end {
-            die(EXIT_OTHER, &format!("session '{id}' has not stopped after 10 seconds; its host is process {}", host_pid(&dir)));
+            die(
+                EXIT_OTHER,
+                &format!(
+                    "session '{id}' has not stopped after 10 seconds; its host is process {}",
+                    host_pid(&dir)
+                ),
+            );
         }
         std::thread::sleep(Duration::from_millis(20));
     }
-    let will = session::find(&id).ok().and_then(|s| session::read_will(&s.dir, s.meta.as_ref()));
+    let will = session::find(&id)
+        .ok()
+        .and_then(|s| session::read_will(&s.dir, s.meta.as_ref()));
     match will {
         // One line: how it ended. The output is still there for `output`.
         Some(w) => println!("{}", render::will(&w).lines().next().unwrap_or("")),
@@ -643,7 +900,12 @@ fn cmd_list(args: &[String]) -> ! {
         println!("no sessions. Start one with: waldo-wrap --detach -- PROGRAM");
         std::process::exit(EXIT_OK);
     }
-    let width = sessions.iter().map(|s| s.id.len()).max().unwrap_or(2).max(2);
+    let width = sessions
+        .iter()
+        .map(|s| s.id.len())
+        .max()
+        .unwrap_or(2)
+        .max(2);
     println!("{:width$}  {:11}  {:>4}  COMMAND", "ID", "STATE", "AGE");
     for s in &sessions {
         let argv = s
@@ -651,16 +913,31 @@ fn cmd_list(args: &[String]) -> ! {
             .as_ref()
             .and_then(|m| m.get("argv"))
             .and_then(|a| a.as_array())
-            .map(|a| a.iter().filter_map(|x| x.as_str()).collect::<Vec<_>>().join(" "))
+            .map(|a| {
+                a.iter()
+                    .filter_map(|x| x.as_str())
+                    .collect::<Vec<_>>()
+                    .join(" ")
+            })
             .unwrap_or_else(|| "?".into());
-        println!("{:width$}  {:11}  {:>4}  {}", s.id, s.state.as_str(), age(s.age_secs()), argv);
+        println!(
+            "{:width$}  {:11}  {:>4}  {}",
+            s.id,
+            s.state.as_str(),
+            age(s.age_secs()),
+            argv
+        );
     }
     std::process::exit(EXIT_OK);
 }
 
 fn cmd_gc(args: &[String]) -> ! {
     let o = parse_opts("gc", args, &["--all", "--older-than"], false);
-    let threshold = if o.all { 0 } else { o.older_than.unwrap_or(3600) };
+    let threshold = if o.all {
+        0
+    } else {
+        o.older_than.unwrap_or(3600)
+    };
     let mut removed = 0;
     let mut live = 0;
     for s in session::list() {
@@ -672,7 +949,14 @@ fn cmd_gc(args: &[String]) -> ! {
             continue;
         }
         // Only what waldo put there; anything else stops the rmdir.
-        for f in ["sock", "meta.json", "will.json", "events.ndjson", "log", "lock"] {
+        for f in [
+            "sock",
+            "meta.json",
+            "will.json",
+            "events.ndjson",
+            "log",
+            "lock",
+        ] {
             let _ = std::fs::remove_file(s.dir.join(f));
         }
         if std::fs::remove_dir(&s.dir).is_ok() {
@@ -684,7 +968,10 @@ fn cmd_gc(args: &[String]) -> ! {
         // A session asked to stop is still running until its program is gone.
         n => format!("; {n} still running (end one with: waldo-term kill ID)"),
     };
-    println!("removed {removed} ended session{}{running}", if removed == 1 { "" } else { "s" });
+    println!(
+        "removed {removed} ended session{}{running}",
+        if removed == 1 { "" } else { "s" }
+    );
     std::process::exit(EXIT_OK);
 }
 

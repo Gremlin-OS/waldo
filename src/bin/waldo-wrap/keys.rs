@@ -10,11 +10,17 @@ pub enum Tok {
     Text(String),
     /// A named or modified key. `text` is what the key types with no
     /// modifier, for keys that type something.
-    Key { key: i32, mods: u16, text: Option<char>, is_esc: bool },
+    Key {
+        key: i32,
+        mods: u16,
+        text: Option<char>,
+        is_esc: bool,
+    },
 }
 
 /// The key names accepted inside `<...>`, for help and error messages.
-pub const KEY_NAMES: &str = "Esc Enter Tab BS Del Space Up Down Left Right Home End PageUp PageDown Insert F1..F12 lt";
+pub const KEY_NAMES: &str =
+    "Esc Enter Tab BS Del Space Up Down Left Right Home End PageUp PageDown Insert F1..F12 lt";
 
 fn named(name: &str) -> Option<(i32, Option<char>)> {
     let lower = name.to_ascii_lowercase();
@@ -92,7 +98,12 @@ fn parse_token(inner: &str) -> Option<Tok> {
         if rest.eq_ignore_ascii_case("lt") && mods == 0 {
             return Some(Tok::Text("<".into()));
         }
-        return Some(Tok::Key { key: k, mods, text, is_esc: k == key::ESCAPE && mods == 0 });
+        return Some(Tok::Key {
+            key: k,
+            mods,
+            text,
+            is_esc: k == key::ESCAPE && mods == 0,
+        });
     }
     let mut chars = rest.chars();
     let c = chars.next()?;
@@ -101,7 +112,12 @@ fn parse_token(inner: &str) -> Option<Tok> {
         return None;
     }
     let k = key_for_char(c)?;
-    Some(Tok::Key { key: k, mods, text: Some(c), is_esc: false })
+    Some(Tok::Key {
+        key: k,
+        mods,
+        text: Some(c),
+        is_esc: false,
+    })
 }
 
 /// Parse key notation. On error returns a sentence that says what to do.
@@ -200,7 +216,12 @@ mod tests {
     use super::*;
 
     fn k(key: i32, mods: u16, text: Option<char>) -> Tok {
-        Tok::Key { key, mods, text, is_esc: key == key::ESCAPE && mods == 0 }
+        Tok::Key {
+            key,
+            mods,
+            text,
+            is_esc: key == key::ESCAPE && mods == 0,
+        }
     }
 
     #[test]
@@ -213,11 +234,26 @@ mod tests {
             parse(":q!<Enter>").unwrap(),
             vec![Tok::Text(":q!".into()), k(key::ENTER, 0, None)]
         );
-        assert_eq!(parse("<C-c>").unwrap(), vec![k(key::A + 2, MOD_CTRL, Some('c'))]);
-        assert_eq!(parse("<M-x>").unwrap(), vec![k(key::A + 23, MOD_ALT, Some('x'))]);
-        assert_eq!(parse("<S-Tab>").unwrap(), vec![k(key::TAB, MOD_SHIFT, None)]);
-        assert_eq!(parse("<C-S-Left>").unwrap(), vec![k(key::ARROW_LEFT, MOD_CTRL | MOD_SHIFT, None)]);
-        assert_eq!(parse("<F5><f12>").unwrap(), vec![k(key::F1 + 4, 0, None), k(key::F1 + 11, 0, None)]);
+        assert_eq!(
+            parse("<C-c>").unwrap(),
+            vec![k(key::A + 2, MOD_CTRL, Some('c'))]
+        );
+        assert_eq!(
+            parse("<M-x>").unwrap(),
+            vec![k(key::A + 23, MOD_ALT, Some('x'))]
+        );
+        assert_eq!(
+            parse("<S-Tab>").unwrap(),
+            vec![k(key::TAB, MOD_SHIFT, None)]
+        );
+        assert_eq!(
+            parse("<C-S-Left>").unwrap(),
+            vec![k(key::ARROW_LEFT, MOD_CTRL | MOD_SHIFT, None)]
+        );
+        assert_eq!(
+            parse("<F5><f12>").unwrap(),
+            vec![k(key::F1 + 4, 0, None), k(key::F1 + 11, 0, None)]
+        );
     }
 
     #[test]
@@ -232,7 +268,10 @@ mod tests {
     #[test]
     fn unknown_names_are_errors() {
         let e = parse("abc <Entr>").unwrap_err();
-        assert!(e.contains("<Entr>") && e.contains("offset 4") && e.contains("<lt>"), "{e}");
+        assert!(
+            e.contains("<Entr>") && e.contains("offset 4") && e.contains("<lt>"),
+            "{e}"
+        );
         assert!(parse("#include <stdio.h>").is_err());
         assert!(parse("<x>").is_err());
         assert!(parse("<F13>").is_err());

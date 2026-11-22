@@ -64,7 +64,9 @@ pub const HUP: u32 = (libc::EPOLLHUP | libc::EPOLLERR) as u32;
 
 impl Epoll {
     pub fn new() -> io::Result<Epoll> {
-        Ok(Epoll { fd: cvt(unsafe { libc::epoll_create1(libc::EPOLL_CLOEXEC) })? })
+        Ok(Epoll {
+            fd: cvt(unsafe { libc::epoll_create1(libc::EPOLL_CLOEXEC) })?,
+        })
     }
 
     fn ctl(&self, op: libc::c_int, fd: RawFd, events: u32, token: u64) -> io::Result<()> {
@@ -88,11 +90,15 @@ impl Epoll {
     /// Wait for events. A negative timeout waits forever.
     pub fn wait(&self, timeout_ms: i32) -> Vec<(u64, u32)> {
         let mut evs = [libc::epoll_event { events: 0, u64: 0 }; 32];
-        let n = unsafe { libc::epoll_wait(self.fd, evs.as_mut_ptr(), evs.len() as i32, timeout_ms) };
+        let n =
+            unsafe { libc::epoll_wait(self.fd, evs.as_mut_ptr(), evs.len() as i32, timeout_ms) };
         if n <= 0 {
             return Vec::new();
         }
-        evs[..n as usize].iter().map(|e| (e.u64, e.events)).collect()
+        evs[..n as usize]
+            .iter()
+            .map(|e| (e.u64, e.events))
+            .collect()
     }
 }
 
@@ -106,8 +112,16 @@ pub fn signal_fd() -> io::Result<RawFd> {
         libc::sigaddset(&mut set, libc::SIGTERM);
         libc::sigaddset(&mut set, libc::SIGINT);
         libc::sigaddset(&mut set, libc::SIGHUP);
-        cvt(libc::sigprocmask(libc::SIG_BLOCK, &set, std::ptr::null_mut()))?;
-        cvt(libc::signalfd(-1, &set, libc::SFD_NONBLOCK | libc::SFD_CLOEXEC))
+        cvt(libc::sigprocmask(
+            libc::SIG_BLOCK,
+            &set,
+            std::ptr::null_mut(),
+        ))?;
+        cvt(libc::signalfd(
+            -1,
+            &set,
+            libc::SFD_NONBLOCK | libc::SFD_CLOEXEC,
+        ))
     }
 }
 
@@ -115,7 +129,11 @@ pub fn signal_fd() -> io::Result<RawFd> {
 pub fn read_signal(fd: RawFd) -> Option<i32> {
     let mut info: libc::signalfd_siginfo = unsafe { std::mem::zeroed() };
     let n = unsafe {
-        libc::read(fd, &mut info as *mut _ as *mut libc::c_void, std::mem::size_of::<libc::signalfd_siginfo>())
+        libc::read(
+            fd,
+            &mut info as *mut _ as *mut libc::c_void,
+            std::mem::size_of::<libc::signalfd_siginfo>(),
+        )
     };
     if n as usize == std::mem::size_of::<libc::signalfd_siginfo>() {
         Some(info.ssi_signo as i32)
@@ -130,14 +148,21 @@ pub struct Pty {
 }
 
 pub fn set_winsize(fd: RawFd, cols: u16, rows: u16) -> io::Result<()> {
-    let ws = libc::winsize { ws_row: rows, ws_col: cols, ws_xpixel: 0, ws_ypixel: 0 };
+    let ws = libc::winsize {
+        ws_row: rows,
+        ws_col: cols,
+        ws_xpixel: 0,
+        ws_ypixel: 0,
+    };
     cvt(unsafe { libc::ioctl(fd, libc::TIOCSWINSZ, &ws) })?;
     Ok(())
 }
 
 pub fn open_pty(cols: u16, rows: u16) -> io::Result<Pty> {
     unsafe {
-        let master = cvt(libc::posix_openpt(libc::O_RDWR | libc::O_NOCTTY | libc::O_CLOEXEC))?;
+        let master = cvt(libc::posix_openpt(
+            libc::O_RDWR | libc::O_NOCTTY | libc::O_CLOEXEC,
+        ))?;
         let fail = |e: io::Error| {
             libc::close(master);
             e
@@ -150,7 +175,10 @@ pub fn open_pty(cols: u16, rows: u16) -> io::Result<Pty> {
         }
         set_winsize(master, cols, rows).map_err(fail)?;
         set_nonblocking(master).map_err(fail)?;
-        Ok(Pty { master, slave_path: CStr::from_ptr(name.as_ptr()).to_owned() })
+        Ok(Pty {
+            master,
+            slave_path: CStr::from_ptr(name.as_ptr()).to_owned(),
+        })
     }
 }
 
@@ -161,7 +189,12 @@ pub struct Child {
 
 /// Start the program with the pty slave as its controlling terminal and its
 /// stdin, stdout and stderr. An exec failure is reported with its errno.
-pub fn spawn(program: &CString, argv: &[CString], envp: &[CString], slave: &CString) -> io::Result<Child> {
+pub fn spawn(
+    program: &CString,
+    argv: &[CString],
+    envp: &[CString],
+    slave: &CString,
+) -> io::Result<Child> {
     let mut argv_ptrs: Vec<*const libc::c_char> = argv.iter().map(|a| a.as_ptr()).collect();
     argv_ptrs.push(std::ptr::null());
     let mut envp_ptrs: Vec<*const libc::c_char> = envp.iter().map(|a| a.as_ptr()).collect();
@@ -205,13 +238,30 @@ pub fn spawn(program: &CString, argv: &[CString], envp: &[CString], slave: &CStr
                 }
             }
             // Close everything but stdio and the error pipe.
-            libc::syscall(libc::SYS_close_range, 3 as libc::c_uint, (err_fd - 1) as libc::c_uint, 0 as libc::c_uint);
-            libc::syscall(libc::SYS_close_range, (err_fd + 1) as libc::c_uint, u32::MAX as libc::c_uint, 0 as libc::c_uint);
+            libc::syscall(
+                libc::SYS_close_range,
+                3 as libc::c_uint,
+                (err_fd - 1) as libc::c_uint,
+                0 as libc::c_uint,
+            );
+            libc::syscall(
+                libc::SYS_close_range,
+                (err_fd + 1) as libc::c_uint,
+                u32::MAX as libc::c_uint,
+                0 as libc::c_uint,
+            );
             // The host blocks some signals and ignores SIGPIPE; undo both.
             let mut set: libc::sigset_t = std::mem::zeroed();
             libc::sigemptyset(&mut set);
             libc::sigprocmask(libc::SIG_SETMASK, &set, std::ptr::null_mut());
-            for sig in [libc::SIGPIPE, libc::SIGINT, libc::SIGTERM, libc::SIGHUP, libc::SIGQUIT, libc::SIGCHLD] {
+            for sig in [
+                libc::SIGPIPE,
+                libc::SIGINT,
+                libc::SIGTERM,
+                libc::SIGHUP,
+                libc::SIGQUIT,
+                libc::SIGCHLD,
+            ] {
                 libc::signal(sig, libc::SIG_DFL);
             }
             libc::execve(program.as_ptr(), argv_ptrs.as_ptr(), envp_ptrs.as_ptr());
@@ -223,7 +273,13 @@ pub fn spawn(program: &CString, argv: &[CString], envp: &[CString], slave: &CStr
     let mut errno_buf = [0u8; 4];
     let mut got = 0usize;
     loop {
-        let n = unsafe { libc::read(err_r, errno_buf[got..].as_mut_ptr() as *mut libc::c_void, 4 - got) };
+        let n = unsafe {
+            libc::read(
+                err_r,
+                errno_buf[got..].as_mut_ptr() as *mut libc::c_void,
+                4 - got,
+            )
+        };
         if n > 0 {
             got += n as usize;
             if got == 4 {
@@ -254,15 +310,34 @@ pub struct ExitStatus {
 /// Collect the exit status of a child that has exited.
 pub fn reap(pid: libc::pid_t) -> Option<ExitStatus> {
     let mut info: libc::siginfo_t = unsafe { std::mem::zeroed() };
-    let r = unsafe { libc::waitid(libc::P_PID, pid as libc::id_t, &mut info, libc::WEXITED | libc::WNOHANG) };
+    let r = unsafe {
+        libc::waitid(
+            libc::P_PID,
+            pid as libc::id_t,
+            &mut info,
+            libc::WEXITED | libc::WNOHANG,
+        )
+    };
     if r != 0 || unsafe { info.si_pid() } == 0 {
         return None;
     }
     let status = unsafe { info.si_status() };
     Some(match info.si_code {
-        libc::CLD_EXITED => ExitStatus { code: Some(status), signal: None, core_dumped: false },
-        libc::CLD_DUMPED => ExitStatus { code: None, signal: Some(status), core_dumped: true },
-        _ => ExitStatus { code: None, signal: Some(status), core_dumped: false },
+        libc::CLD_EXITED => ExitStatus {
+            code: Some(status),
+            signal: None,
+            core_dumped: false,
+        },
+        libc::CLD_DUMPED => ExitStatus {
+            code: None,
+            signal: Some(status),
+            core_dumped: true,
+        },
+        _ => ExitStatus {
+            code: None,
+            signal: Some(status),
+            core_dumped: false,
+        },
     })
 }
 
@@ -333,7 +408,13 @@ pub fn peer_uid(fd: RawFd) -> Option<libc::uid_t> {
     let mut cred: libc::ucred = unsafe { std::mem::zeroed() };
     let mut len = std::mem::size_of::<libc::ucred>() as libc::socklen_t;
     let r = unsafe {
-        libc::getsockopt(fd, libc::SOL_SOCKET, libc::SO_PEERCRED, &mut cred as *mut _ as *mut libc::c_void, &mut len)
+        libc::getsockopt(
+            fd,
+            libc::SOL_SOCKET,
+            libc::SO_PEERCRED,
+            &mut cred as *mut _ as *mut libc::c_void,
+            &mut len,
+        )
     };
     if r == 0 {
         Some(cred.uid)

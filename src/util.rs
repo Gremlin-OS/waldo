@@ -5,7 +5,10 @@ use std::io::Read;
 
 /// The current wall-clock time as RFC 3339 UTC with milliseconds.
 pub fn rfc3339_now() -> String {
-    let mut ts = libc::timespec { tv_sec: 0, tv_nsec: 0 };
+    let mut ts = libc::timespec {
+        tv_sec: 0,
+        tv_nsec: 0,
+    };
     unsafe { libc::clock_gettime(libc::CLOCK_REALTIME, &mut ts) };
     rfc3339(ts.tv_sec, (ts.tv_nsec / 1_000_000) as u32)
 }
@@ -37,7 +40,10 @@ pub fn rfc3339(secs: i64, millis: u32) -> String {
 
 /// Seconds since the epoch.
 pub fn unix_now() -> i64 {
-    let mut ts = libc::timespec { tv_sec: 0, tv_nsec: 0 };
+    let mut ts = libc::timespec {
+        tv_sec: 0,
+        tv_nsec: 0,
+    };
     unsafe { libc::clock_gettime(libc::CLOCK_REALTIME, &mut ts) };
     ts.tv_sec
 }
@@ -64,7 +70,9 @@ pub fn random_id(len: usize) -> String {
     const ALPHABET: &[u8] = b"abcdefghijklmnopqrstuvwxyz234567";
     let mut raw = vec![0u8; len];
     random_bytes(&mut raw);
-    raw.iter().map(|b| ALPHABET[(b & 31) as usize] as char).collect()
+    raw.iter()
+        .map(|b| ALPHABET[(b & 31) as usize] as char)
+        .collect()
 }
 
 /// A duration for people: `0.2s`, `54.6s`.
@@ -87,7 +95,9 @@ mod tests {
     fn ids() {
         let id = random_id(6);
         assert_eq!(id.len(), 6);
-        assert!(id.chars().all(|c| c.is_ascii_lowercase() || ('2'..='7').contains(&c)));
+        assert!(id
+            .chars()
+            .all(|c| c.is_ascii_lowercase() || ('2'..='7').contains(&c)));
         assert_ne!(random_id(12), random_id(12));
     }
 }
