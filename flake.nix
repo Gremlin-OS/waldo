@@ -72,6 +72,9 @@
           inherit waldo;
           waldo-wrap = only pkgs waldo "waldo-wrap";
           waldo-term = only pkgs waldo "waldo-term";
+          # The emulator library by itself, so that CI can build it once and
+          # keep it.
+          libghostty-vt = mkVt pkgs;
         }
       );
 
