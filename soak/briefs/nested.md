@@ -43,11 +43,11 @@ that session's screen, so you will see status lines nested.
 2. In boss's shell start workers w1, w2, w3, one call each; then
    `waldo-term list`.
 3. One job per worker, by typing `waldo-term send -s wN --text '...; echo
-   "rc=$?"' --keys '<Enter>' --until match --pattern '^rc='` into boss: one
+   "rc=$?"' --keys '<Enter>' --until-match '^rc='` into boss: one
    that writes and reads a file, one with several lines of output, one that
    fails. Copy the whole response each time.
 4. A slow job with `--timeout 1000` on the inner wait, then `waldo-term wait
-   -s w1 --until match --pattern '^rc='` typed into boss.
+   -s w1 --until-match '^rc='` typed into boss.
 5. All three at once: `for w in w1 w2 w3; do waldo-term send -s $w --text
    "echo hello from $w" --keys '<Enter>' & done; wait`. Is each answer
    whole?

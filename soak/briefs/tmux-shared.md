@@ -22,8 +22,8 @@ report when something was tmux's shared focus and not waldo.
    line `up` (retry every 5 s, at most 6 times), then type `tm attach -t
    arena`.
 2. `W match add -s t --id fin '^ALL DONE'`.
-3. Roll call: type `echo {NAME} here`, then `W wait -s t --until match
-   --pattern '^OTHER here' --timeout 90000` for each of the others. Quote
+3. Roll call: type `echo {NAME} here`, then `W wait -s t --until-match
+   --until-match '^OTHER here' --timeout 90000` for each of the others. Quote
    any garbled line exactly.
 4. Type `tm new-window -n {NAME}`. The status bar marks the current window
    with `*`. Append five lines to {NAME}.txt, ONE SEND CALL PER LINE (`echo
@@ -36,12 +36,12 @@ report when something was tmux's shared focus and not waldo.
 
 ## The end, which must not depend on one agent's pace
 
-- The others: `W wait -s t --until match --pattern '^ALL DONE' --timeout
+- The others: `W wait -s t --until-match '^ALL DONE' --timeout
   300000`, then `W match list -s t`, detach with `--keys '<C-b>d'`, run
-  `echo detached` in the shell, exit the shell with `--until exit`, `W list`, `W
+  `echo detached` in the shell, exit the shell with `--until-exit`, `W list`, `W
   gc --all`. Then type nothing more.
 - The host: do NOT end the session on a timer. Wait until all three
-  `NAME finished` lines have appeared (`W wait --until match` for each,
+  `NAME finished` lines have appeared (`W wait --until-match` for each,
   with a 5 minute timeout), then type `echo ALL DONE`, wait 30 s, detach,
   run `tm kill-server; echo cleaned` in the shell, exit, `W list`, `W gc
   --all`. If a `finished` line never comes, say so and end anyway.

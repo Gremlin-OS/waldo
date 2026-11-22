@@ -81,15 +81,7 @@ impl T {
     /// Start an interactive bash with a plain `$ ` prompt and wait for it.
     fn bash(&self, name: &str) {
         self.start(name, &["bash", "--norc", "--noprofile"]);
-        let r = self.term(&[
-            "wait",
-            "-s",
-            name,
-            "--until",
-            "match",
-            "--pattern",
-            r"^\$ $",
-        ]);
+        let r = self.term(&["wait", "-s", name, "--until-match", r"^\$ $"]);
         assert_eq!(
             r.code, 0,
             "bash did not show its prompt:\n{}\n{}",
@@ -112,9 +104,7 @@ impl T {
             &typed,
             "--keys",
             "<Enter>",
-            "--until",
-            "match",
-            "--pattern",
+            "--until-match",
             &pattern,
             "--timeout",
             "30000",
@@ -388,15 +378,7 @@ fn vim_edit_write_quit() {
         &["vim", "--clean", "-i", "NONE", file.to_str().unwrap()],
     );
 
-    let r = t.term(&[
-        "wait",
-        "-s",
-        "vi",
-        "--until",
-        "match",
-        "--pattern",
-        r"main\.c",
-    ]);
+    let r = t.term(&["wait", "-s", "vi", "--until-match", r"main\.c"]);
     assert_eq!(r.code, 0, "{}\n{}", r.out, r.err);
     assert!(
         status_line(&r.out).contains(" alt "),
@@ -432,9 +414,7 @@ fn vim_edit_write_quit() {
         "vi",
         "--keys",
         "<Esc>:w<Enter>",
-        "--until",
-        "match",
-        "--pattern",
+        "--until-match",
         "written",
     ]);
     assert_eq!(r.code, 0, "{}\n{}", r.out, r.err);
@@ -444,7 +424,7 @@ fn vim_edit_write_quit() {
         "#include <stdio.h>\nint x = 1 << 3;\n"
     );
 
-    let r = t.term(&["send", "-s", "vi", "--keys", ":q<Enter>", "--until", "exit"]);
+    let r = t.term(&["send", "-s", "vi", "--keys", ":q<Enter>", "--until-exit"]);
     assert_eq!(r.code, 0, "{}\n{}", r.out, r.err);
     let will = t.will("vi");
     assert_eq!(will["exit_code"], 0);
@@ -517,7 +497,7 @@ fn settle_during_a_silent_job_carries_a_hint() {
         r.out
     );
     assert!(!r.out.contains("hint:"), "{}", r.out);
-    let r = t.term(&["wait", "-s", "h1", "--until", "settle"]);
+    let r = t.term(&["wait", "-s", "h1", "--until-settle"]);
     assert!(status_line(&r.out).contains("fg=sleep"), "{}", r.out);
     assert!(!r.out.contains("hint:"), "{}", r.out);
     // At the prompt there is no hint.
@@ -525,15 +505,13 @@ fn settle_during_a_silent_job_carries_a_hint() {
         "wait",
         "-s",
         "h1",
-        "--until",
-        "match",
-        "--pattern",
+        "--until-match",
         r"\$ x$",
         "--timeout",
         "5000",
     ]);
     assert_eq!(r.code, 0, "{}", r.out);
-    let r = t.term(&["wait", "-s", "h1", "--until", "settle"]);
+    let r = t.term(&["wait", "-s", "h1", "--until-settle"]);
     assert!(!r.out.contains("hint:"), "{}", r.out);
     assert!(status_line(&r.out).contains("fg=bash"), "{}", r.out);
 }
@@ -554,9 +532,7 @@ fn bash_command_then_match_prompt_then_output() {
         "sleep 0.6; echo marker-$((6*7))",
         "--keys",
         "<Enter>",
-        "--until",
-        "match",
-        "--pattern",
+        "--until-match",
         r"^\$ $",
     ]);
     assert_eq!(code, 0);
@@ -587,9 +563,7 @@ fn bash_command_then_match_prompt_then_output() {
         "echo version=1.2.3",
         "--keys",
         "<Enter>",
-        "--until",
-        "match",
-        "--pattern",
+        "--until-match",
         r"^version=(\d+)\.(\d+)",
     ]);
     assert_eq!(v["match"]["groups"], serde_json::json!(["1", "2"]));
@@ -617,9 +591,7 @@ fn prompt_with_echo_off_and_no_newline() {
         "read -s -p 'Password: ' pw; echo; echo got=$pw",
         "--keys",
         "<Enter>",
-        "--until",
-        "match",
-        "--pattern",
+        "--until-match",
         "assword: $",
     ]);
     assert_eq!(r.code, 0, "{}\n{}", r.out, r.err);
@@ -627,17 +599,7 @@ fn prompt_with_echo_off_and_no_newline() {
     // The secret comes from stdin, not the command line, and is not echoed.
     let mut child = t
         .command(TERM)
-        .args([
-            "send",
-            "-s",
-            "pw",
-            "--text",
-            "-",
-            "--until",
-            "match",
-            "--pattern",
-            "^got=",
-        ])
+        .args(["send", "-s", "pw", "--text", "-", "--until-match", "^got="])
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .spawn()
@@ -667,9 +629,7 @@ fn match_sees_lines_that_scroll_past() {
         "seq 1 2000 | sed 's/^777$/needle-777/'",
         "--keys",
         "<Enter>",
-        "--until",
-        "match",
-        "--pattern",
+        "--until-match",
         "^needle-(\\d+)$",
     ]);
     assert_eq!(code, 0);
@@ -681,23 +641,23 @@ fn match_sees_lines_that_scroll_past() {
 fn bad_pattern_is_a_usage_error() {
     let t = T::new();
     t.bash("bp");
-    let r = t.term(&[
-        "wait",
-        "-s",
-        "bp",
-        "--until",
-        "match",
-        "--pattern",
-        "(unclosed",
-    ]);
+    let r = t.term(&["wait", "-s", "bp", "--until-match", "(unclosed"]);
     assert_eq!(r.code, 2);
     assert!(r.err.contains("bad_pattern"), "{}", r.err);
+    let r = t.term(&["wait", "-s", "bp", "--until-match", ""]);
+    assert_eq!(r.code, 2);
+    assert!(r.err.contains("bad_pattern"), "{}", r.err);
+    // The spelling before each condition had its own option says where to look.
     let r = t.term(&["wait", "-s", "bp", "--until", "match"]);
     assert_eq!(r.code, 2);
-    assert!(r.err.contains("missing_pattern"), "{}", r.err);
-    let r = t.term(&["wait", "-s", "bp", "--until", "sometime"]);
+    assert!(r.err.contains("--until-match RE"), "{}", r.err);
+    let r = t.term(&["wait", "-s", "bp", "--until-sometime"]);
     assert_eq!(r.code, 2);
-    assert!(r.err.contains("unknown_until"), "{}", r.err);
+    assert!(
+        r.err.contains("does not take --until-sometime"),
+        "{}",
+        r.err
+    );
 }
 
 // ---- file items and paste -------------------------------------------------------------
@@ -715,9 +675,7 @@ fn file_items() {
         "fi",
         "--text-file",
         "cmd.txt",
-        "--until",
-        "match",
-        "--pattern",
+        "--until-match",
         "^from-file$",
     ]);
     assert_eq!(r.code, 0, "{}\n{}", r.out, r.err);
@@ -730,9 +688,7 @@ fn file_items() {
         "fi",
         "--keys-file",
         keys.to_str().unwrap(),
-        "--until",
-        "match",
-        "--pattern",
+        "--until-match",
         "^keyed$",
     ]);
     assert_eq!(r.code, 0, "{}\n{}", r.out, r.err);
@@ -763,16 +719,8 @@ fn paste_is_one_piece() {
         &["vim", "--clean", "-i", "NONE", file.to_str().unwrap()],
     );
     assert_eq!(
-        t.term(&[
-            "wait",
-            "-s",
-            "pa",
-            "--until",
-            "match",
-            "--pattern",
-            r"p\.txt"
-        ])
-        .code,
+        t.term(&["wait", "-s", "pa", "--until-match", r"p\.txt"])
+            .code,
         0
     );
     // In insert mode with autoindent, typed lines would gain indentation; a
@@ -788,8 +736,7 @@ fn paste_is_one_piece() {
         body,
         "--keys",
         "<Esc>:wq<Enter>",
-        "--until",
-        "exit",
+        "--until-exit",
     ]);
     assert_eq!(r.code, 0, "{}\n{}", r.out, r.err);
     assert_eq!(std::fs::read_to_string(&file).unwrap(), format!("{body}\n"));
@@ -939,9 +886,7 @@ fn child_exit_ends_a_wait_early() {
         "wait",
         "-s",
         "ce",
-        "--until",
-        "match",
-        "--pattern",
+        "--until-match",
         "never-appears",
         "--timeout",
         "20000",
@@ -970,13 +915,13 @@ fn a_screen_that_never_settles_times_out() {
         ],
     );
     let began = Instant::now();
-    let r = t.term(&["wait", "-s", "ns", "--until", "settle", "--timeout", "700"]);
+    let r = t.term(&["wait", "-s", "ns", "--until-settle", "--timeout", "700"]);
     assert_eq!(r.code, 124, "{}\n{}", r.out, r.err);
     assert!(began.elapsed() >= Duration::from_millis(700));
     assert!(status_line(&r.out).starts_with("[ns timeout "), "{}", r.out);
     assert!(
         r.out.contains(
-            "hint: the screen never went quiet; wait for specific text with --until match."
+            "hint: the screen never went quiet; wait for specific text with --until-match."
         ),
         "{}",
         r.out
@@ -1090,14 +1035,7 @@ fn resize_during_output_soak() {
     let end = Instant::now() + Duration::from_secs(60);
     loop {
         // Without waiting for a redraw: the point is many resizes mid-output.
-        let r = t.term(&[
-            "resize",
-            "-s",
-            "so",
-            "--until",
-            "none",
-            sizes[n % sizes.len()],
-        ]);
+        let r = t.term(&["resize", "-s", "so", "--until-none", sizes[n % sizes.len()]]);
         assert_eq!(r.code, 0, "resize {n} failed: {}\n{}", r.out, r.err);
         n += 1;
         if r.out.contains("soak-done") && sizes[(n - 1) % sizes.len()] == "80x24" {
@@ -1107,7 +1045,7 @@ fn resize_during_output_soak() {
     }
     assert!(n >= 8, "only {n} resizes happened during the output");
     // Still alive and coherent after all that.
-    let r = t.term(&["wait", "-s", "so", "--until", "settle"]);
+    let r = t.term(&["wait", "-s", "so", "--until-settle"]);
     assert_eq!(r.code, 0, "{}", r.err);
     let o = t.term(&["output", "-s", "so", "--tail", "2"]);
     assert_eq!(o.out, "row 100000 abcdefghijklmnopqrstuvwxyz0123456789abcdefghijklmnopqrstuvwxyz0123456789 end\nsoak-done\n", "{}", o.out);
@@ -1136,7 +1074,7 @@ fn plain_http_as_curl_would_send_it() {
     let resp = raw_http(
         socket,
         &format!(
-            "POST /v1/input?until=match&pattern=%5Evia-http%24&format=text HTTP/1.1\r\nHost: waldo\r\nContent-Type: application/x-www-form-urlencoded\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+            "POST /v1/input?until_match=%5Evia-http%24&format=text HTTP/1.1\r\nHost: waldo\r\nContent-Type: application/x-www-form-urlencoded\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
             body.len()
         ),
     );
@@ -1292,7 +1230,7 @@ fn settle_waits_for_the_first_output() {
     // A program that is slow to draw: a blank screen is not a settled one.
     t.start("fo", &["sh", "-c", "sleep 1; echo up; sleep 30"]);
     let began = Instant::now();
-    let r = t.term(&["screen", "-s", "fo", "--until", "settle"]);
+    let r = t.term(&["screen", "-s", "fo", "--until-settle"]);
     assert_eq!(r.code, 0, "{}\n{}", r.out, r.err);
     assert!(
         began.elapsed() >= Duration::from_millis(900),
@@ -1303,7 +1241,7 @@ fn settle_waits_for_the_first_output() {
 
     // A program that never prints runs to the deadline, and says why.
     t.start("fs", &["sleep", "30"]);
-    let r = t.term(&["wait", "-s", "fs", "--until", "settle", "--timeout", "500"]);
+    let r = t.term(&["wait", "-s", "fs", "--until-settle", "--timeout", "500"]);
     assert_eq!(r.code, 124, "{}", r.out);
     assert!(
         r.out
@@ -1349,9 +1287,7 @@ fn styled_screen_keeps_colour_codes() {
         "<Enter>",
         "--style",
         "ansi",
-        "--until",
-        "match",
-        "--pattern",
+        "--until-match",
         "^bar$",
     ]);
     assert!(
@@ -1383,9 +1319,7 @@ impl T {
             "wait",
             "-s",
             viewer,
-            "--until",
-            "match",
-            "--pattern",
+            "--until-match",
             &format!("waldo {target} "),
         ]);
         assert_eq!(
@@ -1412,8 +1346,7 @@ fn attach_shows_the_session_and_is_view_only() {
     ]);
     assert_eq!(r.code, 0, "{}", r.err);
     assert_eq!(
-        t.term(&["wait", "-s", "a", "--until", "match", "--pattern", r"^\$ $"])
-            .code,
+        t.term(&["wait", "-s", "a", "--until-match", r"^\$ $"]).code,
         0
     );
 
@@ -1430,15 +1363,7 @@ fn attach_shows_the_session_and_is_view_only() {
 
     // What happens in the session shows up in the viewer.
     assert_eq!(t.sh("a", "echo seen-by-viewer").code, 0);
-    let v = t.term(&[
-        "wait",
-        "-s",
-        "v",
-        "--until",
-        "match",
-        "--pattern",
-        "^seen-by-viewer$",
-    ]);
+    let v = t.term(&["wait", "-s", "v", "--until-match", "^seen-by-viewer$"]);
     assert_eq!(v.code, 0, "{}", v.out);
 
     // View only: typing in the viewer does not reach the session.
@@ -1462,9 +1387,7 @@ fn attach_shows_the_session_and_is_view_only() {
         "v",
         "--keys",
         "<C-]>",
-        "--until",
-        "match",
-        "--pattern",
+        "--until-match",
         "TYPING",
     ]);
     assert_eq!(v.code, 0, "{}", v.out);
@@ -1477,15 +1400,7 @@ fn attach_shows_the_session_and_is_view_only() {
         "--keys",
         "<Enter>",
     ]);
-    let a = t.term(&[
-        "wait",
-        "-s",
-        "a",
-        "--until",
-        "match",
-        "--pattern",
-        "^typed-in-viewer$",
-    ]);
+    let a = t.term(&["wait", "-s", "a", "--until-match", "^typed-in-viewer$"]);
     assert_eq!(a.code, 0, "{}", a.out);
 
     // Ctrl-] again stops typing, and nothing more reaches the session.
@@ -1496,9 +1411,7 @@ fn attach_shows_the_session_and_is_view_only() {
         "v",
         "--keys",
         "<C-]>",
-        "--until",
-        "match",
-        "--pattern",
+        "--until-match",
         "view only",
     ]);
     assert_eq!(v.code, 0, "{}", v.out);
@@ -1506,7 +1419,7 @@ fn attach_shows_the_session_and_is_view_only() {
     t.term(&["send", "-s", "v", "--text", "xyz"]);
     std::thread::sleep(Duration::from_millis(200));
     assert_eq!(before, t.term(&["screen", "-s", "a"]).out);
-    let v = t.term(&["send", "-s", "v", "--keys", "<C-c>", "--until", "exit"]);
+    let v = t.term(&["send", "-s", "v", "--keys", "<C-c>", "--until-exit"]);
     assert_eq!(v.code, 0, "{}\n{}", v.out, v.err);
     let will = t.will("v");
     assert_eq!(will["exit_code"], 0);
@@ -1541,15 +1454,13 @@ fn attach_shows_colour_and_reports_agent_requests() {
     ]);
     assert_eq!(r.code, 0, "{}", r.err);
     assert_eq!(
-        t.term(&["wait", "-s", "a", "--until", "match", "--pattern", r"^\$ $"])
-            .code,
+        t.term(&["wait", "-s", "a", "--until-match", r"^\$ $"]).code,
         0
     );
     t.attach("v", "100x20", "a", &[]);
     assert_eq!(t.sh("a", r"printf '\033[1;31mRED\033[0m\n'").code, 0);
     assert_eq!(
-        t.term(&["wait", "-s", "v", "--until", "match", "--pattern", "^RED$"])
-            .code,
+        t.term(&["wait", "-s", "v", "--until-match", "^RED$"]).code,
         0
     );
     // The viewer's terminal received the colour, not just the letters.
@@ -1563,9 +1474,7 @@ fn attach_shows_colour_and_reports_agent_requests() {
             "wait",
             "-s",
             "a",
-            "--until",
-            "match",
-            "--pattern",
+            "--until-match",
             "never-shown",
             "--timeout",
             "3000",
@@ -1577,9 +1486,7 @@ fn attach_shows_colour_and_reports_agent_requests() {
         "wait",
         "-s",
         "v",
-        "--until",
-        "match",
-        "--pattern",
+        "--until-match",
         "agent request in flight",
         "--timeout",
         "2500",
@@ -1599,15 +1506,7 @@ fn attach_to_a_larger_session_is_cropped_and_never_resizes_it() {
     // The cropped view follows the cursor: fill the session's screen and the
     // newest line is still visible to the viewer.
     assert_eq!(t.sh("a", "seq 1 40; echo bottom-line").code, 0);
-    let v = t.term(&[
-        "wait",
-        "-s",
-        "v",
-        "--until",
-        "match",
-        "--pattern",
-        "^bottom-line$",
-    ]);
+    let v = t.term(&["wait", "-s", "v", "--until-match", "^bottom-line$"]);
     assert_eq!(v.code, 0, "{}", v.out);
 }
 
@@ -1627,24 +1526,15 @@ fn attach_resize_takes_the_viewers_size_and_gives_it_back() {
     ]);
     assert_eq!(r.code, 0, "{}", r.err);
     assert_eq!(
-        t.term(&["wait", "-s", "a", "--until", "match", "--pattern", r"^\$ $"])
-            .code,
+        t.term(&["wait", "-s", "a", "--until-match", r"^\$ $"]).code,
         0
     );
     t.attach("v", "100x20", "a", &["--resize"]);
-    let v = t.term(&[
-        "wait",
-        "-s",
-        "v",
-        "--until",
-        "match",
-        "--pattern",
-        "waldo a  100x19",
-    ]);
+    let v = t.term(&["wait", "-s", "v", "--until-match", "waldo a  100x19"]);
     assert_eq!(v.code, 0, "{}", v.out);
     assert_eq!(t.sh("a", "stty size").out, "19 100");
     assert_eq!(
-        t.term(&["send", "-s", "v", "--keys", "<C-c>", "--until", "exit"])
+        t.term(&["send", "-s", "v", "--keys", "<C-c>", "--until-exit"])
             .code,
         0
     );
@@ -1667,7 +1557,7 @@ fn attach_ends_with_the_session() {
         ],
     );
     t.attach("v", "100x20", "a", &[]);
-    let v = t.term(&["wait", "-s", "v", "--until", "exit", "--timeout", "8000"]);
+    let v = t.term(&["wait", "-s", "v", "--until-exit", "--timeout", "8000"]);
     assert_eq!(v.code, 0, "{}\n{}", v.out, v.err);
     let will = t.will("v");
     // The viewer exits the way any command does when the program has ended.
@@ -1743,20 +1633,19 @@ fn a_key_after_text_arrives_separately() {
         printf 'then %s %s\\r\\n' \"$kind\" \"$second\"; stty sane";
     t.start("kt", &["bash", "--norc", "--noprofile", "-c", program]);
     assert_eq!(
-        t.term(&[
-            "wait",
-            "-s",
-            "kt",
-            "--until",
-            "match",
-            "--pattern",
-            "^ready$"
-        ])
-        .code,
+        t.term(&["wait", "-s", "kt", "--until-match", "^ready$"])
+            .code,
         0
     );
     let r = t.term(&[
-        "send", "-s", "kt", "--text", "hello", "--keys", "<Enter>", "--until", "exit",
+        "send",
+        "-s",
+        "kt",
+        "--text",
+        "hello",
+        "--keys",
+        "<Enter>",
+        "--until-exit",
     ]);
     assert_eq!(r.code, 0, "{}\n{}", r.out, r.err);
     let will = t.will("kt");
@@ -1804,16 +1693,8 @@ fn kill_ends_a_session_and_waits() {
         ],
     );
     assert_eq!(
-        t.term(&[
-            "wait",
-            "-s",
-            "st",
-            "--until",
-            "match",
-            "--pattern",
-            "^armed$"
-        ])
-        .code,
+        t.term(&["wait", "-s", "st", "--until-match", "^armed$"])
+            .code,
         0
     );
     let began = Instant::now();
@@ -2374,8 +2255,7 @@ fn a_repaint_between_settles_does_not_fire_again() {
         "rp",
         "--keys",
         "<Enter>",
-        "--until",
-        "exit",
+        "--until-exit",
         "--timeout",
         "20000",
     ]);
@@ -2523,7 +2403,7 @@ fn an_exit_answer_means_the_lock_is_free() {
         t.start(&name, &["sleep", "60"]);
         let dir = t.session_dir(&name);
         let mut s = UnixStream::connect(dir.join("sock")).unwrap();
-        let body = r#"{"wait":{"until":"exit"},"timeout_ms":10000}"#;
+        let body = r#"{"wait":{"until_exit":true},"timeout_ms":10000}"#;
         write!(s, "POST /v1/wait HTTP/1.1\r\nHost: waldo\r\nContent-Type: application/json\r\nContent-Length: {}\r\n\r\n{body}", body.len()).unwrap();
         assert_eq!(t.term(&["signal", "-s", &name, "--stop"]).code, 0);
         // The first bytes of the answer, not the end of the connection: the
@@ -2595,16 +2475,8 @@ fn resize_waits_for_the_program_to_redraw() {
     let program = "trap 'sleep 0.1; echo \"now $(stty size)\"' WINCH; echo ready; while true; do sleep 0.05; done";
     t.start("rw", &["bash", "--norc", "--noprofile", "-c", program]);
     assert_eq!(
-        t.term(&[
-            "wait",
-            "-s",
-            "rw",
-            "--until",
-            "match",
-            "--pattern",
-            "^ready$"
-        ])
-        .code,
+        t.term(&["wait", "-s", "rw", "--until-match", "^ready$"])
+            .code,
         0
     );
     let r = t.term(&["resize", "-s", "rw", "100x20"]);
@@ -2625,7 +2497,7 @@ fn resize_waits_for_the_program_to_redraw() {
             "i=0; while true; do i=$((i+1)); printf '\\r%s' $i; sleep 0.05; done",
         ],
     );
-    assert_eq!(t.term(&["wait", "-s", "rb", "--until", "change"]).code, 0);
+    assert_eq!(t.term(&["wait", "-s", "rb", "--until-change"]).code, 0);
     let began = Instant::now();
     let r = t.term(&["resize", "-s", "rb", "90x20"]);
     assert_eq!(r.code, 0, "{}\n{}", r.out, r.err);
@@ -2653,9 +2525,7 @@ fn timeout_hints_say_why() {
         "th",
         "--text",
         "x",
-        "--until",
-        "match",
-        "--pattern",
+        "--until-match",
         r"^\$ ",
         "--timeout",
         "400",
@@ -2673,16 +2543,14 @@ fn timeout_hints_say_why() {
         "wait",
         "-s",
         "th",
-        "--until",
-        "match",
-        "--pattern",
+        "--until-match",
         r"^\$ ",
         "--timeout",
         "400",
     ]);
     assert_eq!(r.code, 0, "{}", r.out);
     // Waiting for the end of a session that is still at its shell.
-    let r = t.term(&["wait", "-s", "th", "--until", "exit", "--timeout", "300"]);
+    let r = t.term(&["wait", "-s", "th", "--until-exit", "--timeout", "300"]);
     assert_eq!(r.code, 124, "{}", r.out);
     assert!(
         r.out
@@ -2758,7 +2626,7 @@ fn concurrent_sends(per_client: usize) {
             }
         }
     }
-    assert_eq!(t.term(&["wait", "-s", "cs", "--until", "settle"]).code, 0);
+    assert_eq!(t.term(&["wait", "-s", "cs", "--until-settle"]).code, 0);
     let out = t.term(&["output", "-s", "cs"]).out;
     // Each request's text and its Enter stay together: no line is mixed.
     let mut typed: Vec<&str> = out.lines().filter(|l| l.starts_with("$ echo ")).collect();
@@ -2823,7 +2691,7 @@ fn a_signal_waits_for_the_request_being_typed() {
     let typed = typist.join().unwrap();
     assert_eq!(typed.code, 0, "{}", typed.err);
     let v: Value = serde_json::from_str(&typed.out).unwrap();
-    assert_eq!(t.term(&["wait", "-s", "sq", "--until", "settle"]).code, 0);
+    assert_eq!(t.term(&["wait", "-s", "sq", "--until-settle"]).code, 0);
     let out = t.term(&["output", "-s", "sq"]).out;
     assert!(
         out.lines().any(|l| l == "one-two-three-four-five-six"),
@@ -2843,16 +2711,8 @@ fn a_signal_does_not_wait_for_a_program_that_is_not_reading() {
     let t = T::new();
     t.start("nr", &["sh", "-c", "stty raw -echo; echo ready; sleep 60"]);
     assert_eq!(
-        t.term(&[
-            "wait",
-            "-s",
-            "nr",
-            "--until",
-            "match",
-            "--pattern",
-            "^ready"
-        ])
-        .code,
+        t.term(&["wait", "-s", "nr", "--until-match", "^ready"])
+            .code,
         0
     );
     // Far more input than the terminal will hold for a program that never
@@ -2865,14 +2725,13 @@ fn a_signal_does_not_wait_for_a_program_that_is_not_reading() {
         "nr",
         "--text-file",
         big.to_str().unwrap(),
-        "--until",
-        "none",
+        "--until-none",
     ]);
     assert_eq!(r.code, 0, "{}", r.err);
     std::thread::sleep(Duration::from_millis(300));
     let began = Instant::now();
     assert_eq!(t.term(&["signal", "-s", "nr", "SIGTERM"]).code, 0);
-    let r = t.term(&["wait", "-s", "nr", "--until", "exit", "--timeout", "5000"]);
+    let r = t.term(&["wait", "-s", "nr", "--until-exit", "--timeout", "5000"]);
     assert_eq!(r.code, 0, "{}\n{}", r.out, r.err);
     assert!(
         began.elapsed() < Duration::from_secs(4),
@@ -2901,16 +2760,8 @@ fn typing_reaches_the_bottom_of_two_attaches() {
         ]);
         assert_eq!(r.code, 0, "{}", r.err);
         assert_eq!(
-            t.term(&[
-                "wait",
-                "-s",
-                name,
-                "--until",
-                "match",
-                "--pattern",
-                r"^\$ $"
-            ])
-            .code,
+            t.term(&["wait", "-s", name, "--until-match", r"^\$ $"])
+                .code,
             0
         );
     }
@@ -2923,9 +2774,7 @@ fn typing_reaches_the_bottom_of_two_attaches() {
         &format!("{TERM} attach -s b3 --drive"),
         "--keys",
         "<Enter>",
-        "--until",
-        "match",
-        "--pattern",
+        "--until-match",
         "waldo b3 ",
     ]);
     assert_eq!(r.code, 0, "{}\n{}", r.out, r.err);
@@ -2937,9 +2786,7 @@ fn typing_reaches_the_bottom_of_two_attaches() {
         &format!("{TERM} attach -s b2 --drive"),
         "--keys",
         "<Enter>",
-        "--until",
-        "match",
-        "--pattern",
+        "--until-match",
         "waldo b2 ",
     ]);
     assert_eq!(r.code, 0, "{}\n{}", r.out, r.err);
@@ -2954,9 +2801,7 @@ fn typing_reaches_the_bottom_of_two_attaches() {
         "echo through-two",
         "--keys",
         "<Enter>",
-        "--until",
-        "match",
-        "--pattern",
+        "--until-match",
         "^through-two$",
     ]);
     assert_eq!(r.code, 0, "{}\n{}", r.out, r.err);
@@ -2978,16 +2823,14 @@ fn typing_reaches_the_bottom_of_two_attaches() {
         "wait",
         "-s",
         "b2",
-        "--until",
-        "match",
-        "--pattern",
+        "--until-match",
         r"^\$ $",
         "--timeout",
         "5000",
     ]);
     assert_eq!(r.code, 0, "{}\n{}", r.out, r.err);
     assert!(status_line(&r.out).contains("fg=bash"), "{}", r.out);
-    let top = t.term(&["wait", "-s", "b1", "--until", "settle"]).out;
+    let top = t.term(&["wait", "-s", "b1", "--until-settle"]).out;
     assert!(
         status_line(&top).contains("fg=waldo-term") && top.contains("waldo b2  100x26"),
         "{top}"
@@ -3001,9 +2844,7 @@ fn typing_reaches_the_bottom_of_two_attaches() {
         "b1",
         "--keys",
         "<C-]><C-c>",
-        "--until",
-        "match",
-        "--pattern",
+        "--until-match",
         "^left 'b2'",
     ]);
     assert_eq!(r.code, 0, "{}\n{}", r.out, r.err);
@@ -3050,9 +2891,7 @@ fn a_marker_tells_when_a_command_ended_and_how() {
         "sleep 30; echo \"never=$?\"",
         "--keys",
         "<Enter>",
-        "--until",
-        "match",
-        "--pattern",
+        "--until-match",
         "^never=",
         "--timeout",
         "500",
@@ -3077,7 +2916,7 @@ fn waldo_inside_waldo_three_deep() {
     assert_eq!(r.code, 0, "{}", r.out);
     assert_eq!(r.out.lines().next(), Some("session=n2"), "{}", r.out);
     let start3 = format!(
-        "{TERM} send -s n2 --text '{WRAP} --detach --name n3 --size 80x20 -- bash --norc --noprofile' --keys '<Enter>' --until match --pattern '^session=n3$'"
+        "{TERM} send -s n2 --text '{WRAP} --detach --name n3 --size 80x20 -- bash --norc --noprofile' --keys '<Enter>' --until-match '^session=n3$'"
     );
     let r = t.sh("n1", &start3);
     assert_eq!(r.code, 0, "{}", r.out);
@@ -3090,7 +2929,7 @@ fn waldo_inside_waldo_three_deep() {
     // A command at the bottom, typed through both layers: each layer prints
     // the screen of the one below, with its status line.
     let deep = format!(
-        "{TERM} send -s n2 --text \"{TERM} send -s n3 --text 'echo deep-\\$WALDO_SESSION' --keys '<Enter>' --until match --pattern '^deep-n3'\" --keys '<Enter>' --until match --pattern '^deep-n3'"
+        "{TERM} send -s n2 --text \"{TERM} send -s n3 --text 'echo deep-\\$WALDO_SESSION' --keys '<Enter>' --until-match '^deep-n3'\" --keys '<Enter>' --until-match '^deep-n3'"
     );
     let r = t.sh("n1", &deep);
     assert_eq!(r.code, 0, "{}", r.out);
@@ -3115,7 +2954,7 @@ fn waldo_inside_waldo_three_deep() {
 
     // Two sessions driven at once from the third: each gets its own line.
     let fan = format!(
-        "for s in n2 n3; do {TERM} send -s $s --text \"echo hello-from-$s\" --keys '<Enter>' --until match --pattern \"^hello-from-$s\" > /dev/null & done; wait"
+        "for s in n2 n3; do {TERM} send -s $s --text \"echo hello-from-$s\" --keys '<Enter>' --until-match \"^hello-from-$s\" > /dev/null & done; wait"
     );
     assert_eq!(t.sh("n1", &fan).code, 0);
     for s in ["n2", "n3"] {
@@ -3254,14 +3093,11 @@ fn protocol_endpoints_and_parameters_are_as_documented() {
     // Wait parameters are read from the query, the wait object, or the top
     // level of the body (section 3.1).
     for response in [
-        post("/v1/wait?until=match&pattern=%5E%5C%24%20%24", ""),
+        post("/v1/wait?until_match=%5E%5C%24%20%24", ""),
+        post("/v1/wait", r#"{"wait": {"until_match": "^\\$ $"}}"#),
         post(
             "/v1/wait",
-            r#"{"wait": {"until": "match", "pattern": "^\\$ $"}}"#,
-        ),
-        post(
-            "/v1/wait",
-            r#"{"until": "match", "pattern": "^\\$ $", "timeout_ms": "2000"}"#,
+            r#"{"until_match": ["never-there", "^\\$ $"], "timeout_ms": "2000"}"#,
         ),
     ] {
         let v = json(&response);
@@ -3304,7 +3140,7 @@ fn protocol_endpoints_and_parameters_are_as_documented() {
     // Text on request, except for triggers and errors (section 3.5).
     assert!(get("/v1/screen?format=text").contains("\r\n\r\n[pr none gen="));
     assert!(get("/v1/triggers?format=text").contains("Content-Type: application/json"));
-    assert!(get("/v1/screen?until=never&format=text").contains("\"error\":\"unknown_until\""));
+    assert!(get("/v1/screen?until=never&format=text").contains("\"error\":\"bad_until\""));
     assert!(raw_http(
         sock,
         "PUT /v1/screen HTTP/1.1\r\nHost: waldo\r\nConnection: close\r\n\r\n"
@@ -3353,7 +3189,7 @@ fn every_documented_error_can_be_provoked() {
     // A session that has exited and is lingering, for `exited`.
     let r = t.wrap(&["--detach", "--name", "lg", "--linger", "20", "--", "true"]);
     assert_eq!(r.code, 0, "{}", r.err);
-    assert_eq!(t.term(&["wait", "-s", "lg", "--until", "exit"]).code, 0);
+    assert_eq!(t.term(&["wait", "-s", "lg", "--until-exit"]).code, 0);
     let lingering = t
         .session_dir("lg")
         .join("sock")
@@ -3439,9 +3275,9 @@ fn every_documented_error_can_be_provoked() {
             ),
         ),
         (
-            "unknown_until",
+            "bad_until",
             &sock,
-            post("/v1/wait", r#"{"until": "never"}"#),
+            post("/v1/wait", r#"{"until": "match"}"#),
         ),
         (
             "unknown_style",
@@ -3461,15 +3297,11 @@ fn every_documented_error_can_be_provoked() {
                 r#"{"input": [{"keys": "ab"}], "key_delay_ms": 20000}"#,
             ),
         ),
-        (
-            "missing_pattern",
-            &sock,
-            post("/v1/wait", r#"{"until": "match"}"#),
-        ),
+        ("missing_pattern", &sock, trigger(r#"{"id": "nopat"}"#)),
         (
             "bad_pattern",
             &sock,
-            post("/v1/wait", r#"{"until": "match", "pattern": "("}"#),
+            post("/v1/wait", r#"{"until_match": "("}"#),
         ),
         ("bad_tail", &sock, get("/v1/output?tail=some")),
         (
@@ -3514,7 +3346,6 @@ fn every_documented_error_can_be_provoked() {
             &sock,
             post("/v1/broadcasts", r#"{"text": "hello", "as": "two words"}"#),
         ),
-        ("bad_after", &sock, get("/v1/screen?until=after")),
         (
             "broadcasts_off",
             &quiet,
@@ -3583,8 +3414,7 @@ fn a_request_can_slow_its_own_typing() {
     let start = |name: &str| {
         t.start(name, &["bash", "--norc", "--noprofile", "-c", program]);
         assert_eq!(
-            t.term(&["wait", "-s", name, "--until", "match", "--pattern", "^go$"])
-                .code,
+            t.term(&["wait", "-s", name, "--until-match", "^go$"]).code,
             0
         );
     };
@@ -3597,9 +3427,7 @@ fn a_request_can_slow_its_own_typing() {
         "d0",
         "--keys",
         "xy",
-        "--until",
-        "match",
-        "--pattern",
+        "--until-match",
         "^got",
         "--timeout",
         "1500",
@@ -3618,9 +3446,7 @@ fn a_request_can_slow_its_own_typing() {
         "800",
         "--keys",
         "y",
-        "--until",
-        "match",
-        "--pattern",
+        "--until-match",
         "^got",
     ]);
     assert_eq!(r.code, 0, "{}\n{}", r.out, r.err);
@@ -3636,9 +3462,7 @@ fn a_request_can_slow_its_own_typing() {
         "800",
         "--keys",
         "xy",
-        "--until",
-        "match",
-        "--pattern",
+        "--until-match",
         "^got",
     ]);
     assert_eq!(r.code, 0, "{}\n{}", r.out, r.err);
@@ -3684,16 +3508,8 @@ fn a_response_says_when_typing_changed_nothing() {
     // A program that reads nothing and echoes nothing: keys go nowhere.
     t.start("un", &["sh", "-c", "stty -echo; echo ready; sleep 30"]);
     assert_eq!(
-        t.term(&[
-            "wait",
-            "-s",
-            "un",
-            "--until",
-            "match",
-            "--pattern",
-            "^ready$"
-        ])
-        .code,
+        t.term(&["wait", "-s", "un", "--until-match", "^ready$"])
+            .code,
         0
     );
     let r = t.term(&["send", "-s", "un", "--keys", "abc"]);
@@ -3712,7 +3528,7 @@ fn a_response_says_when_typing_changed_nothing() {
     // A request that types nothing does not carry the field.
     let (_, v) = t.json(&["screen", "-s", "ch"]);
     assert!(v.get("changed").is_none(), "{v}");
-    let (_, v) = t.json(&["wait", "-s", "ch", "--until", "settle"]);
+    let (_, v) = t.json(&["wait", "-s", "ch", "--until-settle"]);
     assert!(v.get("changed").is_none(), "{v}");
 }
 
@@ -3730,9 +3546,7 @@ fn exit_waits_for_the_program_being_typed_into() {
             "vim --clean",
             "--keys",
             "<Enter>",
-            "--until",
-            "match",
-            "--pattern",
+            "--until-match",
             "VIM - Vi IMproved"
         ])
         .code,
@@ -3745,8 +3559,7 @@ fn exit_waits_for_the_program_being_typed_into() {
         "xe",
         "--keys",
         ":q<Enter>",
-        "--until",
-        "exit",
+        "--until-exit",
         "--timeout",
         "5000",
     ]);
@@ -3783,8 +3596,7 @@ fn exit_waits_for_the_program_being_typed_into() {
         "xe",
         "--keys",
         "<C-d>",
-        "--until",
-        "exit",
+        "--until-exit",
         "--timeout",
         "5000",
     ]);
@@ -3807,8 +3619,7 @@ fn exit_waits_for_the_program_being_typed_into() {
         "xe",
         "--text",
         "x",
-        "--until",
-        "exit",
+        "--until-exit",
         "--timeout",
         "400",
     ]);
@@ -3819,7 +3630,14 @@ fn exit_waits_for_the_program_being_typed_into() {
     // At the shell prompt, the program being typed into is the shell, so
     // exit is the end of the session.
     let r = t.term(&[
-        "send", "-s", "xe", "--text", "exit 4", "--keys", "<Enter>", "--until", "exit",
+        "send",
+        "-s",
+        "xe",
+        "--text",
+        "exit 4",
+        "--keys",
+        "<Enter>",
+        "--until-exit",
     ]);
     assert_eq!(r.code, 0, "{}\n{}", r.out, r.err);
     assert!(status_line(&r.out).contains("exited code=4"), "{}", r.out);
@@ -3898,8 +3716,7 @@ fn clients_can_broadcast_to_each_other() {
         "bc",
         "--as",
         "bob",
-        "--until",
-        "broadcast",
+        "--until-broadcast",
         "--timeout",
         "300",
     ]);
@@ -3918,8 +3735,7 @@ fn clients_can_broadcast_to_each_other() {
             "bc",
             "--as",
             "bob",
-            "--until",
-            "broadcast",
+            "--until-broadcast",
             "--timeout",
             "8000",
         ]);
@@ -3958,15 +3774,7 @@ fn clients_can_broadcast_to_each_other() {
     );
 
     // Without a name, a wait is for a broadcast made after it began.
-    let r = t.term(&[
-        "wait",
-        "-s",
-        "bc",
-        "--until",
-        "broadcast",
-        "--timeout",
-        "300",
-    ]);
+    let r = t.term(&["wait", "-s", "bc", "--until-broadcast", "--timeout", "300"]);
     assert_eq!(r.code, 124, "{}", r.out);
 
     // A program cannot pass its output off as a broadcast: what it prints
@@ -4039,16 +3847,14 @@ fn a_request_is_not_answered_before_its_own_input_is_typed() {
         "500",
         "--keys",
         "<Enter>",
-        "--until",
-        "match",
-        "--pattern",
+        "--until-match",
         "zebra",
     ]);
     assert_eq!(code, 0, "{v}");
     assert_eq!(v["reason"], "match");
     assert!(v["waited_ms"].as_u64().unwrap() >= 500, "{v}");
     // So nothing of that request is typed during the next one.
-    let (_, v) = t.json(&["wait", "-s", "own", "--until", "settle"]);
+    let (_, v) = t.json(&["wait", "-s", "own", "--until-settle"]);
     assert_eq!(v["interleaved"], false, "{v}");
     assert!(
         v["screen"]["text"].as_str().unwrap().contains("\nzebra\n"),
@@ -4096,9 +3902,7 @@ fn a_person_attached_reads_and_writes_in_a_panel() {
         "wait",
         "-s",
         "v",
-        "--until",
-        "match",
-        "--pattern",
+        "--until-match",
         r"bob: me too \(\+1 more\)",
     ]);
     assert_eq!(v.code, 0, "{}", v.out);
@@ -4143,9 +3947,7 @@ fn a_person_attached_reads_and_writes_in_a_panel() {
         "100",
         "--keys",
         "<Enter>",
-        "--until",
-        "match",
-        "--pattern",
+        "--until-match",
         "^ you: typed it, carry on$",
     ]);
     assert_eq!(v.code, 0, "{}", v.out);
@@ -4159,9 +3961,8 @@ fn a_person_attached_reads_and_writes_in_a_panel() {
         "room",
         "--as",
         "ann",
-        "--until",
-        "broadcast",
-        "--from",
+        "--until-broadcast",
+        "--until-broadcast-from",
         "chris",
     ]);
     assert_eq!(r.code, 0, "{}", r.out);
@@ -4184,7 +3985,7 @@ fn a_person_attached_reads_and_writes_in_a_panel() {
         "--keys",
         "<Esc>",
     ]);
-    let v = t.term(&["wait", "-s", "v", "--until", "settle"]);
+    let v = t.term(&["wait", "-s", "v", "--until-settle"]);
     assert!(
         !v.out.contains("never mind") && !v.out.contains(" messages "),
         "{}",
@@ -4213,9 +4014,7 @@ fn a_person_attached_reads_and_writes_in_a_panel() {
         "v",
         "--keys",
         "<C-]>",
-        "--until",
-        "match",
-        "--pattern",
+        "--until-match",
         "TYPING",
     ]);
     assert_eq!(v.code, 0, "{}", v.out);
@@ -4227,15 +4026,7 @@ fn a_person_attached_reads_and_writes_in_a_panel() {
     t.term(&[
         "send", "-s", "v", "--text", "s\u{1f}", "--pause", "100", "--keys", "<Enter>",
     ]);
-    let r = t.term(&[
-        "wait",
-        "-s",
-        "room",
-        "--until",
-        "match",
-        "--pattern",
-        r"^s\^_$",
-    ]);
+    let r = t.term(&["wait", "-s", "room", "--until-match", r"^s\^_$"]);
     assert_eq!(r.code, 0, "{}", r.out);
     // An answer while typing takes Ctrl-] first, and the bar says so.
     assert_eq!(
@@ -4243,15 +4034,7 @@ fn a_person_attached_reads_and_writes_in_a_panel() {
             .code,
         0
     );
-    let v = t.term(&[
-        "wait",
-        "-s",
-        "v",
-        "--until",
-        "match",
-        "--pattern",
-        "ann: thanks",
-    ]);
+    let v = t.term(&["wait", "-s", "v", "--until-match", "ann: thanks"]);
     assert!(
         bar(&v.out).contains("Ctrl-] then s to read and answer"),
         "{}",
@@ -4274,16 +4057,8 @@ fn a_session_can_be_started_without_broadcasts() {
     ]);
     assert_eq!(r.code, 0, "{}", r.err);
     assert_eq!(
-        t.term(&[
-            "wait",
-            "-s",
-            "nb",
-            "--until",
-            "match",
-            "--pattern",
-            r"^\$ $"
-        ])
-        .code,
+        t.term(&["wait", "-s", "nb", "--until-match", r"^\$ $"])
+            .code,
         0
     );
 
@@ -4295,7 +4070,7 @@ fn a_session_can_be_started_without_broadcasts() {
         "{}",
         r.err
     );
-    let r = t.term(&["wait", "-s", "nb", "--as", "ann", "--until", "broadcast"]);
+    let r = t.term(&["wait", "-s", "nb", "--as", "ann", "--until-broadcast"]);
     assert_eq!(r.code, 1, "{}", r.err);
     assert!(r.err.contains("(broadcasts_off)"), "{}", r.err);
 
@@ -4355,10 +4130,9 @@ fn a_wait_can_name_several_conditions() {
         "sleep 0.3; echo \"rc=$?\"",
         "--keys",
         "<Enter>",
-        "--pattern",
+        "--until-match",
         "^rc=[0-9]+$",
-        "--until",
-        "broadcast",
+        "--until-broadcast",
     ]);
     assert_eq!(code, 0, "{v}");
     assert_eq!(v["reason"], "match");
@@ -4377,10 +4151,9 @@ fn a_wait_can_name_several_conditions() {
             "sleep 3; echo \"rc=$?\"",
             "--keys",
             "<Enter>",
-            "--pattern",
+            "--until-match",
             "^rc=[0-9]+$",
-            "--until",
-            "broadcast",
+            "--until-broadcast",
             "--timeout",
             "8000",
         ]);
@@ -4421,7 +4194,7 @@ fn a_wait_can_name_several_conditions() {
             "wait",
             "-s",
             "any",
-            "--pattern",
+            "--until-match",
             "^rc=0$",
             "--timeout",
             "8000"
@@ -4430,7 +4203,7 @@ fn a_wait_can_name_several_conditions() {
         0
     );
 
-    // Only one sender counts with --from.
+    // Only one sender counts with --until-broadcast-from.
     let waiter = {
         let mut c = t.command(TERM);
         c.args([
@@ -4439,9 +4212,8 @@ fn a_wait_can_name_several_conditions() {
             "any",
             "--as",
             "bob",
-            "--until",
-            "broadcast",
-            "--from",
+            "--until-broadcast",
+            "--until-broadcast-from",
             "chris",
             "--timeout",
             "8000",
@@ -4477,22 +4249,22 @@ fn a_wait_can_name_several_conditions() {
         "wait",
         "-s",
         "any",
-        "--pattern",
+        "--until-match",
         "never-appears",
-        "--after",
+        "--until-elapsed",
         "400",
     ]);
     assert_eq!(code, 0, "{v}");
-    assert_eq!(v["reason"], "after");
+    assert_eq!(v["reason"], "elapsed");
     let took = began.elapsed();
     assert!(
         took >= Duration::from_millis(400) && took < Duration::from_secs(2),
         "{took:?}"
     );
     // It is not cut short by the usual ten-second deadline.
-    let (code, v) = t.json(&["screen", "-s", "any", "--after", "11s"]);
+    let (code, v) = t.json(&["screen", "-s", "any", "--until-elapsed", "11s"]);
     assert_eq!(code, 0, "{v}");
-    assert_eq!(v["reason"], "after");
+    assert_eq!(v["reason"], "elapsed");
     assert!(v["waited_ms"].as_u64().unwrap() >= 11_000, "{v}");
 
     // A program inside the session ends before the text appears.
@@ -4507,10 +4279,9 @@ fn a_wait_can_name_several_conditions() {
         "any",
         "--keys",
         "<C-d>",
-        "--pattern",
+        "--until-match",
         "never-appears",
-        "--until",
-        "exit",
+        "--until-exit",
     ]);
     assert_eq!(code, 0, "{v}");
     assert_eq!(v["reason"], "exit");
@@ -4521,12 +4292,12 @@ fn a_wait_can_name_several_conditions() {
         raw_http(sock.to_str().unwrap(), &format!("POST /v1/wait HTTP/1.1\r\nHost: waldo\r\nConnection: close\r\nContent-Type: application/json\r\nContent-Length: {}\r\n\r\n{body}", body.len()))
     };
     assert!(
-        post(r#"{"until": ["match", "after"], "pattern": "nope", "after_ms": 100}"#)
-            .contains("\"reason\":\"after\"")
+        post(r#"{"until_match": ["nope", "nor-this"], "until_elapsed": 100}"#)
+            .contains("\"reason\":\"elapsed\"")
     );
-    let refused = post(r#"{"until": ["none", "settle"]}"#);
+    let refused = post(r#"{"until_none": true, "until_settle": true}"#);
     assert!(
-        refused.starts_with("HTTP/1.1 400 ") && refused.contains("unknown_until"),
+        refused.starts_with("HTTP/1.1 400 ") && refused.contains("bad_until"),
         "{refused}"
     );
 
@@ -4564,9 +4335,7 @@ fn the_panel_scrolls_back() {
         "v",
         "--text",
         "s",
-        "--until",
-        "match",
-        "--pattern",
+        "--until-match",
         "^ messages ",
     ]);
     assert_eq!(v.code, 0, "{}", v.out);
@@ -4589,9 +4358,7 @@ fn the_panel_scrolls_back() {
         "v",
         "--keys",
         "<Up>",
-        "--until",
-        "match",
-        "--pattern",
+        "--until-match",
         "line number 4$",
     ]);
     assert_eq!(v.code, 0, "{}", v.out);
@@ -4608,9 +4375,7 @@ fn the_panel_scrolls_back() {
         "v",
         "--keys",
         "<PageUp>",
-        "--until",
-        "match",
-        "--pattern",
+        "--until-match",
         "line number 1$",
     ]);
     assert_eq!(v.code, 0, "{}", v.out);
@@ -4634,9 +4399,7 @@ fn the_panel_scrolls_back() {
         "v",
         "--keys",
         "<PageDown><PageDown>",
-        "--until",
-        "match",
-        "--pattern",
+        "--until-match",
         "line number 12$",
     ]);
     assert_eq!(v.code, 0, "{}", v.out);
@@ -4652,9 +4415,7 @@ fn the_panel_scrolls_back() {
         "got it",
         "--keys",
         "<Enter>",
-        "--until",
-        "match",
-        "--pattern",
+        "--until-match",
         "^ you: got it$",
     ]);
     assert_eq!(v.code, 0, "{}", v.out);

@@ -47,7 +47,7 @@ Found by driving real programs: by hand, and by the soak runs of
     `waldo-term` appear on the outer screen and read like the outer one's;
     `waldo-term` inside a session does not default to that session.
 10. **A trigger can lag a wait for the same text.** The visible screen is
-    checked for triggers at most every 25 ms, so a `send --until match`
+    checked for triggers at most every 25 ms, so a `send --until-match`
     can return before a trigger on the same line has fired. It fires at
     the next look or at settle.
 11. **Help does not say that a trailing newline in a paste is an Enter**
@@ -62,7 +62,7 @@ Six rounds, the first three against plain tmux, Sonnet and Haiku, on
 scripted tasks, htop, NetHack and five small programs. Every checkable
 answer was right with both tools. Waldo did better where pasting or
 timing mattered and at first cost 10 to 17% more tokens, mostly in waits
-that ran to their timeout. `help tips` and an `--until exit` that means
+that ran to their timeout. `help tips` and an `--until-exit` that means
 the program being typed into took timeouts from 16 to 1 over four agents
 and brought the cost about level with tmux. NetHack depth swung from 1 to
 6 with the same tool and shows nothing either way.

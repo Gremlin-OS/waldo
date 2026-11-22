@@ -14,8 +14,8 @@ someone else typed into the session during your request. Both of you type
 into one shell, so use markers with your own name in them (`{ME}rc=`), or
 you will match each other's.
 
-1. `W screen -s pool`. Type `echo {ME} here`; `W wait -s pool --until match
-   --pattern '^{OTHER} here' --timeout 120000`.
+1. `W screen -s pool`. Type `echo {ME} here`; `W wait -s pool --until-match
+   --until-match '^{OTHER} here' --timeout 120000`.
 2. Twelve sends, one call each, as fast as you can: `W send --json -s pool
    --text 'echo {ME}-N-end' --keys '<Enter>'`. Count `interleaved` true and
    false.
@@ -23,8 +23,8 @@ you will match each other's.
    `$ echo NAME-N-end` or `NAME-N-end`. Quote any that is mixed, cut or
    doubled.
 4. Eight commands with a marker, one call each: `W send -s pool --text
-   'echo {ME}-cmd-N; echo "{ME}rcN=$?"' --keys '<Enter>' --until match
-   --pattern '^{ME}rcN=0$'`. For each: did the wait return on your own
+   'echo {ME}-cmd-N; echo "{ME}rcN=$?"' --keys '<Enter>' --until-match
+   --until-match '^{ME}rcN=0$'`. For each: did the wait return on your own
    marker, and was your line `{ME}-cmd-N` just above it?
 5. Five separate sends appending `{ME} 1` to `{ME} 5` to {ME}.txt, then run
    `cat {ME}.txt; wc -l {ME}.txt` in the shell.
@@ -44,7 +44,7 @@ you will match each other's.
    - The closer: wait for `^{OTHER} finished` (3 minute timeout), repeat
      the check of step 3 over the whole output, then `W kill pool`, `W
      list`, `W gc --all`.
-   - The other: `W wait -s pool --until exit --timeout 300000`; copy what
+   - The other: `W wait -s pool --until-exit --timeout 300000`; copy what
      it prints and its exit status; then `W screen -s pool` and `W send -s
      pool --text 'echo too late' --keys '<Enter>'`, and copy those too.
 

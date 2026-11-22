@@ -13,7 +13,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   without typing it into the program. `waldo-term broadcast TEXT` sends
   one; a client that names itself with `--as NAME` (or `WALDO_AS`) is given
   what the others said, above the status line of its next response; and
-  `--until broadcast` waits to be spoken to. A person in `waldo-term attach`
+  `--until-broadcast` waits to be spoken to. A person in `waldo-term attach`
   presses `s` for a panel with the conversation so far and a line to write
   on; the newest unread broadcast stays in the status bar until then. Each
   broadcast also goes to the session's destination. `waldo-wrap
@@ -21,14 +21,26 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   section 4.10.
 
 - A wait can name several conditions and returns on whichever is met
-  first: give `--until` more than once. `--pattern '^rc=' --until
-  broadcast` waits for a marker while still hearing other clients.
-- `--after MS`: a length of time as a wait condition. The reason is `after`
+  first. `--until-match '^rc=' --until-broadcast` waits for a marker while
+  still hearing other clients, and `--until-match` may be given several
+  times for any of several texts.
+- `--until-elapsed MS`: a length of time as a wait condition. The reason is `elapsed`
   and the exit status 0, where running into `--timeout` is a failure.
-- `--from NAME` limits a wait for a broadcast to one sender, and each
+- `--until-broadcast-from NAME` limits a wait for a broadcast to one sender, and each
   broadcast records how it arrived (`via`: `attach` or `api`).
 
 ### Changed
+
+- **Wait conditions are spelled differently, in the command line and in
+  the API.** Each is an option of its own that takes its own argument:
+  `--until-match RE`, `--until-settle`, `--until-change`, `--until-exit`,
+  `--until-broadcast`, `--until-elapsed MS`, `--until-none`. In the API
+  they are the wait parameters `until_match` and so on. `--until NAME`,
+  `--pattern`, and the parameters `until`, `pattern` and `since_gen` are
+  gone. `waldo-term` says what to use if given `--until` or `--pattern`,
+  and the host refuses the old `until` parameter with `bad_until`.
+- The error `unknown_until` is now `bad_until`. `missing_pattern` is only
+  for triggers; a wait with an empty pattern gets `bad_pattern`.
 
 - `waldo-term attach` keeps one key for itself instead of two. Ctrl-] now
   switches between viewing and typing, and Ctrl-C leaves the viewer while

@@ -97,5 +97,5 @@ Programs tried by hand and not given a brief:
   the Enter after the text waits its 300 ms limit; the password arrives
   whole.
 - `cmatrix`: never stops drawing. `send` times out with the "never went
-  quiet" hint, `resize` answers after its 1 s cap, `wait --until change`
+  quiet" hint, `resize` answers after its 1 s cap, `wait --until-change`
   and quitting work, and the host uses about 1% of a CPU.

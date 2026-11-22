@@ -193,13 +193,15 @@ same everywhere:
 
 | Name | Meaning |
 |---|---|
-| `until` | `settle`, `match`, `change`, `exit`, `broadcast`, `after` or `none` (section 5). Several may be given, as a list or as names with commas between: the request returns when any one is met |
-| `pattern` | For `match`: a regular expression against one line |
-| `after_ms` | For `after`: how many milliseconds, at most 600000 |
-| `from` | For `broadcast`: only a broadcast from this sender ends the wait |
-| `since_gen` | For `change`: return when `gen` differs from this. Default: `gen` when the request arrived |
+| `until_settle` | `true`: wait until the screen is settled (5.2) |
+| `until_match` | A regular expression, or a list of them: wait until one matches a line (5.3) |
+| `until_change` | `true`: wait until the screen changes. Or a number: until `gen` differs from it |
+| `until_exit` | `true`: wait until the program being typed into exits (5.1) |
+| `until_broadcast` | `true`: wait until another client says something. Or a name: until that sender does (section 4.10) |
+| `until_elapsed` | A number of milliseconds, at most 600000: wait that long |
+| `until_none` | `true`: do not wait |
 | `style` | `plain` (default) or `ansi` (section 3.3) |
-| `timeout_ms` | The deadline. Default 10000, or one second more than `after_ms` if that is longer; values above 600000 are lowered to it. `timeout` is accepted as another name |
+| `timeout_ms` | The deadline. Default 10000, or one second more than `until_elapsed` if that is longer; values above 600000 are lowered to it. `timeout` is accepted as another name |
 | `as` | The client's name, for broadcasts (section 4.10): 1 to 32 characters from letters, digits, `_` and `-`. Optional |
 
 Each is looked for in three places, in this order: the query string; the
@@ -207,12 +209,17 @@ Each is looked for in three places, in this order: the query string; the
 the same:
 
 ```
-POST /v1/wait?until=match&pattern=ready
-POST /v1/wait   {"wait": {"until": "match", "pattern": "ready"}}
-POST /v1/wait   {"until": "match", "pattern": "ready"}
+POST /v1/wait?until_match=ready
+POST /v1/wait   {"wait": {"until_match": "ready"}}
+POST /v1/wait   {"until_match": "ready"}
 ```
 
-A number may be sent as a JSON number or as a string of digits.
+A number may be sent as a JSON number or as a string of digits. `true` in
+a query string is the name alone, or `=true` or `=1`. A list in a query
+string is the name given more than once. A request with none of the
+`until_` parameters gets its endpoint's default. A name that starts with
+`until` and is not one of the seven is refused with `bad_until`, so that a
+misspelling does not silently wait for something else.
 
 ### 3.2 The response
 
@@ -241,7 +248,7 @@ when the deadline passed:
 
 | Field | Meaning |
 |---|---|
-| `reason` | Why the request returned: `settle`, `match`, `change`, `exit`, `broadcast`, `after`, `none` or `timeout`. With several conditions, the one that was met |
+| `reason` | Why the request returned: `settle`, `match`, `change`, `exit`, `broadcast`, `elapsed`, `none` or `timeout`. With several conditions, the one that was met |
 | `waited_ms` | How long the request waited |
 | `interleaved` | True if someone else's input, signal or resize took effect during this request |
 | `changed` | Only on a request that typed something: false if `gen` is the same as when its first input was written, so nothing on screen changed, not even the cursor |
@@ -268,7 +275,7 @@ match as it scrolls off.
 
 `exit`, when the session's own program has exited: the fields of the will
 (section 8.6) without the envelope and without `screen`, and with `output`
-cut to its last 40 lines. When `until: exit` was answered because a program
+cut to its last 40 lines. When `until_exit` was answered because a program
 inside the session exited, the reason is `exit`, there is no `exit` object,
 and `child.state` is still `running`.
 
@@ -378,13 +385,13 @@ endpoints in its text.
 
 ### 4.2 GET /v1/screen
 
-Takes the wait parameters in the query string. The default `until` is
-`none`, so it returns at once. Answers with the response of section 3.2.
+Takes the wait parameters in the query string. The default is
+`until_none`, so it returns at once. Answers with the response of section 3.2.
 
 ### 4.3 POST /v1/wait
 
 Takes the wait parameters in the query string or a JSON body; the body may
-be empty. The default `until` is `settle`. Answers with the response of
+be empty. The default is `until_settle`. Answers with the response of
 section 3.2.
 
 ### 4.4 POST /v1/input
@@ -396,7 +403,7 @@ section 3.2.
     {"text": "#include <stdio.h>"},
     {"keys": "<Esc>:w<Enter>"}
   ],
-  "wait": {"until": "settle"},
+  "wait": {"until_settle": true},
   "timeout_ms": 10000
 }
 ```
@@ -426,7 +433,7 @@ and is used exactly as it is: a final newline in a `text_file` is an Enter.
 All items are checked, and all files read, before anything is typed. If any
 item is bad the request is refused and nothing is sent.
 
-The wait parameters apply after the input; the default `until` is `settle`.
+The wait parameters apply after the input; the default is `until_settle`.
 The answer is the response of section 3.2.
 
 A body that is not JSON (its `Content-Type` is not `application/json` and it
@@ -434,7 +441,7 @@ does not start with `{`) is taken as one `keys` item, with the wait
 parameters in the query string:
 
 ```
-curl --unix-socket "$SOCK" -d ':q!<Enter>' 'http://waldo/v1/input?until=settle'
+curl --unix-socket "$SOCK" -d ':q!<Enter>' 'http://waldo/v1/input?until_settle'
 ```
 
 ### 4.5 Key notation
@@ -478,7 +485,7 @@ Sizes are 2x1 to 500x200. The program gets SIGWINCH. The answer is the
 response of section 3.2. By default it waits for the program to redraw: it
 returns `settle` when the screen has gone still, or `none` with the screen
 as it is after 1 s. A `wait` object in the body replaces that default;
-`{"wait": {"until": "none"}}` answers as soon as the size has changed.
+`{"wait": {"until_none": true}}` answers as soon as the size has changed.
 
 ### 4.8 POST /v1/signal
 
@@ -571,11 +578,11 @@ its stream (section 7.2). Any other client:
   ones it sent under that name. Each is given to a name once. A name the
   host has not seen before is given everything kept. A request without
   `as` gets none. The host remembers 64 names.
-- **By waiting.** `until: broadcast` returns, with reason `broadcast`, as
+- **By waiting.** `until_broadcast` returns, with reason `broadcast`, as
   soon as there is one to give. With `as`, that is one this name has not
   been given, so it returns at once if some are waiting. Without `as`, it
-  is one made after the request began, from anyone. With `from`, only one
-  from that sender counts. A wait for something else does not end when
+  is one made after the request began, from anyone. Given a name in place
+  of `true`, only one from that sender counts. A wait for something else does not end when
   someone speaks; to watch the screen and listen, name both conditions
   (section 5.1).
 - **By asking.** `GET /v1/broadcasts` answers with all that are kept, or
@@ -588,7 +595,7 @@ its stream (section 7.2). Any other client:
 ```
 
 A session started with `--no-broadcast` has none of this. Both endpoints
-and `until: broadcast` answer 409 `broadcasts_off`, a broadcast sent over
+and `until_broadcast` answer 409 `broadcasts_off`, a broadcast sent over
 the attach stream is dropped, and `as` is accepted and does nothing, so a
 client that always names itself still works. `GET /v1/status` says which
 kind of session it is.
@@ -601,27 +608,26 @@ and the host does not check it.
 
 ### 5.1 The conditions
 
-| `until` | Returns when |
-|---|---|
-| `settle` | The screen is settled (5.2) |
-| `match` | `pattern` matches a line (5.3) |
-| `change` | `gen` differs from `since_gen` |
-| `exit` | The program that had the terminal's foreground when the request began has exited. That is the session's own program, or a program started inside it, such as an editor run from a shell |
-| `broadcast` | Another client has said something this one has not been given (section 4.10) |
-| `after` | `after_ms` milliseconds have passed since the request began. Unlike the deadline, this is a condition that was met: the reason is `after`, not `timeout` |
-| `none` | At once |
+| Parameter | Reason | Returns when |
+|---|---|---|
+| `until_match` | `match` | One of its patterns matches a line (5.3). `match.pattern` in the response says which |
+| `until_exit` | `exit` | The program that had the terminal's foreground when the request began has exited. That is the session's own program, or a program started inside it, such as an editor run from a shell |
+| `until_broadcast` | `broadcast` | Another client has said something this one has not been given (section 4.10) |
+| `until_change` | `change` | `gen` differs from what it was when the request arrived, or from the number given |
+| `until_settle` | `settle` | The screen is settled (5.2) |
+| `until_elapsed` | `elapsed` | That many milliseconds have passed since the request began. Unlike the deadline, this is a condition that was met: the reason is `elapsed`, not `timeout` |
+| `until_none` | `none` | At once |
 
-A request may name several conditions:
+A request may give several:
 
 ```
-POST /v1/wait   {"until": ["match", "broadcast"], "pattern": "^rc=[0-9]+$", "as": "ann"}
-POST /v1/wait?until=match,after&pattern=ready&after_ms=5000
+POST /v1/wait   {"until_match": "^rc=[0-9]+$", "until_broadcast": true, "as": "ann"}
+POST /v1/wait?until_match=ready&until_match=failed&until_elapsed=5000
 ```
 
 It returns as soon as any one of them is met, and `reason` says which. If
-more than one is met at the same moment, the one named first is given.
-There is one `pattern`, for `match`. `none` cannot be combined with
-another.
+more than one is met at the same moment, the one higher in the table is
+given. `until_none` cannot be combined with another.
 
 Whatever the condition:
 
@@ -738,7 +744,7 @@ the command with a marker after it and wait for the marker:
 
 ```json
 {"input": [{"text": "make test; echo \"rc=$?\""}, {"keys": "<Enter>"}],
- "wait": {"until": "match", "pattern": "^rc=[0-9]+$"},
+ "wait": {"until_match": "^rc=[0-9]+$"},
  "timeout_ms": 120000}
 ```
 
@@ -1015,12 +1021,11 @@ that says what to do next; its wording may change.
 | 400 | `bad_delay` | `key_delay_ms` is not a whole number of milliseconds up to 10000 |
 | 400 | `unknown_key` | A name in key notation that is not a key |
 | 400 | `file_unreadable` | A `_file` item's path is not absolute, not a regular file, over 1 MiB, not UTF-8, or cannot be read |
-| 400 | `unknown_until` | `until` names something that is not a condition, or `none` together with another |
-| 400 | `bad_after` | `until` has `after` without `after_ms`, or `after_ms` is not a whole number of milliseconds up to 600000 |
+| 400 | `bad_until` | A parameter whose name starts with `until` and is not a wait condition; one with a value of the wrong kind; `until_elapsed` over 600000; or `until_none` together with another |
 | 400 | `unknown_style` | `style` is not `plain` or `ansi` |
 | 400 | `bad_timeout` | `timeout_ms` is not a whole number |
-| 400 | `missing_pattern` | `until=match`, or a new trigger, without a pattern |
-| 400 | `bad_pattern` | The pattern is not a valid regular expression |
+| 400 | `missing_pattern` | A new trigger without a pattern |
+| 400 | `bad_pattern` | A pattern is empty or is not a valid regular expression |
 | 400 | `bad_tail` | `tail` is not a number |
 | 400 | `bad_size` | `cols` or `rows` missing or out of range |
 | 400 | `bad_signal` | `/v1/signal` with neither `signal` nor `stop` |
@@ -1032,7 +1037,7 @@ that says what to do next; its wording may change.
 | 404 | `no_such_trigger` | Removing a trigger that does not exist |
 | 400 | `bad_name` | `as` is not 1 to 32 allowed characters |
 | 400 | `missing_text` | A broadcast without `text`, or with only space in it |
-| 409 | `broadcasts_off` | A broadcast, a request for them, or `until: broadcast`, on a session started with `--no-broadcast` |
+| 409 | `broadcasts_off` | A broadcast, a request for them, or `until_broadcast`, on a session started with `--no-broadcast` |
 | 400 | `bad_text` | A broadcast's `text` is over 1000 bytes or has a control character, such as a newline |
 | 400 | `upgrade_required` | `/v1/attach` without `Upgrade: waldo-attach` |
 | 409 | `exited` | The program has exited and the session is lingering; only requests that read or wait are answered |
@@ -1055,9 +1060,10 @@ itself.
   lock to be released before deciding the session has ended.
 - **File paths.** It makes relative `--text-file`, `--keys-file` and
   `--paste-file` paths absolute before sending, and reads `-` from stdin.
-- **Wait options.** `--until` may be repeated. `--pattern RE` by itself
-  means `match`, and `--after MS` by itself means `after`; each is added to
-  whatever `--until` names. `--from NAME` is sent as `from`.
+- **Wait options.** One for each condition, named after it:
+  `--until-match RE` (repeatable), `--until-settle`, `--until-change`,
+  `--until-exit`, `--until-broadcast`, `--until-broadcast-from NAME`,
+  `--until-elapsed MS` and `--until-none`.
 - **A name.** `--as NAME`, or else the environment variable `WALDO_AS`, is
   sent as `as` by `send`, `screen`, `wait` and `broadcast`.
 - **Broadcasts in text output.** Each is printed as `broadcast from NAME:

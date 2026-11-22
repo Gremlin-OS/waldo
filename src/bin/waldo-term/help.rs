@@ -12,12 +12,12 @@ the session's messages. The last message is the will: exit status and output.
 
 In a shell, run a command and learn how it ended: put a marker after it
 and wait for the marker (more in: waldo-term help shell):
-  $ waldo-term send -s demo --text 'ls /; echo \"rc=$?\"' --keys '<Enter>' --until match --pattern '^rc=[0-9]+$'
+  $ waldo-term send -s demo --text 'ls /; echo \"rc=$?\"' --keys '<Enter>' --until-match '^rc=[0-9]+$'
 
 Type into the program and see the screen. --text is literal; --keys takes
 key names such as <Enter>, <Esc>, <Tab>, <C-c>, <Up>. A program you start
 may be slow to draw, so wait for something it shows before typing into it:
-  $ waldo-term send -s demo --text 'vim /tmp/waldo-demo.c' --keys '<Enter>' --until match --pattern '^\"/tmp/waldo-demo.c\"'
+  $ waldo-term send -s demo --text 'vim /tmp/waldo-demo.c' --keys '<Enter>' --until-match '^\"/tmp/waldo-demo.c\"'
   $ waldo-term send -s demo --keys 'i' --text '#include <stdio.h>' --keys '<Esc>:wq<Enter>'
 
 Look at the screen without typing:
@@ -26,13 +26,13 @@ Look at the screen without typing:
 By default a command returns when the screen has been still for a moment.
 That does not mean a slow command has finished. To be sure, wait for text
 (a regular expression, matched against one line):
-  $ waldo-term send -s demo --text 'sleep 1; echo finished' --keys '<Enter>' --until match --pattern '^finished'
+  $ waldo-term send -s demo --text 'sleep 1; echo finished' --keys '<Enter>' --until-match '^finished'
 
 Read everything the program has printed, or the end of it:
   $ waldo-term output -s demo --tail 20
 
 End the session, see what is left, and clean up:
-  $ waldo-term send -s demo --text 'exit' --keys '<Enter>' --until exit
+  $ waldo-term send -s demo --text 'exit' --keys '<Enter>' --until-exit
   $ waldo-term list
   $ waldo-term gc --all
 
@@ -59,17 +59,18 @@ or a socket path); with exactly one live session it can be left out.
       --text S | --keys S | --paste S           (repeatable, sent in order)
       --text-file P | --keys-file P | --paste-file P
       [--pause MS] [--key-delay MS]             (help keys)
-      [--until U] [--pattern RE] [--timeout MS] [--as NAME]
-  screen                    print the screen  [--until U] [--pattern RE] [--timeout MS]
-  wait                      wait, then print the screen
-      --until settle|match|change|exit|broadcast|after  (repeatable: any one)
-      [--pattern RE] [--after MS] [--from NAME] [--timeout MS]
+      [--until-...] [--timeout MS] [--as NAME]
+  screen                    print the screen  [--until-...] [--timeout MS]
+  wait                      wait, then print the screen. What to wait for, any
+                            one of which ends the wait (help wait):
+      --until-settle | --until-match RE | --until-change | --until-exit
+      --until-broadcast | --until-elapsed MS | --until-none    [--timeout MS]
   broadcast [--as NAME] TEXT
                             say a line to the other clients of the session; it is
                             not typed into the program (help sharing)
   output [--tail N]         what the program has printed so far
   resize COLSxROWS          change the terminal size, then print the screen once the
-                            program has redrawn (--until none: at once)
+                            program has redrawn (--until-none: at once)
   attach [--drive] [--resize] [--as NAME]
                             watch the session live in your own terminal. View only
                             unless --drive. Ctrl-] switches between viewing and
@@ -130,39 +131,41 @@ The content is used exactly as is, so a final newline in a text file is Enter.
 examples:
   $ waldo-wrap --detach --name keys-demo -- bash
   $ waldo-term send -s keys-demo --text 'echo \"a <b> c\"' --keys '<Enter>'
-  $ waldo-term send -s keys-demo --text 'sleep 30' --keys '<Enter>' --until none
+  $ waldo-term send -s keys-demo --text 'sleep 30' --keys '<Enter>' --until-none
   $ waldo-term send -s keys-demo --keys '<C-c>'
   $ waldo-term kill keys-demo
 ";
 
 pub const WAIT: &str = "\
-Commands that print the screen wait first. --until says for what:
+Commands that print the screen wait first. These say for what:
 
-  settle   (default for send and wait) the program has drawn something, the
-           screen has then been still for 200 ms,
-           and all input has been written. It means nothing is being drawn. It
-           does not mean a command finished: a compiler that is silent for a
+  --until-settle     (default for send and wait) the program has drawn
+           something, the screen has then been still for 200 ms, and all
+           input has been written. It means nothing is being drawn. It does
+           not mean a command finished: a compiler that is silent for a
            second looks settled.
-  match    --pattern RE matches a line of the screen. RE is a regular
+  --until-match RE   RE matches a line of the screen. RE is a regular
            expression against one line; lines that wrapped are joined. With
            send, text that was already on screen before the input does not
            count. The cursor's line is included, so prompts such as
-           'Password: ' can be matched: --pattern 'assword: $'
-  change   the screen differs from when the command started
-  exit     the program you are typing into has exited: the session's own
-           program, or one started inside it, such as vim in a shell. Typed
-           at a shell prompt, that program is the shell itself.
-  broadcast  another client of the session has said something
-           (waldo-term help sharing). --from NAME: only that sender.
-  after    --after MS has passed. Not a failure, unlike the deadline:
-           use it to look again after a while.
-  none     (default for screen) do not wait
+           'Password: ' can be matched: --until-match 'assword: $'
+  --until-change     the screen differs from when the command started
+  --until-exit       the program you are typing into has exited: the
+           session's own program, or one started inside it, such as vim in
+           a shell. Typed at a shell prompt, that program is the shell.
+  --until-broadcast  another client of the session has said something
+           (waldo-term help sharing). --until-broadcast-from NAME: only
+           that sender.
+  --until-elapsed MS  that long has passed. Not a failure, unlike the
+           deadline: use it to look again after a while.
+  --until-none       (default for screen) do not wait
 
-Give --until more than once to wait for whichever comes first; the status
-line says which it was. --pattern RE and --after MS each count as one:
-  --pattern '^rc=[0-9]+$' --until broadcast     the marker, or someone speaks
-  --pattern 'Password: $' --until exit           the prompt, or the program ends
-  --pattern 'ready' --after 5s                   the text, or five seconds
+Give more than one to wait for whichever comes first; the status line says
+which it was. --until-match may be given several times:
+  --until-match '^rc=[0-9]+$' --until-broadcast     the marker, or someone speaks
+  --until-match 'Password: $' --until-exit          the prompt, or the program ends
+  --until-match 'ready' --until-match 'failed'      either text
+  --until-match 'ready' --until-elapsed 5s          the text, or five seconds
 
 --timeout MS sets the deadline: default 10000, at most 600000. On the
 deadline the screen is still printed, the reason is 'timeout', and the exit
@@ -173,9 +176,9 @@ To learn when a shell command has finished, and how, see: waldo-term help shell
 
 examples:
   $ waldo-wrap --detach --name wait-demo -- bash
-  $ waldo-term send -s wait-demo --text 'sleep 1; echo ready' --keys '<Enter>' --until match --pattern '^ready$'
-  $ waldo-term wait -s wait-demo --until settle
-  $ waldo-term send -s wait-demo --text 'exit 0' --keys '<Enter>' --until exit
+  $ waldo-term send -s wait-demo --text 'sleep 1; echo ready' --keys '<Enter>' --until-match '^ready$'
+  $ waldo-term wait -s wait-demo --until-settle
+  $ waldo-term send -s wait-demo --text 'exit 0' --keys '<Enter>' --until-exit
 ";
 
 pub const TIPS: &str = "\
@@ -184,15 +187,15 @@ What agents who used waldo before you learned the slow way.
 1. Every send prints the screen as it is after your input. You rarely need
    a separate 'screen'.
 2. The default wait (the screen going still) is right for keys sent to a
-   full-screen program. Use --until match only when you know text that will
+   full-screen program. Use --until-match only when you know text that will
    appear, and anchor it with ^: an unanchored pattern can match the echo
    of the command you just typed.
 3. A screen that never goes still (an animation, a clock) makes the default
-   wait run to its timeout. Use --until none, --until match, or --after MS
+   wait run to its timeout. Use --until-none, --until-match, or --until-elapsed MS
    to look again after a while.
 4. To know that a shell command finished, and how, put a marker after it
    and wait for the marker: waldo-term help shell
-5. --until exit waits for the program you are typing into. After :wq in vim
+5. --until-exit waits for the program you are typing into. After :wq in vim
    it returns when vim is gone. Typed at a shell prompt, it waits for the
    shell to exit, which is the end of the session.
 6. A block of several lines for a REPL or an editor goes in as --paste,
@@ -251,12 +254,12 @@ instructions to say.
 
 A wait for the screen does not end when someone speaks. To watch the
 screen and listen, name both, and the status line says which it was:
-  $ waldo-term send -s room --as bob --text 'sleep 1; echo \"rc=$?\"' --keys '<Enter>' --pattern '^rc=' --until broadcast
+  $ waldo-term send -s room --as bob --text 'sleep 1; echo \"rc=$?\"' --keys '<Enter>' --until-match '^rc=' --until-broadcast
 
 To stop and wait until someone speaks, for example after asking a person
 to type a password themselves:
   $ waldo-term broadcast -s room --as ann 'typed it, carry on'
-  $ waldo-term wait -s room --as bob --until broadcast --timeout 60000
+  $ waldo-term wait -s room --as bob --until-broadcast --timeout 60000
   $ waldo-term kill room
 ";
 
@@ -268,7 +271,7 @@ compiler that is silent for a second looks the same. Put a marker after the
 command and wait for the marker:
 
   waldo-term send -s demo --text 'make test; echo \"rc=$?\"' --keys '<Enter>' \\
-      --until match --pattern '^rc=[0-9]+$' --timeout 120000
+      --until-match '^rc=[0-9]+$' --timeout 120000
 
 The screen that comes back shows the command's output and then the marker
 with its exit status.
@@ -287,8 +290,8 @@ with its exit status.
 
 examples:
   $ waldo-wrap --detach --name shell-demo -- bash
-  $ waldo-term send -s shell-demo --text 'cd /tmp && pwd; echo \"rc=$?\"' --keys '<Enter>' --until match --pattern '^rc=0$'
-  $ waldo-term send -s shell-demo --text 'sleep 1; ls /nonexistent; echo \"rc=$?\"' --keys '<Enter>' --until match --pattern '^rc=[1-9]' --timeout 5000
+  $ waldo-term send -s shell-demo --text 'cd /tmp && pwd; echo \"rc=$?\"' --keys '<Enter>' --until-match '^rc=0$'
+  $ waldo-term send -s shell-demo --text 'sleep 1; ls /nonexistent; echo \"rc=$?\"' --keys '<Enter>' --until-match '^rc=[1-9]' --timeout 5000
   $ waldo-term output -s shell-demo --tail 5
   $ waldo-term kill shell-demo
 ";

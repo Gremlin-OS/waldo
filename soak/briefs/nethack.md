@@ -7,8 +7,8 @@ player name.
 2. Play. Goal: get as deep in the dungeon as you can. Let the game pick your
    character. Batch several moves into one `send --keys` call.
 3. Along the way use each of these a few times and check the result makes
-   sense: several keys in one call, `send --text`, `wait --until match
-   --pattern ...`, `screen`, `screen --style ansi`, a `match add` trigger
+   sense: several keys in one call, `send --text`, `wait --until-match
+   --until-match ...`, `screen`, `screen --style ansi`, a `match add` trigger
    for text you expect to appear (then `match list`), and `resize` once to
    100x30 and back.
 4. When the budget is nearly used, or you die: `W kill game` if it is still
@@ -32,5 +32,5 @@ time the screen came back unchanged after input.
 4. Play, as in variant A.
 5. With about 10 calls left: quit the game back to the shell prompt
    (`#quit`, answer its questions). Copy any hint on the way out. Then run
-   `echo back` in the shell. Then `W send -s sh --text 'exit' --keys '<Enter>' --until exit`,
+   `echo back` in the shell. Then `W send -s sh --text 'exit' --keys '<Enter>' --until-exit`,
    `W list`, `W gc --all`.

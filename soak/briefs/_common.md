@@ -14,12 +14,12 @@ Call it W. `W ARGS...` runs `waldo-term ARGS...`; `W wrap ARGS...` runs
 waldo-wrap or the program under test directly, and do not read or edit files
 under the arena directory by other means. Read `W help`, `W help keys`,
 `W help wait` and `W help shell` first, quickly. Options go before positional
-arguments (`W resize -s NAME --until none 100x30`).
+arguments (`W resize -s NAME --until-none 100x30`).
 
 Where a brief says to run a command "in the shell", put a marker after it
 and wait for the marker, as `W help shell` explains:
-`W send -s NAME --text 'CMD; echo "rc=$?"' --keys '<Enter>' --until match
---pattern '^rc=[0-9]+$'`. The marker line carries the exit status.
+`W send -s NAME --text 'CMD; echo "rc=$?"' --keys '<Enter>' --until-match
+--until-match '^rc=[0-9]+$'`. The marker line carries the exit status.
 
 Budget: W counts every `send` CALL, and refuses past
 the limit it prints. One call may carry several keys. screen, wait, resize,

@@ -16,7 +16,7 @@ It is two Linux programs:
 
 ```sh
 waldo-wrap --detach --name demo -- bash        # start; returns at once
-waldo-term send -s demo --text 'vim notes.txt' --keys '<Enter>' --until match --pattern '^"notes.txt"'
+waldo-term send -s demo --text 'vim notes.txt' --keys '<Enter>' --until-match '^"notes.txt"'
 waldo-term send -s demo --keys 'i' --text 'some text' --keys '<Esc>:wq<Enter>'
 waldo-term screen -s demo                      # look without typing
 waldo-term attach -s demo                      # watch it live; Ctrl-C leaves
