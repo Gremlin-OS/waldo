@@ -237,8 +237,10 @@ Each broadcast is given to a name once, and you are not given your own.
 Without a name you are given none. Lines above the status line come from
 waldo and the other clients, never from the program.
 
-A person attached sees each broadcast in the status bar, and while viewing
-presses s to write one: Enter says it, Escape gives up.
+A person attached sees the newest broadcast in the status bar until they
+read it. While viewing, s opens a panel with the conversation so far and a
+line to write on: Enter says it, Escape closes the panel, and the arrow
+and page keys scroll back.
 
 A session started with 'waldo-wrap --no-broadcast' has no broadcasts: the
 commands above are refused, and say so.

@@ -3177,7 +3177,9 @@ impl Host {
             key: None,
             last_sent: Instant::now() - FRAME_INTERVAL,
             resized: false,
-            said: Vec::new(),
+            // A viewer that arrives late is given what is kept, with its
+            // first frame.
+            said: self.broadcasts.iter().map(Broadcast::json).collect(),
         };
         let Some(c) = self.conns.get_mut(&id) else {
             return;

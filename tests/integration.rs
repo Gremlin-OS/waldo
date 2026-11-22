@@ -4057,19 +4057,10 @@ fn a_request_is_not_answered_before_its_own_input_is_typed() {
 }
 
 #[test]
-fn a_person_attached_hears_and_says_broadcasts() {
+fn a_person_attached_reads_and_writes_in_a_panel() {
     let t = T::new();
     t.bash("room");
-    t.attach("v", "110x16", "room", &["--as", "chris"]);
-    let bar = |out: &str| out.lines().last().unwrap_or("").to_string();
-    let first = bar(&t.term(&["screen", "-s", "v"]).out);
-    assert!(
-        first.contains("Ctrl-] type") && first.contains("s say") && first.contains("Ctrl-C leave"),
-        "{first}"
-    );
-
-    // What an agent says shows in the viewer's status bar, though nothing
-    // on the session's screen changed.
+    // Said before the person arrives: they are given it as history.
     assert_eq!(
         t.term(&[
             "broadcast",
@@ -4077,9 +4068,28 @@ fn a_person_attached_hears_and_says_broadcasts() {
             "room",
             "--as",
             "ann",
-            "please type the password"
+            "said before chris arrived"
         ])
         .code,
+        0
+    );
+    t.attach("v", "72x16", "room", &["--as", "chris"]);
+    let bar = |out: &str| out.lines().last().unwrap_or("").to_string();
+    let first = t.term(&["screen", "-s", "v"]).out;
+    assert!(bar(&first).contains("Ctrl-] type"), "{first}");
+    assert!(!first.contains("said before"), "{first}");
+
+    // What an agent says stays in the status bar until it is read, though
+    // nothing on the session's screen changed; more than one is counted.
+    let long = "please type the password, and this is a long message that should wrap inside the panel and not be cut off";
+    assert_eq!(
+        t.term(&["broadcast", "-s", "room", "--as", "ann", long])
+            .code,
+        0
+    );
+    assert_eq!(
+        t.term(&["broadcast", "-s", "room", "--as", "bob", "me too"])
+            .code,
         0
     );
     let v = t.term(&[
@@ -4089,13 +4099,14 @@ fn a_person_attached_hears_and_says_broadcasts() {
         "--until",
         "match",
         "--pattern",
-        "ann: please type the password",
+        r"bob: me too \(\+1 more\)",
     ]);
     assert_eq!(v.code, 0, "{}", v.out);
-    assert!(bar(&v.out).contains("s to answer"), "{}", v.out);
+    assert!(bar(&v.out).contains("s to read and answer"), "{}", v.out);
 
-    // s opens the editor; the line is edited, then said. The viewer is
-    // view only: saying is not typing.
+    // s opens the panel: the conversation so far, wrapped, above the line
+    // being written. The viewer is view only: saying is not typing.
+    let before = t.term(&["screen", "-s", "room"]).out;
     let v = t.term(&[
         "send",
         "-s",
@@ -4112,7 +4123,16 @@ fn a_person_attached_hears_and_says_broadcasts() {
         "{}",
         v.out
     );
-    let before = t.term(&["screen", "-s", "room"]).out;
+    assert!(v.out.contains(" messages "), "{}", v.out);
+    assert!(
+        v.out.contains(" ann: said before chris arrived\n"),
+        "{}",
+        v.out
+    );
+    assert!(v.out.contains(" ann: please type the password, and this is a long message that should\n      wrap inside the panel and not be cut off\n"), "{}", v.out);
+    assert!(v.out.contains(" bob: me too\n"), "{}", v.out);
+
+    // Enter says it, and the panel stays open with the line in it.
     let v = t.term(&[
         "send",
         "-s",
@@ -4126,28 +4146,37 @@ fn a_person_attached_hears_and_says_broadcasts() {
         "--until",
         "match",
         "--pattern",
-        "you said: typed it, carry on ",
+        "^ you: typed it, carry on$",
     ]);
     assert_eq!(v.code, 0, "{}", v.out);
+    assert_eq!(bar(&v.out).trim_end(), " say:", "{}", v.out);
     assert_eq!(before, t.term(&["screen", "-s", "room"]).out);
 
     // The agent is given it, with the person's name.
-    let r = t.term(&["wait", "-s", "room", "--as", "ann", "--until", "broadcast"]);
+    let r = t.term(&[
+        "wait",
+        "-s",
+        "room",
+        "--as",
+        "ann",
+        "--until",
+        "broadcast",
+        "--from",
+        "chris",
+    ]);
     assert_eq!(r.code, 0, "{}", r.out);
-    assert_eq!(
-        r.out.lines().next().unwrap(),
-        "broadcast from chris: typed it, carry on"
+    assert!(
+        r.out.contains("broadcast from chris: typed it, carry on\n"),
+        "{}",
+        r.out
     );
 
-    // Escape gives up, and nothing is said.
+    // Escape closes the panel without saying what was being written, and
+    // the screen it covered is drawn again.
     t.term(&[
         "send",
         "-s",
         "v",
-        "--text",
-        "s",
-        "--pause",
-        "200",
         "--text",
         "never mind",
         "--pause",
@@ -4156,14 +4185,26 @@ fn a_person_attached_hears_and_says_broadcasts() {
         "<Esc>",
     ]);
     let v = t.term(&["wait", "-s", "v", "--until", "settle"]);
-    assert!(!bar(&v.out).contains("never mind"), "{}", v.out);
+    assert!(
+        !v.out.contains("never mind") && !v.out.contains(" messages "),
+        "{}",
+        v.out
+    );
+    assert_eq!(
+        v.out.lines().skip(1).take(14).collect::<Vec<_>>(),
+        first.lines().skip(1).take(14).collect::<Vec<_>>(),
+        "{}",
+        v.out
+    );
+    assert!(bar(&v.out).contains("view only"), "{}", v.out);
     let sock = t.session_dir("room").join("sock");
     let resp = raw_http(
         sock.to_str().unwrap(),
         "GET /v1/broadcasts HTTP/1.1\r\nHost: waldo\r\nConnection: close\r\n\r\n",
     );
     let all: Value = serde_json::from_str(resp.split("\r\n\r\n").nth(1).unwrap()).unwrap();
-    assert_eq!(all["last"], 2, "{all}");
+    assert_eq!(all["last"], 4, "{all}");
+    assert_eq!(all["broadcasts"][3]["via"], "attach", "{all}");
 
     // While typing, s and the keys attach used to keep are the program's.
     let v = t.term(&[
@@ -4211,7 +4252,11 @@ fn a_person_attached_hears_and_says_broadcasts() {
         "--pattern",
         "ann: thanks",
     ]);
-    assert!(bar(&v.out).contains("Ctrl-] then s to answer"), "{}", v.out);
+    assert!(
+        bar(&v.out).contains("Ctrl-] then s to read and answer"),
+        "{}",
+        v.out
+    );
 }
 
 #[test]
@@ -4491,4 +4536,127 @@ fn a_wait_can_name_several_conditions() {
         "GET /v1/broadcasts HTTP/1.1\r\nHost: waldo\r\nConnection: close\r\n\r\n",
     );
     assert!(resp.contains("\"via\":\"api\""), "{resp}");
+}
+
+#[test]
+fn the_panel_scrolls_back() {
+    let t = T::new();
+    t.bash("room");
+    for i in 1..=12 {
+        assert_eq!(
+            t.term(&[
+                "broadcast",
+                "-s",
+                "room",
+                "--as",
+                "ann",
+                &format!("line number {i}")
+            ])
+            .code,
+            0
+        );
+    }
+    t.attach("v", "90x16", "room", &["--as", "chris"]);
+    // Eight lines show: the newest, with a way to the older ones.
+    let v = t.term(&[
+        "send",
+        "-s",
+        "v",
+        "--text",
+        "s",
+        "--until",
+        "match",
+        "--pattern",
+        "^ messages ",
+    ]);
+    assert_eq!(v.code, 0, "{}", v.out);
+    assert!(
+        v.out.contains("ann: line number 12\n") && v.out.contains("ann: line number 5\n"),
+        "{}",
+        v.out
+    );
+    assert!(!v.out.contains("ann: line number 4\n"), "{}", v.out);
+    assert!(
+        v.out.contains("PgUp older") && !v.out.contains("PgDn newer"),
+        "{}",
+        v.out
+    );
+
+    // Up moves one line.
+    let v = t.term(&[
+        "send",
+        "-s",
+        "v",
+        "--keys",
+        "<Up>",
+        "--until",
+        "match",
+        "--pattern",
+        "line number 4$",
+    ]);
+    assert_eq!(v.code, 0, "{}", v.out);
+    assert!(
+        !v.out.contains("ann: line number 12\n") && v.out.contains("PgDn newer"),
+        "{}",
+        v.out
+    );
+
+    // PgUp moves a panel's worth and stops at the oldest.
+    let v = t.term(&[
+        "send",
+        "-s",
+        "v",
+        "--keys",
+        "<PageUp>",
+        "--until",
+        "match",
+        "--pattern",
+        "line number 1$",
+    ]);
+    assert_eq!(v.code, 0, "{}", v.out);
+    assert!(
+        v.out.contains("ann: line number 8\n") && !v.out.contains("ann: line number 9\n"),
+        "{}",
+        v.out
+    );
+    assert!(!v.out.contains("PgUp older"), "{}", v.out);
+    let again = t.term(&["send", "-s", "v", "--keys", "<PageUp>"]);
+    assert!(
+        again.out.contains("ann: line number 1\n") && again.out.contains("ann: line number 8\n"),
+        "{}",
+        again.out
+    );
+
+    // PgDn and Down come back, and stop at the newest.
+    let v = t.term(&[
+        "send",
+        "-s",
+        "v",
+        "--keys",
+        "<PageDown><PageDown>",
+        "--until",
+        "match",
+        "--pattern",
+        "line number 12$",
+    ]);
+    assert_eq!(v.code, 0, "{}", v.out);
+    assert!(!v.out.contains("PgDn newer"), "{}", v.out);
+
+    // Saying something returns to the newest line; the keys typed nothing.
+    t.term(&["send", "-s", "v", "--keys", "<PageUp>"]);
+    let v = t.term(&[
+        "send",
+        "-s",
+        "v",
+        "--text",
+        "got it",
+        "--keys",
+        "<Enter>",
+        "--until",
+        "match",
+        "--pattern",
+        "^ you: got it$",
+    ]);
+    assert_eq!(v.code, 0, "{}", v.out);
+    assert!(v.out.contains("ann: line number 12\n"), "{}", v.out);
 }

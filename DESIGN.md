@@ -840,11 +840,20 @@ The reference is PROTOCOL.md section 4.10.
 - **It is a relay and no more.** One line, no addressing, no threads, no
   history beyond the last 32, nothing across sessions. The destination
   gets every broadcast, so a record exists for whoever wants one.
-- **A person attached gets them in the status bar** and writes one in a
-  one-line editor there. They ride on an ordinary frame, as one more
-  field, so a viewer that does not know about them draws the frame as
-  before. The editor opens with `s` while watching (7.3). A person who is
-  only watching can still speak: saying is not typing.
+- **A person attached reads and writes them in a panel** over the bottom
+  of the screen, opened with `s`. It began as one line in the status bar
+  that showed a broadcast for twelve seconds. The first person to use it
+  asked for two messages to be repeated: a message that goes away is not
+  much of a message. So the newest unread one now stays in the bar until
+  the panel is opened, the panel keeps the conversation, and a viewer who
+  arrives late is sent what the host has kept. The arrow and page keys
+  scroll back through those. It stops there: nothing older than the host
+  keeps, no timestamps, no private messages.
+  The screen behind the panel is not dimmed; rows arrive already styled,
+  and a heading line marks the panel well enough.
+- **They reach a viewer on an ordinary frame**, as one more field, so a
+  viewer that does not know about them draws the frame as before. A person
+  who is only watching can still speak: saying is not typing.
 - **On by default, with a switch to turn it off.** Hearing is already a
   choice each client makes by naming itself, and saying needs no access
   that typing does not. The use that matters most is unplanned: an agent
