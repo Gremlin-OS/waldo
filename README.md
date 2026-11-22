@@ -16,7 +16,7 @@ It is two Linux programs:
 
 ```sh
 waldo-wrap --detach --name demo -- bash        # start; returns at once
-waldo-term send -s demo --text 'vim notes.txt' --keys '<Enter>'
+waldo-term send -s demo --text 'vim notes.txt' --keys '<Enter>' --until match --pattern '^"notes.txt"'
 waldo-term send -s demo --keys 'i' --text 'some text' --keys '<Esc>:wq<Enter>'
 waldo-term screen -s demo                      # look without typing
 waldo-term attach -s demo                      # watch it live; Ctrl-] detaches
@@ -55,6 +55,15 @@ commands` lists every option, and `waldo-wrap --help` covers the host.
 
 The control API is HTTP over the unix socket, so `curl --unix-socket` works
 without `waldo-term`.
+
+## Installing
+
+Each release has a tarball for x86_64 and one for aarch64 Linux, with
+`waldo-wrap` and `waldo-term` in `bin/`. They need glibc 2.35 or newer and
+nothing else. Check the download against the release's `SHA256SUMS`, unpack
+it, and put `bin/` on your `PATH`. Then run `waldo-term help`.
+
+With Nix: `nix run github:Gremlin-OS/waldo#waldo-wrap -- --help`.
 
 ## Building
 

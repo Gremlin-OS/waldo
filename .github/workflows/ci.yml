@@ -30,15 +30,15 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 60
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
       # This installer leaves the Nix store writable by the runner, which
       # the cache below needs in order to restore into it.
-      - uses: nixbuild/nix-quick-install-action@v30
+      - uses: nixbuild/nix-quick-install-action@5bb6a3b3abe66fd09bbf250dce8ada94f856a703 # v30
       # Keeps the emulator library, which takes five minutes to build,
       # between runs. The store is garbage-collected before it is saved, so
       # only what the link made below points to is kept; the toolchains
       # come from the public Nix cache each time, which is quick.
-      - uses: nix-community/cache-nix-action@v7
+      - uses: nix-community/cache-nix-action@7df957e333c1e5da7721f60227dbba6d06080569 # v7
         with:
           primary-key: nix-store-${{ runner.os }}-${{ hashFiles('flake.nix', 'flake.lock', 'nix/**', 'vendor/libghostty-vt/SHA256SUMS') }}
           restore-prefixes-first-match: nix-store-${{ runner.os }}-

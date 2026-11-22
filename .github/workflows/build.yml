@@ -23,17 +23,17 @@ jobs:
     runs-on: ${{ matrix.os }}
     timeout-minutes: 60
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
       # The emulator library takes five minutes to build and changes only
       # when the vendored tarballs or the build script do. Zig is needed
       # only to build it.
       - id: vt
-        uses: actions/cache@v4
+        uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
         with:
           path: target/libghostty-vt
           key: vt-${{ matrix.os }}-${{ hashFiles('vendor/libghostty-vt/SHA256SUMS', 'vendor/libghostty-vt/*.tar.gz', 'scripts/build-vt.sh') }}
       - if: steps.vt.outputs.cache-hit != 'true'
-        uses: mlugg/setup-zig@v2
+        uses: mlugg/setup-zig@d1434d08867e3ee9daa34448df10607b98908d29 # v2
         with:
           version: 0.17.1
       # The tests drive bash, vim and ps. Rust is already on the runner.
@@ -43,7 +43,7 @@ jobs:
       - run: cargo build --release --locked
       - run: cargo test --release --locked -- --test-threads=1
       - run: scripts/dist.sh
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
           name: waldo-${{ matrix.os }}
           path: target/dist/*
