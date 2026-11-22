@@ -1081,6 +1081,10 @@ itself.
 - **`kill`.** A stop request, then a wait for the lock to be free, at most
   10 s, then one line saying how the program ended.
 - **`list` and `gc`.** Sections 1.3 and 1.5.
+- **`status`.** `GET /v1/status` as a few lines of text: a status line
+  with the state, foreground program, size, `gen` and age, then the
+  program, directory, process ids, start time, socket, destination, which
+  messages are on, and whether broadcasts are.
 - **`attach`.** It puts the terminal in raw mode on the alternate screen,
   draws frames in the area above a one-line status bar, copies the three
   modes of section 7.2 to the terminal, and sends the person's keys as
