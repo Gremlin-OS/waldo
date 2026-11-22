@@ -1,0 +1,37 @@
+# Build without Nix, test, and pack a tarball. Used by ci.yml and
+# release.yml. Ubuntu 22.04 is the oldest runner, so the binaries run on
+# glibc 2.35 and newer.
+name: build
+
+on:
+  workflow_call:
+    inputs:
+      arm:
+        description: also build for aarch64
+        type: boolean
+        default: false
+
+jobs:
+  tarball:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: ${{ fromJSON(inputs.arm && '["ubuntu-22.04", "ubuntu-22.04-arm"]' || '["ubuntu-22.04"]') }}
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+      - uses: mlugg/setup-zig@v2
+        with:
+          version: 0.17.1
+      # The tests drive bash, vim and ps. Rust is already on the runner.
+      - run: sudo apt-get update && sudo apt-get install -y vim procps
+      - run: scripts/build-vt.sh
+      - run: cargo build --release --locked
+      - run: cargo test --release --locked -- --test-threads=1
+      - run: scripts/dist.sh
+      - uses: actions/upload-artifact@v4
+        with:
+          name: waldo-${{ matrix.os }}
+          path: target/dist/*
+          if-no-files-found: error

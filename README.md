@@ -58,7 +58,7 @@ without `waldo-term`.
 
 ## Building
 
-The build uses Nix:
+With Nix:
 
 ```sh
 nix build            # both binaries, in ./result/bin
@@ -70,9 +70,35 @@ Inside `nix develop`, `cargo build` and `cargo test -- --test-threads=1`
 work as usual. The tests start real programs in ptys and are sensitive to
 timing, so they run one at a time.
 
+Without Nix you need Rust (cargo), Zig 0.17, a C library to link against,
+and for the tests `bash`, `vim` and `ps`:
+
+```sh
+scripts/build-vt.sh                       # the emulator library, about five minutes, once
+cargo build --release --locked            # both binaries, in target/release
+cargo test --release --locked -- --test-threads=1
+scripts/dist.sh                           # optional: a tarball in target/dist
+```
+
+`scripts/build-vt.sh` builds the emulator with Zig and puts it where the
+cargo build looks for it. To use a library built some other way, set
+`LIBGHOSTTY_VT_LIB_DIR` to the directory that holds `libghostty-vt.a`.
+
 The terminal emulator is libghostty-vt 1.0.1, built from the tarballs in
 `vendor/libghostty-vt` and linked statically. The build needs no network
-beyond what Nix fetches for the Rust crates.
+beyond fetching the Rust crates.
+
+## Releases
+
+Pushing a tag `vX.Y.Z` that matches the version in `Cargo.toml` builds
+tarballs for x86_64 and aarch64 Linux on GitHub, runs the tests on each,
+and makes a draft release with the tarballs and a `SHA256SUMS` file. A
+person publishes the draft. Every push to `main` also keeps an x86_64
+tarball as a workflow artifact.
+
+The binaries are built on Ubuntu 22.04 and need glibc 2.35 or newer. They
+need nothing else at run time. Each tarball carries the licences of the
+emulator and of the Rust crates linked in.
 
 It runs on Linux only.
 
@@ -85,3 +111,9 @@ It runs on Linux only.
 - `TODO.md`: the open work.
 - `soak/README.md`: the slow tests, run by hand: a scripted hammer, and
   subagents driving real programs.
+
+## Licence
+
+Waldo is under either the MIT licence (`LICENSE-MIT`) or the Apache
+Licence 2.0 (`LICENSE-APACHE`), as you prefer. libghostty-vt, in
+`vendor/libghostty-vt`, is MIT licensed by the Ghostty project.

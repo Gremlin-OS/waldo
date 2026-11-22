@@ -15,3 +15,7 @@ jobs:
       # Builds the package, runs the unit and integration tests, and runs
       # clippy with warnings as errors. The same command works locally.
       - run: nix flake check -L
+
+  # The build without Nix, as README.md describes it. Keeps a tarball.
+  plain:
+    uses: ./.github/workflows/build.yml
