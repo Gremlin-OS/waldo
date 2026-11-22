@@ -7,39 +7,47 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.2.0] - 2026-11-22
+
+Several clients on one session can now talk to each other, and a wait can
+be for more than one thing. The way wait conditions are written has
+changed, in the command line and in the API, with no compatibility for the
+old form.
+
 ### Added
 
-- Broadcasts: a client can say a line to the other clients of a session
-  without typing it into the program. `waldo-term broadcast TEXT` sends
-  one; a client that names itself with `--as NAME` (or `WALDO_AS`) is given
-  what the others said, above the status line of its next response; and
-  `--until-broadcast` waits to be spoken to. A person in `waldo-term attach`
-  presses `s` for a panel with the conversation so far and a line to write
-  on; the newest unread broadcast stays in the status bar until then. Each
-  broadcast also goes to the session's destination. `waldo-wrap
-  --no-broadcast` starts a session without any of this. See `waldo-term help sharing` and PROTOCOL.md
-  section 4.10.
-
-- A wait can name several conditions and returns on whichever is met
-  first. `--until-match '^rc=' --until-broadcast` waits for a marker while
-  still hearing other clients, and `--until-match` may be given several
-  times for any of several texts.
-- `--until-elapsed MS`: a length of time as a wait condition. The reason is `elapsed`
-  and the exit status 0, where running into `--timeout` is a failure.
-- `--until-broadcast-from NAME` limits a wait for a broadcast to one sender, and each
-  broadcast records how it arrived (`via`: `attach` or `api`).
-
+- **Broadcasts.** A client can say a line to the other clients of a
+  session without typing it into the program. See `waldo-term help
+  sharing` and PROTOCOL.md section 4.10.
+  - `waldo-term broadcast TEXT` (or `say`) sends one.
+  - A client that names itself with `--as NAME` or `WALDO_AS` is given
+    what the others said, above the status line of its next response. A
+    name is given each broadcast once, never its own, and the last five
+    the first time the host hears from it.
+  - `--until-broadcast` waits to be spoken to, and
+    `--until-broadcast-from NAME` for one sender.
+  - Each broadcast goes to the session's destination and records how it
+    arrived (`via`: `attach` or `api`). `GET /v1/broadcasts` lists the
+    last 32.
+  - `waldo-wrap --no-broadcast` starts a session without any of this.
+- **A conversation panel in `waldo-term attach`.** While viewing, `s` opens
+  a panel with the recent broadcasts and a line to write on. Names are
+  coloured, long lines wrap, and the arrow and page keys scroll back. The
+  newest unread broadcast stays in the status bar until the panel is
+  opened, and a viewer who arrives late is given the conversation so far.
+- **Several wait conditions at once.** A wait returns on whichever is met
+  first, and the status line says which. `--until-match '^rc='
+  --until-broadcast` waits for a marker while still hearing other clients.
+- `--until-match` may be given several times, for any of several texts.
+- `--until-match-new RE`: a pattern for which text already on screen never
+  counts, even on a request that types nothing.
+- `--until-elapsed MS`: a length of time as a wait condition. The reason is
+  `elapsed` and the exit status 0, where running into `--timeout` is a
+  failure.
 - `waldo-term status`: what the session is, from the host's status
   endpoint. The 0.1.0 notes listed this command, but it did not exist.
 
-- `--until-match-new RE`: a pattern for which text already on screen never
-  counts, even on a request that types nothing. A plain wait for the next
-  line addressed to you would otherwise return at once on the last one.
-
 ### Changed
-
-- A client that names itself for the first time is given the last five
-  broadcasts, not all 32 that are kept.
 
 - **Wait conditions are spelled differently, in the command line and in
   the API.** Each is an option of its own that takes its own argument:
@@ -51,13 +59,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   and the host refuses the old `until` parameter with `bad_until`.
 - The error `unknown_until` is now `bad_until`. `missing_pattern` is only
   for triggers; a wait with an empty pattern gets `bad_pattern`.
-
-- `waldo-term attach` keeps one key for itself instead of two. Ctrl-] now
-  switches between viewing and typing, and Ctrl-C leaves the viewer while
-  viewing. Before, Ctrl-] left from either mode and Ctrl-\ switched typing
-  on and off; Ctrl-\ now goes to the program like any other key, and `q` no
-  longer leaves. The message on leaving is "left 'ID'; it is still
-  running".
+- **`waldo-term attach` has two modes and keeps one key for itself.**
+  Ctrl-] switches between viewing and typing, and Ctrl-C leaves the viewer
+  while viewing. Before, Ctrl-] left from either mode and Ctrl-\ switched
+  typing on and off; Ctrl-\ now goes to the program like any other key,
+  and `q` no longer leaves. The message on leaving is "left 'ID'; it is
+  still running".
 
 ### Fixed
 
@@ -105,5 +112,6 @@ The first release.
   `cargo build`). Release tarballs for x86_64 and aarch64 Linux.
 - Licensed under MIT or Apache 2.0, at your option.
 
-[Unreleased]: https://github.com/Gremlin-OS/waldo/compare/v0.1.0...HEAD
+[Unreleased]: https://github.com/Gremlin-OS/waldo/compare/v0.2.0...HEAD
+[0.2.0]: https://github.com/Gremlin-OS/waldo/compare/v0.1.0...v0.2.0
 [0.1.0]: https://github.com/Gremlin-OS/waldo/releases/tag/v0.1.0
