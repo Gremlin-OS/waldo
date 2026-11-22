@@ -63,7 +63,8 @@ or a socket path); with exactly one live session it can be left out.
   screen                    print the screen  [--until-...] [--timeout MS]
   wait                      wait, then print the screen. What to wait for, any
                             one of which ends the wait (help wait):
-      --until-settle | --until-match RE | --until-change | --until-exit
+      --until-settle | --until-match RE | --until-match-new RE
+      --until-change | --until-exit
       --until-broadcast | --until-elapsed MS | --until-none    [--timeout MS]
   broadcast [--as NAME] TEXT
                             say a line to the other clients of the session; it is
@@ -151,6 +152,9 @@ Commands that print the screen wait first. These say for what:
            send, text that was already on screen before the input does not
            count. The cursor's line is included, so prompts such as
            'Password: ' can be matched: --until-match 'assword: $'
+  --until-match-new RE  the same, but text already on screen never counts,
+           even with screen or wait. For watching for the next line that
+           says something, when earlier ones like it are still in view.
   --until-change     the screen differs from when the command started
   --until-exit       the program you are typing into has exited: the
            session's own program, or one started inside it, such as vim in
