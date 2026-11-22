@@ -121,6 +121,7 @@ It runs on Linux only.
 - `DESIGN.md`: how it works and why.
 - `TODO.md`: the open work.
 - `CHANGELOG.md`: what each release changed.
+- `CONTRIBUTING.md`: how to build, test and send a change.
 - `soak/README.md`: the slow tests, run by hand: a scripted hammer, and
   subagents driving real programs.
 

@@ -36,6 +36,9 @@ jobs:
         uses: mlugg/setup-zig@d1434d08867e3ee9daa34448df10607b98908d29 # v2
         with:
           version: 0.17.1
+          # The library is cached above; a cache of Zig's own build
+          # directory on top of that only uses up space.
+          use-cache: false
       # The tests drive bash, vim and ps. Rust is already on the runner.
       - run: sudo apt-get update && sudo apt-get install -y vim procps
       - if: steps.vt.outputs.cache-hit != 'true'
