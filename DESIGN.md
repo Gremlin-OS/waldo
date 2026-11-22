@@ -286,6 +286,18 @@ The wait conditions other than `settle` exist because settle is a guess
 (section 3.1): `match` for text that says the thing is done, `change` for
 "anything at all", `exit` for a program that runs to completion.
 
+A request may name several conditions and returns on whichever is met
+first. This came from a person and an agent sharing a session: the agent
+waited for a line on the screen and so did not hear the person, because a
+broadcast is delivered when a request returns. The fix considered first
+was for a broadcast to end any wait of a client that had named itself. It
+was rejected: in a session of three, an agent waiting on a long build would
+be woken by the other two talking. Naming the conditions leaves the choice
+with the caller, and it does more: a marker or the program's exit, a prompt
+or an error. `after` is a length of time as a condition, so that "this
+text or five seconds" has no failure in it; the deadline remains the thing
+that means something went wrong.
+
 `exit` means the program being typed into: whatever had the terminal's
 foreground when the request began. For a session that runs one program that
 is the session's end. For vim started from a shell it is vim. It used to
@@ -840,6 +852,9 @@ The reference is PROTOCOL.md section 4.10.
   had to foresee it. But whoever starts a session may need to promise that
   nothing reaches its agent except the program, so `waldo-wrap
   --no-broadcast` removes the channel, and `status` says so.
+- **How a broadcast arrived is recorded** (`via`): over an attach stream,
+  or as a request. The host cannot know who is a person, but it does know
+  that, and a person at a terminal uses the first.
 - **Names are not checked.** Every client is the same user and can already
   type into the program; a false name gains nothing that typing does not.
 

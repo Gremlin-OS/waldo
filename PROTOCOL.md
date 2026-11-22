@@ -193,11 +193,13 @@ same everywhere:
 
 | Name | Meaning |
 |---|---|
-| `until` | `settle`, `match`, `change`, `exit`, `broadcast` or `none` (section 5) |
+| `until` | `settle`, `match`, `change`, `exit`, `broadcast`, `after` or `none` (section 5). Several may be given, as a list or as names with commas between: the request returns when any one is met |
 | `pattern` | For `match`: a regular expression against one line |
+| `after_ms` | For `after`: how many milliseconds, at most 600000 |
+| `from` | For `broadcast`: only a broadcast from this sender ends the wait |
 | `since_gen` | For `change`: return when `gen` differs from this. Default: `gen` when the request arrived |
 | `style` | `plain` (default) or `ansi` (section 3.3) |
-| `timeout_ms` | The deadline. Default 10000; values above 600000 are lowered to it. `timeout` is accepted as another name |
+| `timeout_ms` | The deadline. Default 10000, or one second more than `after_ms` if that is longer; values above 600000 are lowered to it. `timeout` is accepted as another name |
 | `as` | The client's name, for broadcasts (section 4.10): 1 to 32 characters from letters, digits, `_` and `-`. Optional |
 
 Each is looked for in three places, in this order: the query string; the
@@ -239,7 +241,7 @@ when the deadline passed:
 
 | Field | Meaning |
 |---|---|
-| `reason` | Why the request returned: `settle`, `match`, `change`, `exit`, `broadcast`, `none` or `timeout` |
+| `reason` | Why the request returned: `settle`, `match`, `change`, `exit`, `broadcast`, `after`, `none` or `timeout`. With several conditions, the one that was met |
 | `waited_ms` | How long the request waited |
 | `interleaved` | True if someone else's input, signal or resize took effect during this request |
 | `changed` | Only on a request that typed something: false if `gen` is the same as when its first input was written, so nothing on screen changed, not even the cursor |
@@ -550,11 +552,15 @@ optional; it may also be given in the query string. The answer:
 
 ```json
 {"v": 1, "session": "k3f9q2",
- "broadcast": {"n": 3, "from": "ann", "text": "vim is closed; the shell is yours", "t_ms": 61250}}
+ "broadcast": {"n": 3, "from": "ann", "text": "vim is closed; the shell is yours", "t_ms": 61250, "via": "api"}}
 ```
 
 `n` counts the session's broadcasts from 1. `from` is null for a sender
-without a name. `t_ms` is milliseconds since the session started.
+without a name. `t_ms` is milliseconds since the session started. `via` is
+how it arrived: `attach` for one sent over an attach stream, which is what
+a person at a terminal uses, and `api` for one sent to this endpoint. It is
+a fact about the connection, not proof of who sent it: every client is the
+same user.
 
 A client receives broadcasts in four ways. An attached viewer gets them on
 its stream (section 7.2). Any other client:
@@ -568,7 +574,10 @@ its stream (section 7.2). Any other client:
 - **By waiting.** `until: broadcast` returns, with reason `broadcast`, as
   soon as there is one to give. With `as`, that is one this name has not
   been given, so it returns at once if some are waiting. Without `as`, it
-  is one made after the request began, from anyone.
+  is one made after the request began, from anyone. With `from`, only one
+  from that sender counts. A wait for something else does not end when
+  someone speaks; to watch the screen and listen, name both conditions
+  (section 5.1).
 - **By asking.** `GET /v1/broadcasts` answers with all that are kept, or
   with `?since=N` those numbered above N, and `last`, the number of the
   newest. It changes nothing about what any name has been given.
@@ -599,7 +608,20 @@ and the host does not check it.
 | `change` | `gen` differs from `since_gen` |
 | `exit` | The program that had the terminal's foreground when the request began has exited. That is the session's own program, or a program started inside it, such as an editor run from a shell |
 | `broadcast` | Another client has said something this one has not been given (section 4.10) |
+| `after` | `after_ms` milliseconds have passed since the request began. Unlike the deadline, this is a condition that was met: the reason is `after`, not `timeout` |
 | `none` | At once |
+
+A request may name several conditions:
+
+```
+POST /v1/wait   {"until": ["match", "broadcast"], "pattern": "^rc=[0-9]+$", "as": "ann"}
+POST /v1/wait?until=match,after&pattern=ready&after_ms=5000
+```
+
+It returns as soon as any one of them is met, and `reason` says which. If
+more than one is met at the same moment, the one named first is given.
+There is one `pattern`, for `match`. `none` cannot be combined with
+another.
 
 Whatever the condition:
 
@@ -993,7 +1015,8 @@ that says what to do next; its wording may change.
 | 400 | `bad_delay` | `key_delay_ms` is not a whole number of milliseconds up to 10000 |
 | 400 | `unknown_key` | A name in key notation that is not a key |
 | 400 | `file_unreadable` | A `_file` item's path is not absolute, not a regular file, over 1 MiB, not UTF-8, or cannot be read |
-| 400 | `unknown_until` | `until` is not one of the six conditions |
+| 400 | `unknown_until` | `until` names something that is not a condition, or `none` together with another |
+| 400 | `bad_after` | `until` has `after` without `after_ms`, or `after_ms` is not a whole number of milliseconds up to 600000 |
 | 400 | `unknown_style` | `style` is not `plain` or `ansi` |
 | 400 | `bad_timeout` | `timeout_ms` is not a whole number |
 | 400 | `missing_pattern` | `until=match`, or a new trigger, without a pattern |
@@ -1032,6 +1055,9 @@ itself.
   lock to be released before deciding the session has ended.
 - **File paths.** It makes relative `--text-file`, `--keys-file` and
   `--paste-file` paths absolute before sending, and reads `-` from stdin.
+- **Wait options.** `--until` may be repeated. `--pattern RE` by itself
+  means `match`, and `--after MS` by itself means `after`; each is added to
+  whatever `--until` names. `--from NAME` is sent as `from`.
 - **A name.** `--as NAME`, or else the environment variable `WALDO_AS`, is
   sent as `as` by `send`, `screen`, `wait` and `broadcast`.
 - **Broadcasts in text output.** Each is printed as `broadcast from NAME:

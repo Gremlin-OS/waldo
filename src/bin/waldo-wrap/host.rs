@@ -170,6 +170,8 @@ enum Until {
     Change(u64),
     Exit,
     Broadcast,
+    /// This many milliseconds after the request began.
+    After(u64),
     None,
 }
 
@@ -187,6 +189,7 @@ enum Reason {
     Change,
     Exit,
     Broadcast,
+    After,
     None,
     Timeout,
 }
@@ -199,6 +202,7 @@ impl Reason {
             Reason::Change => "change",
             Reason::Exit => "exit",
             Reason::Broadcast => "broadcast",
+            Reason::After => "after",
             Reason::None => "none",
             Reason::Timeout => "timeout",
         }
@@ -208,7 +212,12 @@ impl Reason {
 struct Wait {
     conn: u64,
     req_id: u64,
+    /// The condition waited for: the first one the request named.
     until: Until,
+    /// Any others it named. The request returns when one of them all is met.
+    also: Vec<Until>,
+    /// For a wait for a broadcast: only one from this sender counts.
+    from: Option<String>,
     started: Instant,
     deadline: Instant,
     wants_text: bool,
@@ -244,6 +253,21 @@ struct Wait {
     heard_at_start: u64,
 }
 
+impl Wait {
+    /// Whether the request waits for this kind of condition, among others.
+    fn has(&self, kind: Until) -> bool {
+        let same = |u: &Until| std::mem::discriminant(u) == std::mem::discriminant(&kind);
+        same(&self.until) || self.also.iter().any(same)
+    }
+
+    /// Every condition, in the order the request named them.
+    fn conditions(&self) -> Vec<Until> {
+        std::iter::once(self.until)
+            .chain(self.also.iter().copied())
+            .collect()
+    }
+}
+
 /// A line one client said to the others on the session. It never reaches
 /// the program.
 struct Broadcast {
@@ -251,11 +275,13 @@ struct Broadcast {
     from: Option<String>,
     text: String,
     t_ms: u64,
+    /// How it arrived: `attach` from a viewer's stream, `api` otherwise.
+    via: &'static str,
 }
 
 impl Broadcast {
     fn json(&self) -> Value {
-        json!({"n": self.n, "from": self.from, "text": self.text, "t_ms": self.t_ms})
+        json!({"n": self.n, "from": self.from, "text": self.text, "t_ms": self.t_ms, "via": self.via})
     }
 }
 
@@ -531,12 +557,17 @@ impl Host {
         let settle_timer = self.settle_timer(now);
         for w in &self.waits {
             consider(w.deadline);
-            if let Some(t) = settle_timer.filter(|_| w.until == Until::Settle) {
+            if let Some(t) = settle_timer.filter(|_| w.has(Until::Settle)) {
                 consider(t);
             }
             // A program that exits without drawing anything wakes nothing.
-            if w.until == Until::Exit && w.exit_of.is_some() {
+            if w.has(Until::Exit) && w.exit_of.is_some() {
                 consider(now + EXIT_POLL);
+            }
+            for cond in w.conditions() {
+                if let Until::After(ms) = cond {
+                    consider(w.started + Duration::from_millis(ms));
+                }
             }
         }
         let held = self.hold_since.filter(|h| now < *h + HOLD_CAP);
@@ -695,7 +726,7 @@ impl Host {
                 let abs = self.rows_committed + (line_start - start) as u64;
                 let line = std::mem::take(&mut acc);
                 let line = trimmed(&line).to_string();
-                if self.waits.iter().any(|w| w.until == Until::Match) {
+                if self.waits.iter().any(|w| w.has(Until::Match)) {
                     self.fresh_lines.push((abs, line.clone()));
                 }
                 if !self.triggers.is_empty() {
@@ -1300,6 +1331,14 @@ impl Host {
             .collect()
     }
 
+    /// Whether there is a broadcast that satisfies a wait for one: one the
+    /// request has not been given and, if it named a sender, from them.
+    fn spoken_to(&self, w: &Wait) -> bool {
+        self.unheard(w).iter().any(|b| {
+            w.from.is_none() || b.get("from").and_then(|f| f.as_str()) == w.from.as_deref()
+        })
+    }
+
     fn handle_broadcast_list(&mut self, id: u64, req: &Request) {
         if !self.cfg.broadcasts {
             return self.error(id, req, 409, "broadcasts_off", BROADCASTS_OFF);
@@ -1359,20 +1398,21 @@ impl Host {
             );
         }
         let text = text.to_string();
-        let said = self.post_broadcast(from, text);
+        let said = self.post_broadcast(from, text, "api");
         let v = json!({"v": 1, "session": self.cfg.id, "broadcast": said});
         self.reply(id, 200, &v, false, req.keep_alive);
     }
 
     /// Keep a broadcast, send it to the destination, and queue it for
     /// every attached viewer.
-    fn post_broadcast(&mut self, from: Option<String>, text: String) -> Value {
+    fn post_broadcast(&mut self, from: Option<String>, text: String, via: &'static str) -> Value {
         self.last_broadcast += 1;
         let b = Broadcast {
             n: self.last_broadcast,
             from,
             text,
             t_ms: ms_since(self.start),
+            via,
         };
         let said = b.json();
         if self.broadcasts.len() >= MAX_BROADCASTS {
@@ -1580,7 +1620,7 @@ impl Host {
         }
         let now = Instant::now();
         let settled = self.settled(now);
-        let lines = if self.waits.iter().any(|w| w.until == Until::Match) {
+        let lines = if self.waits.iter().any(|w| w.has(Until::Match)) {
             self.visible_lines()
         } else {
             Vec::new()
@@ -1593,27 +1633,37 @@ impl Host {
             // text would answer it before its Enter had been sent, and
             // that Enter would land in someone else's request.
             let typing = w.until != Until::None && owner_has_input(&self.queue, w.req_id);
-            let reason = match w.until {
-                _ if typing => None,
-                // A signal or resize is answered once it has happened.
-                Until::None if !self.action_pending(w.req_id) => Some(Reason::None),
-                Until::Settle if settled => Some(Reason::Settle),
-                Until::Change(g) if self.gen != g => Some(Reason::Change),
-                Until::Broadcast if !self.unheard(&w).is_empty() => Some(Reason::Broadcast),
-                // The program inside the session that was being typed into
-                // is gone, and what replaced it has finished drawing.
-                Until::Exit
-                    if settled
-                        && w.exit_of
-                            .as_ref()
-                            .map(|(pg, _)| !sys::group_exists(*pg))
-                            .unwrap_or(false) =>
-                {
-                    Some(Reason::Exit)
+            // The first condition that is met answers the request, in the
+            // order the request named them.
+            let mut reason = None;
+            for cond in w.conditions() {
+                reason = match cond {
+                    _ if typing => None,
+                    // A signal or resize is answered once it has happened.
+                    Until::None if !self.action_pending(w.req_id) => Some(Reason::None),
+                    Until::Settle if settled => Some(Reason::Settle),
+                    Until::Change(g) if self.gen != g => Some(Reason::Change),
+                    Until::Broadcast if self.spoken_to(&w) => Some(Reason::Broadcast),
+                    Until::After(ms) if ms_since(w.started) >= ms => Some(Reason::After),
+                    // The program inside the session that was being typed
+                    // into is gone, and what replaced it has finished
+                    // drawing.
+                    Until::Exit
+                        if settled
+                            && w.exit_of
+                                .as_ref()
+                                .map(|(pg, _)| !sys::group_exists(*pg))
+                                .unwrap_or(false) =>
+                    {
+                        Some(Reason::Exit)
+                    }
+                    Until::Match => self.check_match(&mut w, &lines).map(Reason::Match),
+                    _ => None,
+                };
+                if reason.is_some() {
+                    break;
                 }
-                Until::Match => self.check_match(&mut w, &lines).map(Reason::Match),
-                _ => None,
-            };
+            }
             let reason = reason.or_else(|| {
                 (now >= w.deadline).then_some(if w.soft && !self.action_pending(w.req_id) {
                     Reason::None
@@ -1692,7 +1742,7 @@ impl Host {
         // What others on the session have said that this client has not
         // been given yet. Only a client that names itself is given them,
         // and a wait for a broadcast.
-        if w.name.is_some() || w.until == Until::Broadcast {
+        if w.name.is_some() || w.has(Until::Broadcast) {
             let said = self.unheard(&w);
             if !said.is_empty() {
                 resp.insert("broadcasts".into(), Value::Array(said));
@@ -2411,32 +2461,98 @@ impl Host {
                 .or_else(|| v.as_str().and_then(|s| s.parse().ok()))
         };
 
-        let until_name = field("until").and_then(|v| v.as_str().map(|s| s.to_string()));
-        let until = match until_name.as_deref() {
-            None => default,
-            Some("settle") => Until::Settle,
-            Some("match") => Until::Match,
-            Some("exit") => Until::Exit,
-            Some("none") => Until::None,
-            Some("broadcast") if !self.cfg.broadcasts => {
-                return self.error(id, req, 409, "broadcasts_off", BROADCASTS_OFF);
-            }
-            Some("broadcast") => Until::Broadcast,
-            Some("change") => match field("since_gen").as_ref().and_then(as_u64) {
-                Some(g) => Until::Change(g),
-                None => Until::Change(self.gen),
-            },
-            Some(other) => {
-                return self.error(
-                    id,
-                    req,
-                    400,
-                    "unknown_until",
-                    &format!(
-                        "unknown wait condition '{other}'; use settle, match, change, exit, broadcast or none"
+        // One condition, or several: a list, or names with commas between.
+        // The request returns when any one of them is met.
+        let named: Vec<String> = match field("until") {
+            None | Some(Value::Null) => Vec::new(),
+            Some(Value::Array(a)) => a
+                .iter()
+                .map(|v| v.as_str().unwrap_or("").to_string())
+                .collect(),
+            Some(v) => v
+                .as_str()
+                .unwrap_or("")
+                .split(',')
+                .map(|s| s.trim().to_string())
+                .collect(),
+        };
+        let after_ms = match field("after_ms") {
+            None | Some(Value::Null) => None,
+            Some(v) => match as_u64(&v).filter(|n| *n <= MAX_TIMEOUT_MS) {
+                Some(n) => Some(n),
+                None => {
+                    return self.error(
+                        id,
+                        req,
+                        400,
+                        "bad_after",
+                        &format!(
+                        "after_ms must be a whole number of milliseconds, at most {MAX_TIMEOUT_MS}"
                     ),
-                );
+                    )
+                }
+            },
+        };
+        let mut conds: Vec<Until> = Vec::new();
+        for name in &named {
+            let cond = match name.as_str() {
+                "settle" => Until::Settle,
+                "match" => Until::Match,
+                "exit" => Until::Exit,
+                "none" => Until::None,
+                "broadcast" if !self.cfg.broadcasts => {
+                    return self.error(id, req, 409, "broadcasts_off", BROADCASTS_OFF);
+                }
+                "broadcast" => Until::Broadcast,
+                "after" => match after_ms {
+                    Some(ms) => Until::After(ms),
+                    None => return self.error(
+                        id,
+                        req,
+                        400,
+                        "bad_after",
+                        "until=after needs after_ms: how many milliseconds to wait (--after MS)",
+                    ),
+                },
+                "change" => match field("since_gen").as_ref().and_then(as_u64) {
+                    Some(g) => Until::Change(g),
+                    None => Until::Change(self.gen),
+                },
+                other => {
+                    return self.error(
+                        id,
+                        req,
+                        400,
+                        "unknown_until",
+                        &format!(
+                            "unknown wait condition '{other}'; use settle, match, change, exit, broadcast, after or none"
+                        ),
+                    );
+                }
+            };
+            if !conds.contains(&cond) {
+                conds.push(cond);
             }
+        }
+        if conds.is_empty() {
+            conds.push(default);
+        }
+        if conds.len() > 1 && conds.contains(&Until::None) {
+            return self.error(
+                id,
+                req,
+                400,
+                "unknown_until",
+                "'none' answers at once, so it cannot be combined with another wait condition",
+            );
+        }
+        let until = conds[0];
+        let from = match field("from") {
+            None | Some(Value::Null) => None,
+            Some(v) => match v.as_str().filter(|s| valid_name(s)) {
+                Some(s) => Some(s.to_string()),
+                None => return self.error(id, req, 400, "bad_name", NAME_RULE),
+            },
         };
         let ansi = match field("style")
             .and_then(|v| v.as_str().map(|s| s.to_string()))
@@ -2461,7 +2577,13 @@ impl Host {
                 None => return self.error(id, req, 400, "bad_name", NAME_RULE),
             },
         };
-        let default_timeout = DEFAULT_TIMEOUT_MS;
+        // A wait for a length of time is not cut short by the usual
+        // deadline; one the request sets itself still applies.
+        let default_timeout =
+            match after_ms.filter(|_| conds.iter().any(|c| matches!(c, Until::After(_)))) {
+                Some(ms) => DEFAULT_TIMEOUT_MS.max(ms + 1000).min(MAX_TIMEOUT_MS + 1000),
+                None => DEFAULT_TIMEOUT_MS,
+            };
         let timeout_ms = match field("timeout_ms").or_else(|| field("timeout")) {
             None => default_timeout,
             Some(v) => match as_u64(&v) {
@@ -2478,7 +2600,7 @@ impl Host {
             },
         };
         let mut pattern = None;
-        if until == Until::Match {
+        if conds.contains(&Until::Match) {
             let Some(p) = field("pattern").and_then(|v| v.as_str().map(|s| s.to_string())) else {
                 return self.error(
                     id,
@@ -2535,8 +2657,10 @@ impl Host {
             exit_of: None,
             name,
             heard_at_start: self.last_broadcast,
+            also: conds[1..].to_vec(),
+            from,
         };
-        if until == Until::Exit {
+        if w.has(Until::Exit) {
             w.exit_of = sys::foreground_pgrp(self.master)
                 .filter(|pg| *pg != self.child.pid)
                 .map(|pg| {
@@ -2568,6 +2692,7 @@ impl Host {
             // The child is already gone; the answer comes when the pty is
             // drained.
             w.until = Until::Exit;
+            w.also.clear();
         }
         self.waits.push(w);
     }
@@ -3158,7 +3283,7 @@ impl Host {
                     })
                     .map(|t| t.to_string());
                 if let (Some(from), Some(text)) = (from, text) {
-                    self.post_broadcast(from, text);
+                    self.post_broadcast(from, text, "attach");
                 }
             }
             if msg.get("detach").and_then(|d| d.as_bool()) == Some(true) {
