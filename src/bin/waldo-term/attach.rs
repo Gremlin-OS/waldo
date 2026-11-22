@@ -10,7 +10,6 @@ use serde_json::{json, Value};
 use std::io::{Read, Write};
 use std::os::unix::io::AsRawFd;
 use std::os::unix::net::UnixStream;
-use std::time::{Duration, Instant};
 
 /// Ctrl-], the one key attach keeps for itself: it switches between
 /// viewing and interacting. Whoever has the keyboard gets every other key.
@@ -18,8 +17,10 @@ use std::time::{Duration, Instant};
 /// so Ctrl-C leaves, as it would leave any program.
 const MODE_KEY: u8 = 0x1d;
 const LEAVE_KEY: u8 = 0x03; // Ctrl-C
-/// How long something another client said stays in the status bar.
-const NOTICE_TIME: Duration = Duration::from_secs(12);
+/// How many lines of conversation the panel shows above the input line.
+const PANEL_LINES: usize = 8;
+/// How many broadcasts the viewer remembers; the host keeps as many.
+const HISTORY: usize = 32;
 /// The most a broadcast may hold (PROTOCOL.md section 4.10).
 const SAY_MAX: usize = 1000;
 
@@ -103,13 +104,81 @@ struct View {
     app_keypad: bool,
     bracketed_paste: bool,
     last: Option<Value>,
-    /// The line being written to say to the other clients, while the
-    /// one-line editor is open.
+    /// The line being written to say to the other clients. While it is
+    /// there, the panel with the conversation is open above it.
     compose: Option<Vec<u8>>,
-    /// What another client last said, and when it arrived.
-    notice: Option<(String, Instant)>,
+    /// What has been said on the session, oldest first.
+    history: Vec<Said>,
+    /// How many of those arrived while the panel was closed and have not
+    /// been looked at.
+    unread: usize,
+    /// The text of each row of the session's screen as last sent, so that
+    /// what the panel covered can be drawn again.
+    rows: Vec<String>,
     /// This person's own name, to tell their broadcasts from others'.
     name: Option<String>,
+}
+
+/// One broadcast, as the panel shows it.
+struct Said {
+    from: Option<String>,
+    text: String,
+    mine: bool,
+}
+
+impl Said {
+    fn label(&self) -> &str {
+        match self.from.as_deref() {
+            _ if self.mine => "you",
+            Some(from) => from,
+            None => "someone",
+        }
+    }
+
+    /// The same colour for a name every time; one's own lines are dim.
+    fn colour(&self) -> String {
+        if self.mine {
+            return "\x1b[2m".into();
+        }
+        let sum: u32 = self.label().bytes().map(u32::from).sum();
+        format!("\x1b[1;3{}m", 1 + sum % 6)
+    }
+
+    /// The lines it takes at a width, the name on the first.
+    fn wrapped(&self, width: usize) -> Vec<String> {
+        let label = self.label();
+        let indent = label.chars().count() + 3;
+        // One column is left free: a character in the last one leaves the
+        // cursor there, and clearing the rest of the line would erase it.
+        let room = width.saturating_sub(indent + 1).max(8);
+        let mut lines = Vec::new();
+        let mut rest: Vec<char> = self.text.chars().collect();
+        loop {
+            // Break at a space if the line has one; a long word is cut.
+            let take = if rest.len() <= room {
+                rest.len()
+            } else {
+                match rest[..=room].iter().rposition(|c| *c == ' ') {
+                    Some(at) if at > 0 => at,
+                    _ => room,
+                }
+            };
+            let piece: String = rest[..take].iter().collect();
+            lines.push(if lines.is_empty() {
+                format!(" {}{label}\x1b[0m: {piece}", self.colour())
+            } else {
+                format!("{}{piece}", " ".repeat(indent))
+            });
+            rest.drain(..take);
+            while rest.first() == Some(&' ') {
+                rest.remove(0);
+            }
+            if rest.is_empty() {
+                break;
+            }
+        }
+        lines
+    }
 }
 
 /// Cut plain text to a number of characters.
@@ -130,13 +199,24 @@ impl View {
                 fit(text, term.0 as usize)
             )
         };
-        // The editor takes the whole bar, and so does what someone said.
+        // The line being written takes the whole bar. So does what someone
+        // said, until the panel has been opened to read it.
         if let Some(line) = self.compose.as_ref() {
             return bar(&format!(" say: {}", String::from_utf8_lossy(line)));
         }
-        if let Some((said, _)) = self.notice.as_ref() {
-            let how = if self.drive { "Ctrl-] then s" } else { "s" };
-            return bar(&format!(" {said}   |  {how} to answer"));
+        if self.unread > 0 {
+            if let Some(said) = self.history.iter().rev().find(|s| !s.mine) {
+                let more = match self.unread {
+                    1 => String::new(),
+                    n => format!(" (+{} more)", n - 1),
+                };
+                let how = if self.drive { "Ctrl-] then s" } else { "s" };
+                return bar(&format!(
+                    " {}: {}{more}   |  {how} to read and answer",
+                    said.label(),
+                    said.text
+                ));
+            }
         }
         let view = frame.get("view").cloned().unwrap_or(Value::Null);
         // The most important things first: a narrow terminal cuts the rest.
@@ -177,11 +257,65 @@ impl View {
         frame.get("broadcasting").and_then(|b| b.as_bool()) != Some(false)
     }
 
-    /// Draw the status bar again from the last frame, without its rows.
+    /// Where the panel is while it is open: the terminal row of its
+    /// heading, and how many lines of conversation it shows below that.
+    fn panel(&self, term: (u16, u16)) -> Option<(usize, usize)> {
+        self.compose.as_ref()?;
+        let rows = term.1 as usize;
+        if rows < 4 {
+            return None;
+        }
+        let lines = PANEL_LINES.min(rows - 3);
+        Some((rows - 1 - lines, lines))
+    }
+
+    /// Whether a row of the session's screen, counted from 0, is under
+    /// the panel.
+    fn covered(&self, row: u64, term: (u16, u16)) -> bool {
+        self.panel(term)
+            .map(|(heading, _)| row as usize + 1 >= heading)
+            .unwrap_or(false)
+    }
+
+    /// The panel: a heading, then the end of the conversation.
+    fn draw_panel(&self, term: (u16, u16)) -> String {
+        let Some((heading, lines)) = self.panel(term) else {
+            return String::new();
+        };
+        let width = term.0 as usize;
+        let mut out = format!(
+            "\x1b[{heading};1H\x1b[0;7m{}\x1b[0m",
+            fit(" messages   |  Enter says  |  Esc closes", width)
+        );
+        let all: Vec<String> = self.history.iter().flat_map(|s| s.wrapped(width)).collect();
+        // The newest line sits just above the one being written.
+        let skip = all.len().saturating_sub(lines);
+        let blank = lines.saturating_sub(all.len());
+        for i in 0..lines {
+            let text = match i.checked_sub(blank) {
+                Some(at) => all.get(skip + at).map(String::as_str).unwrap_or(""),
+                None => "",
+            };
+            out.push_str(&format!(
+                "\x1b[{};1H\x1b[0m{text}\x1b[0m\x1b[K",
+                heading + 1 + i
+            ));
+        }
+        out
+    }
+
+    /// Draw everything again from what is remembered: the rows of the
+    /// session's screen, the bar, and the panel if it is open.
     fn redraw(&mut self, term: (u16, u16)) {
         if let Some(frame) = self.last.clone() {
             let mut again = frame;
-            again["lines"] = json!([]);
+            let rows: Vec<Value> = self
+                .rows
+                .iter()
+                .enumerate()
+                .map(|(i, text)| json!([i, text]))
+                .collect();
+            again["lines"] = Value::Array(rows);
             again.as_object_mut().map(|o| o.remove("broadcasts"));
             put(self.render(&again, term).as_bytes());
         }
@@ -191,25 +325,29 @@ impl View {
     fn render(&mut self, frame: &Value, term: (u16, u16)) -> String {
         let mut out = String::from("\x1b[?25l");
         let n = |v: &Value, k: &str| v.get(k).and_then(|x| x.as_u64()).unwrap_or(0);
-        // What other clients said rides on a frame.
-        let said: Vec<String> = frame
+        // What other clients said rides on a frame. The first frame carries
+        // what was said before this viewer arrived: that is history, not
+        // news.
+        let news = self.last.is_some();
+        for b in frame
             .get("broadcasts")
             .and_then(|b| b.as_array())
             .into_iter()
             .flatten()
-            .map(|b| {
-                let text = b.get("text").and_then(|t| t.as_str()).unwrap_or("");
-                match b.get("from").and_then(|f| f.as_str()) {
-                    Some(from) if Some(from) == self.name.as_deref() => {
-                        format!("you said: {text}")
-                    }
-                    Some(from) => format!("{from}: {text}"),
-                    None => format!("someone: {text}"),
-                }
-            })
-            .collect();
-        if !said.is_empty() {
-            self.notice = Some((said.join("  /  "), Instant::now()));
+        {
+            let from = b.get("from").and_then(|f| f.as_str()).map(str::to_string);
+            let mine = from.is_some() && from == self.name;
+            self.history.push(Said {
+                from,
+                text: b.get("text").and_then(|t| t.as_str()).unwrap_or("").into(),
+                mine,
+            });
+            if self.history.len() > HISTORY {
+                self.history.remove(0);
+            }
+            if news && !mine && self.compose.is_none() {
+                self.unread += 1;
+            }
         }
         // Mirror the modes that change what the keyboard sends, so that what
         // a person types here is encoded the way the program expects.
@@ -244,18 +382,28 @@ impl View {
                 ) else {
                     continue;
                 };
-                if row + 1 < term.1 as u64 {
+                // Remembered whether or not it can be drawn now.
+                let at = row as usize;
+                if at < 1000 {
+                    if self.rows.len() <= at {
+                        self.rows.resize(at + 1, String::new());
+                    }
+                    self.rows[at] = text.to_string();
+                }
+                if row + 1 < term.1 as u64 && !self.covered(row, term) {
                     out.push_str(&format!("\x1b[{};1H\x1b[0m{}\x1b[0m\x1b[K", row + 1, text));
                 }
             }
         }
         let rows = frame.get("view").map(|v| n(v, "rows")).unwrap_or(0);
+        self.rows.truncate(rows as usize);
         for r in rows..self.rows_drawn {
-            if r + 1 < term.1 as u64 {
+            if r + 1 < term.1 as u64 && !self.covered(r, term) {
                 out.push_str(&format!("\x1b[{};1H\x1b[0m\x1b[K", r + 1));
             }
         }
         self.rows_drawn = rows;
+        out.push_str(&self.draw_panel(term));
         out.push_str(&self.status_bar(frame, term));
         if let Some(c) = frame.get("cursor") {
             if c.get("visible").and_then(|v| v.as_bool()) == Some(true)
@@ -330,23 +478,13 @@ pub fn run(mut stream: UnixStream, leftover: Vec<u8>, opts: Options) -> Outcome 
             return Outcome::Lost("poll failed".into());
         }
 
-        // What someone said has been shown for long enough.
-        if view
-            .notice
-            .as_ref()
-            .map(|(_, at)| at.elapsed() >= NOTICE_TIME)
-            .unwrap_or(false)
-        {
-            view.notice = None;
-            view.redraw(term);
-        }
-
         // The window may have changed size.
         let now = term_size();
         if now != term {
             term = now;
             put(b"\x1b[0m\x1b[2J");
             view.rows_drawn = 0;
+            view.rows.clear();
             send(&mut stream, &json!({"viewport": content(term)}));
             if opts.resize {
                 send(&mut stream, &json!({"resize": content(term)}));
@@ -377,6 +515,8 @@ pub fn run(mut stream: UnixStream, leftover: Vec<u8>, opts: Options) -> Outcome 
                                     return Outcome::Ended;
                                 }
                             }
+                            // The panel stays open for the answer.
+                            view.compose = Some(Vec::new());
                         }
                         // Escape by itself, or Ctrl-C, gives up. An escape
                         // with more after it is an arrow or function key;
@@ -423,7 +563,7 @@ pub fn run(mut stream: UnixStream, leftover: Vec<u8>, opts: Options) -> Outcome 
                     }
                     b's' if view.last.as_ref().map(View::can_say).unwrap_or(true) => {
                         view.compose = Some(Vec::new());
-                        view.notice = None;
+                        view.unread = 0;
                         view.redraw(term);
                     }
                     _ => {}

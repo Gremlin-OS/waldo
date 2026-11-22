@@ -799,7 +799,7 @@ the `Upgrade` header the answer is 400 `upgrade_required`.
 | `broadcasting` | False for a session started with `--no-broadcast`. A frame without the field is from a host that allows them |
 | `modes` | Terminal modes the viewer's terminal should copy, so that the person's keys are encoded as the program expects |
 | `lines` | Pairs of row and text, only for rows that changed since the last frame. The first frame has every row |
-| `broadcasts` | Only when a client has said something since this viewer's last frame: the broadcasts (section 4.10), oldest first, the viewer's own among them. A frame is sent for them even if nothing on screen changed |
+| `broadcasts` | Only when a client has said something since this viewer's last frame: the broadcasts (section 4.10), oldest first, the viewer's own among them. A frame is sent for them even if nothing on screen changed. The first frame carries those the host has kept, so a viewer that arrives late has the conversation so far |
 
 **Rows and columns in frames count from 0**, unlike the rest of the API.
 Row text is styled in the way of `style=ansi` (section 3.3), already cut to
@@ -1081,9 +1081,13 @@ itself.
   `keys_hex`. It has two modes and keeps one key for itself, Ctrl-], which
   switches between them. While interacting, every other key goes to the
   program. While viewing, none does: Ctrl-C leaves, sending `detach`, and
-  `s` opens a one-line editor in the status bar. In the editor Enter sends
-  the line as a broadcast, Escape or Ctrl-C gives up, and Ctrl-U clears it;
-  on a session with broadcasts off there is no `s`. What other clients
-  broadcast is shown in the status bar for 12 s. Ctrl-] cannot be typed into
+  `s` opens a panel over the bottom of the screen. The panel shows the
+  recent conversation, each line with its sender's name in a colour of its
+  own and long lines wrapped, above a line to write on. Enter sends that
+  line as a broadcast and leaves the panel open; Escape or Ctrl-C closes
+  it, and Ctrl-U clears the line. On a session with broadcasts off there
+  is no `s`. While the panel is closed, the newest thing someone else said
+  stays in the status bar, with a count if there are more, until the panel
+  is opened. Ctrl-] cannot be typed into
   the program from attach; `waldo-term send --keys '<C-]>'` does it. The
   broadcast carries `--as NAME`, or `WALDO_AS`, or else the login name.

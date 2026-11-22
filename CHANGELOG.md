@@ -14,7 +14,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   one; a client that names itself with `--as NAME` (or `WALDO_AS`) is given
   what the others said, above the status line of its next response; and
   `--until broadcast` waits to be spoken to. A person in `waldo-term attach`
-  sees them in the status bar and presses `s` to write one. Each
+  presses `s` for a panel with the conversation so far and a line to write
+  on; the newest unread broadcast stays in the status bar until then. Each
   broadcast also goes to the session's destination. `waldo-wrap
   --no-broadcast` starts a session without any of this. See `waldo-term help sharing` and PROTOCOL.md
   section 4.10.
