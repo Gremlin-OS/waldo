@@ -115,6 +115,8 @@ struct View {
     /// The text of each row of the session's screen as last sent, so that
     /// what the panel covered can be drawn again.
     rows: Vec<String>,
+    /// How many lines the panel is scrolled back from the newest.
+    scroll: usize,
     /// This person's own name, to tell their broadcasts from others'.
     name: Option<String>,
 }
@@ -283,13 +285,20 @@ impl View {
             return String::new();
         };
         let width = term.0 as usize;
-        let mut out = format!(
-            "\x1b[{heading};1H\x1b[0;7m{}\x1b[0m",
-            fit(" messages   |  Enter says  |  Esc closes", width)
-        );
         let all: Vec<String> = self.history.iter().flat_map(|s| s.wrapped(width)).collect();
-        // The newest line sits just above the one being written.
-        let skip = all.len().saturating_sub(lines);
+        // The newest line sits just above the one being written, unless
+        // the panel has been scrolled back.
+        let back = self.scroll.min(all.len().saturating_sub(lines));
+        let skip = all.len().saturating_sub(lines + back);
+        // The heading says when there is more in either direction.
+        let mut title = String::from(" messages   |  Enter says  |  Esc closes");
+        if skip > 0 {
+            title.push_str("  |  PgUp older");
+        }
+        if back > 0 {
+            title.push_str("  |  PgDn newer");
+        }
+        let mut out = format!("\x1b[{heading};1H\x1b[0;7m{}\x1b[0m", fit(&title, width));
         let blank = lines.saturating_sub(all.len());
         for i in 0..lines {
             let text = match i.checked_sub(blank) {
@@ -302,6 +311,22 @@ impl View {
             ));
         }
         out
+    }
+
+    /// Scroll the panel: up is towards older lines. It stops at each end.
+    fn scroll_by(&mut self, up: bool, page: bool, term: (u16, u16)) {
+        let Some((_, lines)) = self.panel(term) else {
+            return;
+        };
+        let width = term.0 as usize;
+        let total: usize = self.history.iter().map(|s| s.wrapped(width).len()).sum();
+        let most = total.saturating_sub(lines);
+        let step = if page { lines.max(1) } else { 1 };
+        self.scroll = if up {
+            (self.scroll.min(most) + step).min(most)
+        } else {
+            self.scroll.min(most).saturating_sub(step)
+        };
     }
 
     /// Draw everything again from what is remembered: the rows of the
@@ -515,14 +540,37 @@ pub fn run(mut stream: UnixStream, leftover: Vec<u8>, opts: Options) -> Outcome 
                                     return Outcome::Ended;
                                 }
                             }
-                            // The panel stays open for the answer.
+                            // The panel stays open for the answer, at the
+                            // newest line.
                             view.compose = Some(Vec::new());
+                            view.scroll = 0;
                         }
-                        // Escape by itself, or Ctrl-C, gives up. An escape
-                        // with more after it is an arrow or function key;
-                        // the rest of what was read belongs to it.
+                        // Escape by itself, or Ctrl-C, closes the panel. An
+                        // escape with more after it is an arrow or function
+                        // key, and the rest of what was read belongs to it.
+                        // Up, Down, PgUp and PgDn scroll; the others do
+                        // nothing. The arrows come in two forms, depending
+                        // on a mode the program underneath may have set.
                         0x1b if i + 1 < chunk.len() => {
                             view.compose = Some(line);
+                            // Several keys may have been read at once.
+                            let mut rest = &chunk[i + 1..];
+                            loop {
+                                let (len, up, page) = match rest {
+                                    [b'[' | b'O', b'A', ..] => (2, true, false),
+                                    [b'[' | b'O', b'B', ..] => (2, false, false),
+                                    [b'[', b'5', b'~', ..] => (3, true, true),
+                                    [b'[', b'6', b'~', ..] => (3, false, true),
+                                    _ => break,
+                                };
+                                view.scroll_by(up, page, term);
+                                rest = &rest[len..];
+                                match rest.split_first() {
+                                    Some((0x1b, more)) => rest = more,
+                                    _ => break,
+                                }
+                            }
+                            view.redraw(term);
                             break;
                         }
                         0x1b | 0x03 => {}
@@ -564,6 +612,7 @@ pub fn run(mut stream: UnixStream, leftover: Vec<u8>, opts: Options) -> Outcome 
                     b's' if view.last.as_ref().map(View::can_say).unwrap_or(true) => {
                         view.compose = Some(Vec::new());
                         view.unread = 0;
+                        view.scroll = 0;
                         view.redraw(term);
                     }
                     _ => {}

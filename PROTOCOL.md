@@ -1083,7 +1083,8 @@ itself.
   program. While viewing, none does: Ctrl-C leaves, sending `detach`, and
   `s` opens a panel over the bottom of the screen. The panel shows the
   recent conversation, each line with its sender's name in a colour of its
-  own and long lines wrapped, above a line to write on. Enter sends that
+  own and long lines wrapped, above a line to write on. Up, Down, PgUp and PgDn
+  scroll back through what the viewer has, the last 32. Enter sends that
   line as a broadcast and leaves the panel open; Escape or Ctrl-C closes
   it, and Ctrl-U clears the line. On a session with broadcasts off there
   is no `s`. While the panel is closed, the newest thing someone else said

@@ -4537,3 +4537,126 @@ fn a_wait_can_name_several_conditions() {
     );
     assert!(resp.contains("\"via\":\"api\""), "{resp}");
 }
+
+#[test]
+fn the_panel_scrolls_back() {
+    let t = T::new();
+    t.bash("room");
+    for i in 1..=12 {
+        assert_eq!(
+            t.term(&[
+                "broadcast",
+                "-s",
+                "room",
+                "--as",
+                "ann",
+                &format!("line number {i}")
+            ])
+            .code,
+            0
+        );
+    }
+    t.attach("v", "90x16", "room", &["--as", "chris"]);
+    // Eight lines show: the newest, with a way to the older ones.
+    let v = t.term(&[
+        "send",
+        "-s",
+        "v",
+        "--text",
+        "s",
+        "--until",
+        "match",
+        "--pattern",
+        "^ messages ",
+    ]);
+    assert_eq!(v.code, 0, "{}", v.out);
+    assert!(
+        v.out.contains("ann: line number 12\n") && v.out.contains("ann: line number 5\n"),
+        "{}",
+        v.out
+    );
+    assert!(!v.out.contains("ann: line number 4\n"), "{}", v.out);
+    assert!(
+        v.out.contains("PgUp older") && !v.out.contains("PgDn newer"),
+        "{}",
+        v.out
+    );
+
+    // Up moves one line.
+    let v = t.term(&[
+        "send",
+        "-s",
+        "v",
+        "--keys",
+        "<Up>",
+        "--until",
+        "match",
+        "--pattern",
+        "line number 4$",
+    ]);
+    assert_eq!(v.code, 0, "{}", v.out);
+    assert!(
+        !v.out.contains("ann: line number 12\n") && v.out.contains("PgDn newer"),
+        "{}",
+        v.out
+    );
+
+    // PgUp moves a panel's worth and stops at the oldest.
+    let v = t.term(&[
+        "send",
+        "-s",
+        "v",
+        "--keys",
+        "<PageUp>",
+        "--until",
+        "match",
+        "--pattern",
+        "line number 1$",
+    ]);
+    assert_eq!(v.code, 0, "{}", v.out);
+    assert!(
+        v.out.contains("ann: line number 8\n") && !v.out.contains("ann: line number 9\n"),
+        "{}",
+        v.out
+    );
+    assert!(!v.out.contains("PgUp older"), "{}", v.out);
+    let again = t.term(&["send", "-s", "v", "--keys", "<PageUp>"]);
+    assert!(
+        again.out.contains("ann: line number 1\n") && again.out.contains("ann: line number 8\n"),
+        "{}",
+        again.out
+    );
+
+    // PgDn and Down come back, and stop at the newest.
+    let v = t.term(&[
+        "send",
+        "-s",
+        "v",
+        "--keys",
+        "<PageDown><PageDown>",
+        "--until",
+        "match",
+        "--pattern",
+        "line number 12$",
+    ]);
+    assert_eq!(v.code, 0, "{}", v.out);
+    assert!(!v.out.contains("PgDn newer"), "{}", v.out);
+
+    // Saying something returns to the newest line; the keys typed nothing.
+    t.term(&["send", "-s", "v", "--keys", "<PageUp>"]);
+    let v = t.term(&[
+        "send",
+        "-s",
+        "v",
+        "--text",
+        "got it",
+        "--keys",
+        "<Enter>",
+        "--until",
+        "match",
+        "--pattern",
+        "^ you: got it$",
+    ]);
+    assert_eq!(v.code, 0, "{}", v.out);
+    assert!(v.out.contains("ann: line number 12\n"), "{}", v.out);
+}

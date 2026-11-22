@@ -846,8 +846,9 @@ The reference is PROTOCOL.md section 4.10.
   asked for two messages to be repeated: a message that goes away is not
   much of a message. So the newest unread one now stays in the bar until
   the panel is opened, the panel keeps the conversation, and a viewer who
-  arrives late is sent what the host has kept. It stops there: no
-  scrolling past what the host keeps, no timestamps, no private messages.
+  arrives late is sent what the host has kept. The arrow and page keys
+  scroll back through those. It stops there: nothing older than the host
+  keeps, no timestamps, no private messages.
   The screen behind the panel is not dimmed; rows arrive already styled,
   and a heading line marks the panel well enough.
 - **They reach a viewer on an ordinary frame**, as one more field, so a

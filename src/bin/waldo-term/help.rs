@@ -239,7 +239,8 @@ waldo and the other clients, never from the program.
 
 A person attached sees the newest broadcast in the status bar until they
 read it. While viewing, s opens a panel with the conversation so far and a
-line to write on: Enter says it, Escape closes the panel.
+line to write on: Enter says it, Escape closes the panel, and the arrow
+and page keys scroll back.
 
 A session started with 'waldo-wrap --no-broadcast' has no broadcasts: the
 commands above are refused, and say so.
