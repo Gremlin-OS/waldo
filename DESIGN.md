@@ -819,6 +819,12 @@ The reference is PROTOCOL.md section 4.10.
 - **It is a relay and no more.** One line, no addressing, no threads, no
   history beyond the last 32, nothing across sessions. The destination
   gets every broadcast, so a record exists for whoever wants one.
+- **A person attached gets them in the status bar** and writes one in a
+  one-line editor there. They ride on an ordinary frame, as one more
+  field, so a viewer that does not know about them draws the frame as
+  before. The editor's key is Ctrl-_ because Ctrl-\ and Ctrl-] were taken;
+  pressed twice it goes to the program, so the key is not lost. A person
+  who is only watching can still speak: saying is not typing.
 - **Names are not checked.** Every client is the same user and can already
   type into the program; a false name gains nothing that typing does not.
 

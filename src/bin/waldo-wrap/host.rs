@@ -1349,11 +1349,20 @@ impl Host {
                 &format!("a broadcast is one line of at most {MAX_BROADCAST_BYTES} bytes, with no control characters"),
             );
         }
+        let text = text.to_string();
+        let said = self.post_broadcast(from, text);
+        let v = json!({"v": 1, "session": self.cfg.id, "broadcast": said});
+        self.reply(id, 200, &v, false, req.keep_alive);
+    }
+
+    /// Keep a broadcast, send it to the destination, and queue it for
+    /// every attached viewer.
+    fn post_broadcast(&mut self, from: Option<String>, text: String) -> Value {
         self.last_broadcast += 1;
         let b = Broadcast {
             n: self.last_broadcast,
             from,
-            text: text.to_string(),
+            text,
             t_ms: ms_since(self.start),
         };
         let said = b.json();
@@ -1364,8 +1373,14 @@ impl Host {
         let mut fields = Map::new();
         fields.insert("broadcast".into(), said.clone());
         self.send(Kind::Broadcast, fields);
-        let v = json!({"v": 1, "session": self.cfg.id, "broadcast": said});
-        self.reply(id, 200, &v, false, req.keep_alive);
+        for c in self.conns.values_mut() {
+            if let Some(a) = c.attach.as_mut() {
+                a.said.push(said.clone());
+                // A frame is due even if the screen has not changed.
+                a.key = None;
+            }
+        }
+        said
     }
 
     fn handle_trigger_add(&mut self, id: u64, req: &Request) {
@@ -2933,6 +2948,8 @@ struct Attach {
     last_sent: Instant,
     /// This client asked the session to take its size.
     resized: bool,
+    /// Broadcasts to go out with this viewer's next frame.
+    said: Vec<Value>,
 }
 
 fn hash_str(s: &str) -> u64 {
@@ -3022,6 +3039,7 @@ impl Host {
             key: None,
             last_sent: Instant::now() - FRAME_INTERVAL,
             resized: false,
+            said: Vec::new(),
         };
         let Some(c) = self.conns.get_mut(&id) else {
             return;
@@ -3105,6 +3123,31 @@ impl Host {
                     });
                 }
             }
+            if let Some(b) = msg.get("broadcast") {
+                // The same rules as POST /v1/broadcasts. There is nowhere
+                // to send an error on this stream, so one that breaks them
+                // is dropped; the viewer is expected to check first.
+                let from = match b.get("as") {
+                    None | Some(Value::Null) => Some(None),
+                    Some(v) => v
+                        .as_str()
+                        .filter(|s| valid_name(s))
+                        .map(|s| Some(s.to_string())),
+                };
+                let text = b
+                    .get("text")
+                    .and_then(|t| t.as_str())
+                    .map(|t| t.trim())
+                    .filter(|t| {
+                        !t.is_empty()
+                            && t.len() <= MAX_BROADCAST_BYTES
+                            && !t.chars().any(|c| c.is_control())
+                    })
+                    .map(|t| t.to_string());
+                if let (Some(from), Some(text)) = (from, text) {
+                    self.post_broadcast(from, text);
+                }
+            }
             if msg.get("detach").and_then(|d| d.as_bool()) == Some(true) {
                 self.drop_conn(id);
                 return;
@@ -3181,7 +3224,7 @@ impl Host {
                 },
             });
             let meta_hash = hash_str(&meta.to_string());
-            let changed = !lines.is_empty() || meta_hash != a.sent_meta;
+            let changed = !lines.is_empty() || meta_hash != a.sent_meta || !a.said.is_empty();
             let mut frame = meta;
             frame["lines"] = Value::Array(lines);
             let Some(c) = self.conns.get_mut(&id) else {
@@ -3195,6 +3238,9 @@ impl Host {
                 a.sent = hashes;
                 a.sent_meta = meta_hash;
                 a.last_sent = now;
+                if !a.said.is_empty() {
+                    frame["broadcasts"] = Value::Array(std::mem::take(&mut a.said));
+                }
             }
             c.outbuf.extend_from_slice(frame.to_string().as_bytes());
             c.outbuf.push(b'\n');

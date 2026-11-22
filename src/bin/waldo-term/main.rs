@@ -772,7 +772,24 @@ fn cmd_match(args: &[String]) -> ! {
 }
 
 fn cmd_attach(args: &[String]) -> ! {
-    let o = parse_opts("attach", args, &["--session", "--drive", "--resize"], false);
+    let o = parse_opts(
+        "attach",
+        args,
+        &["--session", "--drive", "--resize", "--as"],
+        false,
+    );
+    // What this person says to the other clients carries a name: the one
+    // given, or else the login name.
+    let allowed = |s: &String| {
+        (1..=32).contains(&s.len())
+            && s.bytes()
+                .all(|b| b.is_ascii_alphanumeric() || b == b'_' || b == b'-')
+    };
+    let name = match client_name(&o) {
+        Some(n) if allowed(&n) => Some(n),
+        Some(_) => usage("--as takes a name of 1 to 32 characters from a-z, A-Z, 0-9, _ and -"),
+        None => std::env::var("USER").ok().filter(allowed),
+    };
     if !attach::is_terminal() {
         die(EXIT_USAGE, "'attach' draws on a terminal and this is not one; from a script, read the screen with 'waldo-term screen'");
     }
@@ -826,6 +843,7 @@ fn cmd_attach(args: &[String]) -> ! {
         attach::Options {
             drive: o.drive,
             resize: o.resize,
+            name,
         },
     ) {
         attach::Outcome::Detached => {

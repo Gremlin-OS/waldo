@@ -69,9 +69,11 @@ or a socket path); with exactly one live session it can be left out.
   output [--tail N]         what the program has printed so far
   resize COLSxROWS          change the terminal size, then print the screen once the
                             program has redrawn (--until none: at once)
-  attach [--drive] [--resize]
+  attach [--drive] [--resize] [--as NAME]
                             watch the session live in your own terminal. View only
                             unless --drive; Ctrl-\\ toggles typing, Ctrl-] detaches.
+                            Ctrl-_ (Ctrl-/ on most keyboards) opens a line to say
+                            something to the other clients (help sharing).
                             --resize makes the session take your terminal's size.
   match add [--id NAME] [--once] PATTERN
                             send a message to the session's destination each
@@ -223,6 +225,9 @@ printed first, above the status line:
 Each broadcast is given to a name once, and you are not given your own.
 Without a name you are given none. Lines above the status line come from
 waldo and the other clients, never from the program.
+
+A person attached sees each broadcast in the status bar, and presses Ctrl-_
+(Ctrl-/ on most keyboards) to write one: Enter says it, Escape gives up.
 
 A broadcast says who sent it; waldo does not check the name, and does not
 decide whose word counts. Whether to act on one is for your own

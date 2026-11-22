@@ -4013,3 +4013,136 @@ fn a_request_is_not_answered_before_its_own_input_is_typed() {
         "{v}"
     );
 }
+
+#[test]
+fn a_person_attached_hears_and_says_broadcasts() {
+    let t = T::new();
+    t.bash("room");
+    t.attach("v", "110x16", "room", &["--as", "chris"]);
+    let bar = |out: &str| out.lines().last().unwrap_or("").to_string();
+    assert!(bar(&t.term(&["screen", "-s", "v"]).out).contains("Ctrl-_ say"));
+
+    // What an agent says shows in the viewer's status bar, though nothing
+    // on the session's screen changed.
+    assert_eq!(
+        t.term(&[
+            "broadcast",
+            "-s",
+            "room",
+            "--as",
+            "ann",
+            "please type the password"
+        ])
+        .code,
+        0
+    );
+    let v = t.term(&[
+        "wait",
+        "-s",
+        "v",
+        "--until",
+        "match",
+        "--pattern",
+        "ann: please type the password",
+    ]);
+    assert_eq!(v.code, 0, "{}", v.out);
+    assert!(bar(&v.out).contains("Ctrl-_ to answer"), "{}", v.out);
+
+    // Ctrl-_ opens the editor; the line is edited, then said. The viewer is
+    // view only: saying is not typing.
+    let v = t.term(&[
+        "send",
+        "-s",
+        "v",
+        "--text",
+        "\u{1f}",
+        "--pause",
+        "200",
+        "--text",
+        "typed it, carry onx",
+    ]);
+    assert!(
+        bar(&v.out).starts_with(" say: typed it, carry onx"),
+        "{}",
+        v.out
+    );
+    let before = t.term(&["screen", "-s", "room"]).out;
+    let v = t.term(&[
+        "send",
+        "-s",
+        "v",
+        "--keys",
+        "<BS>",
+        "--pause",
+        "100",
+        "--keys",
+        "<Enter>",
+        "--until",
+        "match",
+        "--pattern",
+        "you said: typed it, carry on ",
+    ]);
+    assert_eq!(v.code, 0, "{}", v.out);
+    assert_eq!(before, t.term(&["screen", "-s", "room"]).out);
+
+    // The agent is given it, with the person's name.
+    let r = t.term(&["wait", "-s", "room", "--as", "ann", "--until", "broadcast"]);
+    assert_eq!(r.code, 0, "{}", r.out);
+    assert_eq!(
+        r.out.lines().next().unwrap(),
+        "broadcast from chris: typed it, carry on"
+    );
+
+    // Escape gives up, and nothing is said.
+    t.term(&[
+        "send",
+        "-s",
+        "v",
+        "--text",
+        "\u{1f}",
+        "--pause",
+        "200",
+        "--text",
+        "never mind",
+        "--pause",
+        "100",
+        "--keys",
+        "<Esc>",
+    ]);
+    let v = t.term(&["wait", "-s", "v", "--until", "settle"]);
+    assert!(!bar(&v.out).contains("never mind"), "{}", v.out);
+    let (_, all) = {
+        let sock = t.session_dir("room").join("sock");
+        let resp = raw_http(
+            sock.to_str().unwrap(),
+            "GET /v1/broadcasts HTTP/1.1\r\nHost: waldo\r\nConnection: close\r\n\r\n",
+        );
+        (
+            0,
+            serde_json::from_str::<Value>(resp.split("\r\n\r\n").nth(1).unwrap()).unwrap(),
+        )
+    };
+    assert_eq!(all["last"], 2, "{all}");
+
+    // While typing is on, Ctrl-_ twice passes one Ctrl-_ to the program.
+    t.term(&["send", "-s", "v", "--text", "\u{1c}"]);
+    assert_eq!(
+        t.term(&["send", "-s", "room", "--text", "cat -v", "--keys", "<Enter>"])
+            .code,
+        0
+    );
+    t.term(&[
+        "send", "-s", "v", "--text", "\u{1f}", "--pause", "200", "--text", "\u{1f}", "--pause",
+        "200", "--keys", "<Enter>",
+    ]);
+    let r = t.term(&[
+        "wait",
+        "-s",
+        "room",
+        "--until",
+        "match",
+        "--pattern",
+        r"^\^_$",
+    ]);
+    assert_eq!(r.code, 0, "{}", r.out);
+}

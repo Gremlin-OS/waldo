@@ -553,7 +553,8 @@ optional; it may also be given in the query string. The answer:
 `n` counts the session's broadcasts from 1. `from` is null for a sender
 without a name. `t_ms` is milliseconds since the session started.
 
-A client receives broadcasts in three ways:
+A client receives broadcasts in four ways. An attached viewer gets them on
+its stream (section 7.2). Any other client:
 
 - **On its own responses.** A request with the wait parameter `as` gets a
   `broadcasts` list in its response (section 3.2): every broadcast kept
@@ -766,6 +767,7 @@ the `Upgrade` header the answer is 400 `upgrade_required`.
 | `busy` | How many API requests are waiting. Non-zero means an agent is at work |
 | `modes` | Terminal modes the viewer's terminal should copy, so that the person's keys are encoded as the program expects |
 | `lines` | Pairs of row and text, only for rows that changed since the last frame. The first frame has every row |
+| `broadcasts` | Only when a client has said something since this viewer's last frame: the broadcasts (section 4.10), oldest first, the viewer's own among them. A frame is sent for them even if nothing on screen changed |
 
 **Rows and columns in frames count from 0**, unlike the rest of the API.
 Row text is styled in the way of `style=ansi` (section 3.3), already cut to
@@ -787,6 +789,7 @@ may carry several of these:
 | `{"viewport": {"cols": 80, "rows": 23}}` | The viewer's drawing area changed. The next frame has every row |
 | `{"keys_hex": "6c730d"}` | Bytes to type, as hex: what the viewer's terminal produced for the person's keys. They join the input queue as one request |
 | `{"resize": {"cols": 80, "rows": 23}}` | Make the session this size. The first size is restored when the last viewer that resized has gone |
+| `{"broadcast": {"text": "typed it", "as": "chris"}}` | Say something to the other clients, as `POST /v1/broadcasts` does (section 4.10). `as` is optional. One that breaks that section's rules is dropped without an answer, so a viewer should check first |
 | `{"detach": true}` | Close the stream. The session carries on |
 
 A viewer that only watches sends nothing.
@@ -1039,4 +1042,8 @@ itself.
   draws frames in the area above a one-line status bar, copies the three
   modes of section 7.2 to the terminal, and sends the person's keys as
   `keys_hex`. Ctrl-\ switches typing on and off; Ctrl-], or `q` while not
-  typing, detaches.
+  typing, detaches. What other clients broadcast is shown in the status bar
+  for 12 s. Ctrl-_ opens a one-line editor in the status bar: Enter sends
+  the line as a broadcast, Escape or Ctrl-C gives up, Ctrl-U clears it, and
+  Ctrl-_ again on an empty line passes a Ctrl-_ to the program instead. The
+  broadcast carries `--as NAME`, or `WALDO_AS`, or else the login name.

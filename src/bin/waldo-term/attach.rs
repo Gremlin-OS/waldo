@@ -10,9 +10,15 @@ use serde_json::{json, Value};
 use std::io::{Read, Write};
 use std::os::unix::io::AsRawFd;
 use std::os::unix::net::UnixStream;
+use std::time::{Duration, Instant};
 
 const DETACH_KEY: u8 = 0x1d; // Ctrl-]
 const DRIVE_KEY: u8 = 0x1c; // Ctrl-\
+const SAY_KEY: u8 = 0x1f; // Ctrl-_, which most terminals also send for Ctrl-/
+/// How long something another client said stays in the status bar.
+const NOTICE_TIME: Duration = Duration::from_secs(12);
+/// The most a broadcast may hold (PROTOCOL.md section 4.10).
+const SAY_MAX: usize = 1000;
 
 pub enum Outcome {
     Detached,
@@ -23,6 +29,8 @@ pub enum Outcome {
 pub struct Options {
     pub drive: bool,
     pub resize: bool,
+    /// The name this person's broadcasts carry.
+    pub name: Option<String>,
 }
 
 pub fn term_size() -> (u16, u16) {
@@ -92,6 +100,13 @@ struct View {
     app_keypad: bool,
     bracketed_paste: bool,
     last: Option<Value>,
+    /// The line being written to say to the other clients, while the
+    /// one-line editor is open.
+    compose: Option<Vec<u8>>,
+    /// What another client last said, and when it arrived.
+    notice: Option<(String, Instant)>,
+    /// This person's own name, to tell their broadcasts from others'.
+    name: Option<String>,
 }
 
 /// Cut plain text to a number of characters.
@@ -105,6 +120,20 @@ fn fit(text: &str, width: usize) -> String {
 impl View {
     fn status_bar(&self, frame: &Value, term: (u16, u16)) -> String {
         let n = |v: &Value, k: &str| v.get(k).and_then(|x| x.as_u64()).unwrap_or(0);
+        let bar = |text: &str| {
+            format!(
+                "\x1b[{};1H\x1b[0;7m{}\x1b[0m",
+                term.1,
+                fit(text, term.0 as usize)
+            )
+        };
+        // The editor takes the whole bar, and so does what someone said.
+        if let Some(line) = self.compose.as_ref() {
+            return bar(&format!(" say: {}", String::from_utf8_lossy(line)));
+        }
+        if let Some((said, _)) = self.notice.as_ref() {
+            return bar(&format!(" {said}   |  Ctrl-_ to answer"));
+        }
         let view = frame.get("view").cloned().unwrap_or(Value::Null);
         // The most important things first: a narrow terminal cuts the rest.
         let mut first = format!(
@@ -121,26 +150,54 @@ impl View {
             ));
         }
         let mut parts = vec![first];
+        // What is happening comes before the reminders of the keys.
+        if n(frame, "busy") > 0 {
+            parts.push("agent request in flight".into());
+        }
         parts.push(if self.drive {
             "TYPING (Ctrl-\\ to stop)".into()
         } else {
             "view only (Ctrl-\\ to type)".into()
         });
+        parts.push("Ctrl-_ say".into());
         parts.push("Ctrl-] detach".into());
-        if n(frame, "busy") > 0 {
-            parts.push("agent request in flight".into());
+        bar(&parts.join("  |  "))
+    }
+
+    /// Draw the status bar again from the last frame, without its rows.
+    fn redraw(&mut self, term: (u16, u16)) {
+        if let Some(frame) = self.last.clone() {
+            let mut again = frame;
+            again["lines"] = json!([]);
+            again.as_object_mut().map(|o| o.remove("broadcasts"));
+            put(self.render(&again, term).as_bytes());
         }
-        format!(
-            "\x1b[{};1H\x1b[0;7m{}\x1b[0m",
-            term.1,
-            fit(&parts.join("  |  "), term.0 as usize)
-        )
     }
 
     /// Turn a frame into what to write to the terminal.
     fn render(&mut self, frame: &Value, term: (u16, u16)) -> String {
         let mut out = String::from("\x1b[?25l");
         let n = |v: &Value, k: &str| v.get(k).and_then(|x| x.as_u64()).unwrap_or(0);
+        // What other clients said rides on a frame.
+        let said: Vec<String> = frame
+            .get("broadcasts")
+            .and_then(|b| b.as_array())
+            .into_iter()
+            .flatten()
+            .map(|b| {
+                let text = b.get("text").and_then(|t| t.as_str()).unwrap_or("");
+                match b.get("from").and_then(|f| f.as_str()) {
+                    Some(from) if Some(from) == self.name.as_deref() => {
+                        format!("you said: {text}")
+                    }
+                    Some(from) => format!("{from}: {text}"),
+                    None => format!("someone: {text}"),
+                }
+            })
+            .collect();
+        if !said.is_empty() {
+            self.notice = Some((said.join("  /  "), Instant::now()));
+        }
         // Mirror the modes that change what the keyboard sends, so that what
         // a person types here is encoded the way the program expects.
         if let Some(m) = frame.get("modes") {
@@ -198,6 +255,15 @@ impl View {
                 ));
             }
         }
+        // While the editor is open the cursor is in the bar, after the text.
+        if let Some(line) = self.compose.as_ref() {
+            let col = 7 + String::from_utf8_lossy(line).chars().count();
+            out.push_str(&format!(
+                "\x1b[{};{}H\x1b[?25h",
+                term.1,
+                col.min(term.0 as usize)
+            ));
+        }
         out
     }
 }
@@ -215,6 +281,7 @@ pub fn run(mut stream: UnixStream, leftover: Vec<u8>, opts: Options) -> Outcome 
     };
     let mut view = View {
         drive: opts.drive,
+        name: opts.name.clone(),
         ..Default::default()
     };
     let mut inbuf = leftover;
@@ -250,6 +317,17 @@ pub fn run(mut stream: UnixStream, leftover: Vec<u8>, opts: Options) -> Outcome 
             return Outcome::Lost("poll failed".into());
         }
 
+        // What someone said has been shown for long enough.
+        if view
+            .notice
+            .as_ref()
+            .map(|(_, at)| at.elapsed() >= NOTICE_TIME)
+            .unwrap_or(false)
+        {
+            view.notice = None;
+            view.redraw(term);
+        }
+
         // The window may have changed size.
         let now = term_size();
         if now != term {
@@ -269,19 +347,71 @@ pub fn run(mut stream: UnixStream, leftover: Vec<u8>, opts: Options) -> Outcome 
                 return Outcome::Detached;
             }
             let mut typed: Vec<u8> = Vec::new();
-            for &b in &buf[..got as usize] {
+            let chunk = &buf[..got as usize];
+            for (i, &b) in chunk.iter().enumerate() {
+                // The one-line editor has the keyboard while it is open.
+                if let Some(mut line) = view.compose.take() {
+                    match b {
+                        // Enter says it.
+                        b'\r' | b'\n' => {
+                            let text = String::from_utf8_lossy(&line).trim().to_string();
+                            if !text.is_empty() {
+                                let mut said = json!({"text": text});
+                                if let Some(name) = opts.name.as_ref() {
+                                    said["as"] = name.clone().into();
+                                }
+                                if !send(&mut stream, &json!({"broadcast": said})) {
+                                    return Outcome::Ended;
+                                }
+                            }
+                        }
+                        // The key again on an empty line: it was meant for
+                        // the program.
+                        SAY_KEY if line.is_empty() => {
+                            if view.drive {
+                                typed.push(b);
+                            }
+                        }
+                        // Escape by itself, or Ctrl-C, gives up. An escape
+                        // with more after it is an arrow or function key;
+                        // the rest of what was read belongs to it.
+                        0x1b if i + 1 < chunk.len() => {
+                            view.compose = Some(line);
+                            break;
+                        }
+                        0x1b | 0x03 => {}
+                        0x7f | 0x08 => {
+                            // Remove one character, which may be several bytes.
+                            while let Some(last) = line.pop() {
+                                if last & 0xc0 != 0x80 {
+                                    break;
+                                }
+                            }
+                            view.compose = Some(line);
+                        }
+                        0x15 => view.compose = Some(Vec::new()),
+                        _ if b >= 0x20 && line.len() < SAY_MAX => {
+                            line.push(b);
+                            view.compose = Some(line);
+                        }
+                        _ => view.compose = Some(line),
+                    }
+                    view.redraw(term);
+                    continue;
+                }
                 match b {
+                    SAY_KEY => {
+                        view.compose = Some(Vec::new());
+                        view.notice = None;
+                        view.redraw(term);
+                    }
                     DETACH_KEY => {
                         let _ = send(&mut stream, &json!({"detach": true}));
                         return Outcome::Detached;
                     }
                     DRIVE_KEY => {
                         view.drive = !view.drive;
-                        if let Some(frame) = view.last.clone() {
-                            let mut redraw = frame;
-                            redraw["lines"] = json!([]);
-                            put(view.render(&redraw, term).as_bytes());
-                        }
+                        view.redraw(term);
                     }
                     _ if view.drive => typed.push(b),
                     // Not typing: q also leaves, as in a pager.
