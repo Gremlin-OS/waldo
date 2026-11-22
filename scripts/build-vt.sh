@@ -32,8 +32,11 @@ work=$(mktemp -d "$root/target/vt-build.XXXXXX")
 tar xzf "$vendor/libghostty-vt-$version.tar.gz" -C "$work"
 tar xzf "$vendor/libghostty-vt-$version-deps.tar.gz" -C "$work"
 
+# The library's build asks git for a version tag. Unpacked here it would
+# find waldo's repository and stop at a waldo release tag, so git is kept
+# from looking above the build directory.
 cd "$work/libghostty-vt-$version"
-ZIG_GLOBAL_CACHE_DIR=$work/zig-cache zig build install \
+GIT_CEILING_DIRECTORIES=$work ZIG_GLOBAL_CACHE_DIR=$work/zig-cache zig build install \
   --prefix "$work/prefix" \
   --system "../libghostty-vt-$version-deps" \
   -Dcpu=baseline \
