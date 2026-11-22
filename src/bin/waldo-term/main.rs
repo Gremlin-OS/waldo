@@ -37,10 +37,9 @@ fn usage(msg: &str) -> ! {
 #[derive(Default)]
 struct Opts {
     session: Option<String>,
-    until: Option<String>,
-    after_ms: Option<u64>,
-    from: Option<String>,
-    pattern: Option<String>,
+    /// What to wait for: the wait parameters `until_match` and so on, as
+    /// the --until-* options gave them.
+    conds: Map<String, Value>,
     timeout_ms: Option<u64>,
     key_delay_ms: Option<u64>,
     json: bool,
@@ -102,6 +101,9 @@ fn parse_opts(cmd: &str, args: &[String], allowed: &[&str], positional: bool) ->
                 print!("{}", help::COMMANDS);
                 std::process::exit(0);
             }
+            if arg == "--until" || arg == "--pattern" {
+                usage("each wait condition is an option of its own: --until-match RE, --until-settle, --until-change, --until-exit, --until-broadcast, --until-elapsed MS, --until-none");
+            }
             let name = if arg == "-s" { "--session" } else { arg };
             if !allowed.contains(&name) {
                 usage(&format!("'{cmd}' does not take {arg}"));
@@ -117,22 +119,36 @@ fn parse_opts(cmd: &str, args: &[String], allowed: &[&str], positional: bool) ->
             match name {
                 "--session" => o.session = Some(value()),
                 // Several may be given: the wait ends when any one is met.
-                "--until" => {
+                "--until-match" => {
+                    let re = value();
+                    match o
+                        .conds
+                        .entry("until_match")
+                        .or_insert_with(|| Value::Array(Vec::new()))
+                    {
+                        Value::Array(list) => list.push(re.into()),
+                        _ => unreachable!(),
+                    }
+                }
+                "--until-settle" | "--until-change" | "--until-exit" | "--until-none" => {
+                    o.conds.insert(name[2..].replace('-', "_"), true.into());
+                }
+                "--until-broadcast" => {
+                    o.conds
+                        .entry("until_broadcast")
+                        .or_insert(Value::Bool(true));
+                }
+                "--until-broadcast-from" => {
+                    o.conds.insert("until_broadcast".into(), value().into());
+                }
+                "--until-elapsed" => {
                     let v = value();
-                    o.until = Some(match o.until.take() {
-                        Some(have) => format!("{have},{v}"),
-                        None => v,
+                    let ms = parse_ms(&v).unwrap_or_else(|| {
+                        usage("--until-elapsed takes milliseconds, such as 5000, or seconds as 5s")
                     });
+                    o.conds.insert("until_elapsed".into(), ms.into());
                 }
-                "--after" => {
-                    let v = value();
-                    o.after_ms = Some(parse_ms(&v).unwrap_or_else(|| {
-                        usage("--after takes milliseconds, such as 5000, or seconds as 5s")
-                    }));
-                }
-                "--from" => o.from = Some(value()),
                 "--as" => o.name = Some(value()),
-                "--pattern" => o.pattern = Some(value()),
                 "--timeout" => {
                     let v = value();
                     o.timeout_ms = Some(parse_ms(&v).unwrap_or_else(|| {
@@ -460,42 +476,17 @@ fn wait_object(o: &Opts) -> Map<String, Value> {
     if let Some(s) = &o.style {
         wait.insert("style".into(), s.clone().into());
     }
-    // --after and --pattern each name a condition by themselves.
-    let mut until: Vec<String> = o
-        .until
-        .iter()
-        .flat_map(|u| u.split(','))
-        .map(|s| s.to_string())
-        .collect();
-    if o.pattern.is_some() && !until.iter().any(|u| u == "match") {
-        until.push("match".into());
-    }
-    if let Some(ms) = o.after_ms {
-        wait.insert("after_ms".into(), ms.into());
-        if !until.iter().any(|u| u == "after") {
-            until.push("after".into());
-        }
-    }
-    if !until.is_empty() {
-        wait.insert("until".into(), until.join(",").into());
-    }
-    if let Some(from) = &o.from {
-        wait.insert("from".into(), from.clone().into());
+    for (k, v) in &o.conds {
+        wait.insert(k.clone(), v.clone());
     }
     if let Some(name) = client_name(o) {
         wait.insert("as".into(), name.into());
-    }
-    if let Some(p) = &o.pattern {
-        wait.insert("pattern".into(), p.clone().into());
     }
     wait
 }
 
 fn wanted_exit(o: &Opts) -> bool {
-    o.until
-        .as_deref()
-        .map(|u| u.split(',').any(|c| c == "exit"))
-        .unwrap_or(false)
+    o.conds.contains_key("until_exit")
 }
 
 fn encode(s: &str) -> String {
@@ -511,13 +502,17 @@ fn encode(s: &str) -> String {
 
 // ---- commands ------------------------------------------------------------------
 
-const WAIT_OPTS: [&str; 9] = [
+const WAIT_OPTS: [&str; 13] = [
     "--session",
     "--as",
-    "--from",
-    "--after",
-    "--until",
-    "--pattern",
+    "--until-match",
+    "--until-settle",
+    "--until-change",
+    "--until-exit",
+    "--until-broadcast",
+    "--until-broadcast-from",
+    "--until-elapsed",
+    "--until-none",
     "--timeout",
     "--json",
     "--style",
@@ -562,11 +557,18 @@ fn cmd_screen(args: &[String]) -> ! {
     let o = parse_opts("screen", args, &WAIT_OPTS, false);
     let mut q: Vec<String> = Vec::new();
     for (k, v) in wait_object(&o) {
-        let value = v
-            .as_str()
-            .map(str::to_string)
-            .unwrap_or_else(|| v.to_string());
-        q.push(format!("{k}={}", encode(&value)));
+        // Several patterns are the same name several times.
+        let each = match v {
+            Value::Array(list) => list,
+            one => vec![one],
+        };
+        for v in each {
+            let value = v
+                .as_str()
+                .map(str::to_string)
+                .unwrap_or_else(|| v.to_string());
+            q.push(format!("{k}={}", encode(&value)));
+        }
     }
     if let Some(t) = o.timeout_ms {
         q.push(format!("timeout_ms={t}"));
@@ -666,7 +668,9 @@ fn cmd_output(args: &[String]) -> ! {
 }
 
 fn cmd_resize(args: &[String]) -> ! {
-    let o = parse_opts("resize", args, &["--session", "--until", "--json"], true);
+    let mut allowed = WAIT_OPTS.to_vec();
+    allowed.retain(|a| a.starts_with("--until-") || *a == "--session" || *a == "--json");
+    let o = parse_opts("resize", args, &allowed, true);
     let size = o
         .rest
         .first()
@@ -676,7 +680,7 @@ fn cmd_resize(args: &[String]) -> ! {
         usage("'resize' takes COLSxROWS, such as: waldo-term resize 100x30")
     };
     let mut body = json!({"cols": cols, "rows": rows});
-    if o.until.is_some() {
+    if !o.conds.is_empty() {
         body["wait"] = Value::Object(wait_object(&o));
     }
     let (_, status, value) = call(

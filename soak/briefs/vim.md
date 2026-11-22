@@ -22,7 +22,7 @@ results by running `cat -A FILE` in the shell after each `:wq`.
    the prefix.
 5. A macro: `qa` ... `q` appending ` ;` and moving down; `5@a`.
 6. `:split`, `:vsplit`, `<C-w>` moves, `:only`, `:help`, `:q`.
-7. `/` search, `n`, and a `send --until match` on a message the search
+7. `/` search, `n`, and a `send --until-match` on a message the search
    makes appear.
 8. `W resize -s sh 80x20` and back; quote the status lines; is vim's bottom
    line on the last row in each response?
@@ -30,7 +30,7 @@ results by running `cat -A FILE` in the shell after each `:wq`.
    the shell, start `sleep 30` with a marker and `--timeout 2000`, press
    `<C-c>`, then run `echo after` in the shell.
 10. A single line of 300 characters; `wc -c` must agree.
-11. `W send -s sh --text 'exit' --keys '<Enter>' --until exit`, `W list`,
+11. `W send -s sh --text 'exit' --keys '<Enter>' --until-exit`, `W list`,
     `W gc --all`.
 
 ## Variant B: vim as the session's own program (the shorter one)
@@ -39,7 +39,7 @@ A shell session `sh` for checking, and one vim session per file.
 
 1. `W wrap --detach --name v1 -- vim --clean one.txt`, then IMMEDIATELY `W
    send -s v1 --keys 'i' --text 'first line' --keys '<Esc>:wq<Enter>'
-   --until exit`. Expected: one line.
+   --until-exit`. Expected: one line.
 2. two.txt: insert `one`, `two`, `three`; `ggdd`; `Gp`; `:wq`. Expected:
    two, three, one.
 3. three.txt: `i`, then `--paste $'def f():\n    if x:\n        return

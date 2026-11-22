@@ -25,10 +25,10 @@ appears, press <Esc> at once.
    redrawn at the new size.
 4. htop repaints every second or two. Note how waits behave: does `send`
    return `settle` or `timeout`, how long do calls take; try `wait --until
-   change`, and `wait --until match` with the filter on.
+   change`, and `wait --until-match` with the filter on.
 5. Batches that cross a menu boundary in ONE call, such as `--keys
    '<F6><Down><Down><Enter>'`: did every key take effect?
-6. `W send -s top --keys 'q' --until exit`; then `W kill mark`, `W list`,
+6. `W send -s top --keys 'q' --until-exit`; then `W kill mark`, `W list`,
    `W gc --all`.
 
 ## Variant B: htop started from a shell
@@ -42,5 +42,5 @@ appears, press <Esc> at once.
 4. `W resize -s sh 90x25`, then 120x30: quote status lines.
 5. `W send -s sh --keys 'q'`. Copy any hint. Back at the prompt, run `echo
    back; kill %1` in the shell.
-6. `W send -s sh --text 'exit' --keys '<Enter>' --until exit`, `W list`,
+6. `W send -s sh --text 'exit' --keys '<Enter>' --until-exit`, `W list`,
    `W gc --all`.

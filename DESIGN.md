@@ -294,9 +294,21 @@ was for a broadcast to end any wait of a client that had named itself. It
 was rejected: in a session of three, an agent waiting on a long build would
 be woken by the other two talking. Naming the conditions leaves the choice
 with the caller, and it does more: a marker or the program's exit, a prompt
-or an error. `after` is a length of time as a condition, so that "this
+or an error. `until_elapsed` is a length of time as a condition, so that "this
 text or five seconds" has no failure in it; the deadline remains the thing
 that means something went wrong.
+
+Each condition is a parameter of its own that carries its own argument:
+`until_match` takes the pattern, `until_elapsed` the time,
+`until_broadcast` the sender if only one counts. The first form was one
+`until` naming a condition, with `pattern`, `after_ms`, `from` and
+`since_gen` beside it, each meaning something only for one value of
+`until`. Allowing several conditions made that awkward: a list of names,
+and one shared pattern. With a parameter each, a request that says
+`until_match` twice has two patterns, and nothing is implied by anything
+else. Nobody was using the old form yet, so it was removed outright; the
+host refuses any other name that starts with `until`, which is what tells
+someone who still writes the old form.
 
 `exit` means the program being typed into: whatever had the terminal's
 foreground when the request began. For a session that runs one program that
@@ -373,7 +385,7 @@ a marker after the command and waits for the marker:
 
 ```
 waldo-term send -s sh --text 'make test; echo "rc=$?"' --keys '<Enter>' \
-    --until match --pattern '^rc=[0-9]+$' --timeout 120000
+    --until-match '^rc=[0-9]+$' --timeout 120000
 ```
 
 - The screen in the response shows the command's output and then the marker
@@ -427,11 +439,11 @@ These are requirements, not polish.
     `hint: 'vim' is no longer in the foreground; input now goes to 'bash'.`
   - A match wait with input that times out while the pattern matches text
     that was already there: the hint says that only a new match counts for
-    a request that sends input, and to use `wait --until match` instead.
+    a request that sends input, and to use `wait --until-match` instead.
   - A wait for `exit` that times out: the hint names the program that was
     being waited for.
   - A timeout while the screen was still changing:
-    `hint: the screen never went quiet; wait for specific text with --until match.`
+    `hint: the screen never went quiet; wait for specific text with --until-match.`
   - Unparsed text that looks like key notation sent as `text`:
     `hint: '<Esc>' was sent as literal text; use --keys for key names.`
 - `child` in every response includes `foreground`, the name of the process
@@ -650,7 +662,7 @@ Not built. The font to vendor is not chosen.
 
 `GET /v1/screen?format=png` returns a picture of the current screen as
 `image/png`. It takes the same wait parameters as any screen request, so
-`until=settle` captures a finished frame. The status line that the text format
+`until_settle` captures a finished frame. The status line that the text format
 prints is sent in a `Waldo-Status` response header.
 
 - The host draws. Any client gets a picture with one request, whether that is
@@ -777,7 +789,7 @@ sends SIGWINCH through the pty, reflows the primary screen, counts as a screen
 change, and restarts any settle window. The response waits for the screen to
 settle, so it shows what the program redrew, but for at most 1 s: after that
 it answers with reason `none` and the screen as it is. A `wait` object in
-the request replaces that, and `{"until": "none"}` answers at once.
+the request replaces that, and `{"until_none": true}` answers at once.
 
 ### 7.3 Human and agent input
 

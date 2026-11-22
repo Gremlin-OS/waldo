@@ -171,11 +171,13 @@ enum Until {
     Exit,
     Broadcast,
     /// This many milliseconds after the request began.
-    After(u64),
+    Elapsed(u64),
     None,
 }
 
 struct MatchInfo {
+    /// The pattern that matched, when it was a wait's.
+    pattern: String,
     text: String,
     groups: Vec<Value>,
     line: u64,
@@ -189,7 +191,7 @@ enum Reason {
     Change,
     Exit,
     Broadcast,
-    After,
+    Elapsed,
     None,
     Timeout,
 }
@@ -202,7 +204,7 @@ impl Reason {
             Reason::Change => "change",
             Reason::Exit => "exit",
             Reason::Broadcast => "broadcast",
-            Reason::After => "after",
+            Reason::Elapsed => "elapsed",
             Reason::None => "none",
             Reason::Timeout => "timeout",
         }
@@ -225,10 +227,8 @@ struct Wait {
     interleaved: bool,
     /// Running out of time is not a failure: the answer is `none`.
     soft: bool,
-    pattern: Option<(Regex, String)>,
-    /// Matches that were already there when the request began; they do not
-    /// satisfy it.
-    known: Vec<(u64, String)>,
+    /// The patterns of `until_match`; any one of them matching will do.
+    patterns: Vec<Pattern>,
     hint: Option<String>,
     /// Return the screen with SGR colour codes left in.
     ansi: bool,
@@ -251,6 +251,15 @@ struct Wait {
     /// The newest broadcast when the request began. A wait for a
     /// broadcast from a client without a name means one after this.
     heard_at_start: u64,
+}
+
+/// One pattern a request waits for.
+struct Pattern {
+    re: Regex,
+    source: String,
+    /// Matches that were already there when the request began; they do not
+    /// satisfy it.
+    known: Vec<(u64, String)>,
 }
 
 impl Wait {
@@ -565,7 +574,7 @@ impl Host {
                 consider(now + EXIT_POLL);
             }
             for cond in w.conditions() {
-                if let Until::After(ms) = cond {
+                if let Until::Elapsed(ms) = cond {
                     consider(w.started + Duration::from_millis(ms));
                 }
             }
@@ -1562,6 +1571,7 @@ impl Host {
                 let m = caps.get(0).unwrap();
                 let col0 = subject[..m.start()].chars().count();
                 out.push(MatchInfo {
+                    pattern: String::new(),
                     text: m.as_str().to_string(),
                     groups: (1..caps.len())
                         .map(|i| {
@@ -1580,14 +1590,21 @@ impl Host {
     }
 
     fn check_match(&self, w: &mut Wait, lines: &[Logical]) -> Option<MatchInfo> {
-        let (re, _) = w.pattern.as_ref()?;
+        w.patterns
+            .iter_mut()
+            .find_map(|p| self.check_pattern(p, lines))
+    }
+
+    fn check_pattern(&self, p: &mut Pattern, lines: &[Logical]) -> Option<MatchInfo> {
+        let re = &p.re;
         // Lines that scrolled off since the last look.
         for (abs, line) in &self.fresh_lines {
             if let Some(caps) = re.captures(line) {
                 let m = caps.get(0).unwrap();
                 let key = (*abs, m.as_str().to_string());
-                if !w.known.contains(&key) {
+                if !p.known.contains(&key) {
                     return Some(MatchInfo {
+                        pattern: p.source.clone(),
                         text: key.1,
                         groups: (1..caps.len())
                             .map(|i| {
@@ -1606,11 +1623,15 @@ impl Host {
         let found = self.matches_now(re, lines);
         // A match that was there at the start stops counting as known once it
         // is gone, so the same text appearing again later is a new match.
-        w.known
+        p.known
             .retain(|k| found.iter().any(|f| f.line == k.0 && f.text == k.1));
         found
             .into_iter()
-            .find(|f| !w.known.contains(&(f.line, f.text.clone())))
+            .find(|f| !p.known.contains(&(f.line, f.text.clone())))
+            .map(|mut f| {
+                f.pattern = p.source.clone();
+                f
+            })
     }
 
     fn evaluate_waits(&mut self) {
@@ -1644,7 +1665,7 @@ impl Host {
                     Until::Settle if settled => Some(Reason::Settle),
                     Until::Change(g) if self.gen != g => Some(Reason::Change),
                     Until::Broadcast if self.spoken_to(&w) => Some(Reason::Broadcast),
-                    Until::After(ms) if ms_since(w.started) >= ms => Some(Reason::After),
+                    Until::Elapsed(ms) if ms_since(w.started) >= ms => Some(Reason::Elapsed),
                     // The program inside the session that was being typed
                     // into is gone, and what replaced it has finished
                     // drawing.
@@ -1766,7 +1787,7 @@ impl Host {
             Reason::Match(m) => {
                 let mut mj = json!({
                     "id": Value::Null,
-                    "pattern": w.pattern.as_ref().map(|p| p.1.clone()),
+                    "pattern": m.pattern,
                     "text": m.text,
                     "groups": m.groups,
                     "count": 1,
@@ -1821,18 +1842,18 @@ impl Host {
                         Some("the program has not drawn anything yet; settle waits for the first text on screen.".into())
                     }
                     Until::Settle if self.last_change.elapsed() < Duration::from_secs(2) => {
-                        Some("the screen never went quiet; wait for specific text with --until match.".into())
+                        Some("the screen never went quiet; wait for specific text with --until-match.".into())
                     }
-                    Until::Match if !w.known.is_empty() => Some(
-                        "the pattern matches text that was on screen before the input was sent, and nothing new matched it; a request that sends input waits for a new match. To accept text that is already there, use 'waldo-term wait --until match'.".into(),
+                    Until::Match if w.patterns.iter().any(|p| !p.known.is_empty()) => Some(
+                        "the pattern matches text that was on screen before the input was sent, and nothing new matched it; a request that sends input waits for a new match. To accept text that is already there, use 'waldo-term wait --until-match'.".into(),
                     ),
                     Until::Match => Some("the pattern did not appear; it is matched against one line at a time. Check the screen above for what is there.".into()),
                     Until::Exit => {
                         let fg = sys::foreground_pgrp(self.master).and_then(sys::process_name).unwrap_or_else(|| "the program".into());
                         Some(match w.exit_of.as_ref() {
-                            Some((_, name)) => format!("'{name}' has not exited. --until exit waits for the program that had the foreground when the request began."),
+                            Some((_, name)) => format!("'{name}' has not exited. --until-exit waits for the program that had the foreground when the request began."),
                             None => format!(
-                                "the session has not ended: '{fg}' is in the foreground. --until exit waits for the program you are typing into, and that was the session's own ({}); to wait for a command started from it, wait for its output or a marker (waldo-term help shell).",
+                                "the session has not ended: '{fg}' is in the foreground. --until-exit waits for the program you are typing into, and that was the session's own ({}); to wait for a command started from it, wait for its output or a marker (waldo-term help shell).",
                                 self.cfg.argv.first().map(|s| s.as_str()).unwrap_or("?")
                             ),
                         })
@@ -2461,99 +2482,206 @@ impl Host {
                 .or_else(|| v.as_str().and_then(|s| s.parse().ok()))
         };
 
-        // One condition, or several: a list, or names with commas between.
-        // The request returns when any one of them is met.
-        let named: Vec<String> = match field("until") {
-            None | Some(Value::Null) => Vec::new(),
-            Some(Value::Array(a)) => a
+        // Each condition is a parameter of its own, `until_match` and so on,
+        // looked for in the query, the wait object and the top of the body.
+        // A request may give several, and returns when any one is met.
+        const CONDITIONS: [&str; 7] = [
+            "until_match",
+            "until_exit",
+            "until_broadcast",
+            "until_change",
+            "until_settle",
+            "until_elapsed",
+            "until_none",
+        ];
+        let given = |name: &str| -> Vec<Value> {
+            let in_query: Vec<Value> = req
+                .query
                 .iter()
-                .map(|v| v.as_str().unwrap_or("").to_string())
-                .collect(),
-            Some(v) => v
-                .as_str()
-                .unwrap_or("")
-                .split(',')
-                .map(|s| s.trim().to_string())
-                .collect(),
+                .filter(|(k, _)| k == name)
+                .map(|(_, v)| Value::from(v.clone()))
+                .collect();
+            if !in_query.is_empty() {
+                return in_query;
+            }
+            match wait_obj.get(name).or_else(|| body.get(name)) {
+                None | Some(Value::Null) => Vec::new(),
+                Some(Value::Array(a)) => a.clone(),
+                Some(v) => vec![v.clone()],
+            }
         };
-        let after_ms = match field("after_ms") {
-            None | Some(Value::Null) => None,
-            Some(v) => match as_u64(&v).filter(|n| *n <= MAX_TIMEOUT_MS) {
-                Some(n) => Some(n),
+        // Yes or no, as JSON or as it comes in a query string.
+        let on = |v: &Value| -> Option<bool> {
+            match v {
+                Value::Bool(b) => Some(*b),
+                Value::String(s) => match s.as_str() {
+                    "" | "true" | "1" => Some(true),
+                    "false" | "0" => Some(false),
+                    _ => None,
+                },
+                _ => None,
+            }
+        };
+        // A name that starts like a condition and is not one is a mistake
+        // worth saying: left alone, the request would wait for something
+        // other than what its sender meant.
+        let stray = req
+            .query
+            .iter()
+            .map(|(k, _)| k.as_str())
+            .chain(
+                wait_obj
+                    .as_object()
+                    .into_iter()
+                    .flat_map(|o| o.keys().map(|k| k.as_str())),
+            )
+            .chain(
+                body.as_object()
+                    .into_iter()
+                    .flat_map(|o| o.keys().map(|k| k.as_str())),
+            )
+            .find(|k| k.starts_with("until") && !CONDITIONS.contains(k))
+            .map(|k| k.to_string());
+        if let Some(k) = stray {
+            return self.error(
+                id,
+                req,
+                400,
+                "bad_until",
+                &format!("'{k}' is not a wait condition; they are until_settle, until_match, until_change, until_exit, until_broadcast, until_elapsed and until_none"),
+            );
+        }
+        let mut wrong: Option<String> = None;
+        let mut flag = |name: &str| -> bool {
+            match given(name).first().map(on) {
+                None => false,
+                Some(Some(b)) => b,
+                Some(None) => {
+                    wrong = Some(format!("{name} is true or false"));
+                    false
+                }
+            }
+        };
+        let (wants_exit, wants_settle, wants_none) =
+            (flag("until_exit"), flag("until_settle"), flag("until_none"));
+        if let Some(text) = wrong {
+            return self.error(id, req, 400, "bad_until", &text);
+        }
+
+        // When more than one is met at the same moment, the earlier in this
+        // order is the reason given.
+        let mut conds: Vec<Until> = Vec::new();
+        let mut patterns: Vec<Pattern> = Vec::new();
+        for v in given("until_match") {
+            let Some(source) = v.as_str().filter(|s| !s.is_empty()) else {
+                return self.error(
+                    id,
+                    req,
+                    400,
+                    "bad_pattern",
+                    "until_match takes a regular expression, matched against one line of the screen (--until-match RE)",
+                );
+            };
+            match regex_lite::RegexBuilder::new(source)
+                .size_limit(1 << 20)
+                .build()
+            {
+                Ok(re) => patterns.push(Pattern {
+                    re,
+                    source: source.to_string(),
+                    known: Vec::new(),
+                }),
+                Err(e) => {
+                    return self.error(
+                        id,
+                        req,
+                        400,
+                        "bad_pattern",
+                        &format!("the pattern is not a valid regular expression: {e}"),
+                    )
+                }
+            }
+        }
+        if !patterns.is_empty() {
+            conds.push(Until::Match);
+        }
+        if wants_exit {
+            conds.push(Until::Exit);
+        }
+        // True for a broadcast from anyone, or the name of the one sender
+        // that counts.
+        let mut from = None;
+        if let Some(v) = given("until_broadcast").first() {
+            let anyone = on(v);
+            if anyone != Some(false) {
+                if !self.cfg.broadcasts {
+                    return self.error(id, req, 409, "broadcasts_off", BROADCASTS_OFF);
+                }
+                if anyone.is_none() {
+                    match v.as_str().filter(|s| valid_name(s)) {
+                        Some(s) => from = Some(s.to_string()),
+                        None => return self.error(id, req, 400, "bad_name", NAME_RULE),
+                    }
+                }
+                conds.push(Until::Broadcast);
+            }
+        }
+        // True for any change from now, or the `gen` to differ from.
+        if let Some(v) = given("until_change").first() {
+            match (on(v), as_u64(v)) {
+                (Some(true), _) => conds.push(Until::Change(self.gen)),
+                (Some(false), _) => {}
+                (None, Some(g)) => conds.push(Until::Change(g)),
+                (None, None) => {
+                    return self.error(
+                        id,
+                        req,
+                        400,
+                        "bad_until",
+                        "until_change is true, or the gen to differ from",
+                    )
+                }
+            }
+        }
+        if wants_settle {
+            conds.push(Until::Settle);
+        }
+        let mut elapsed_ms = None;
+        if let Some(v) = given("until_elapsed").first() {
+            match as_u64(v).filter(|n| *n <= MAX_TIMEOUT_MS) {
+                Some(ms) => {
+                    elapsed_ms = Some(ms);
+                    conds.push(Until::Elapsed(ms));
+                }
                 None => {
                     return self.error(
                         id,
                         req,
                         400,
-                        "bad_after",
+                        "bad_until",
                         &format!(
-                        "after_ms must be a whole number of milliseconds, at most {MAX_TIMEOUT_MS}"
+                        "until_elapsed is a whole number of milliseconds, at most {MAX_TIMEOUT_MS}"
                     ),
                     )
                 }
-            },
-        };
-        let mut conds: Vec<Until> = Vec::new();
-        for name in &named {
-            let cond = match name.as_str() {
-                "settle" => Until::Settle,
-                "match" => Until::Match,
-                "exit" => Until::Exit,
-                "none" => Until::None,
-                "broadcast" if !self.cfg.broadcasts => {
-                    return self.error(id, req, 409, "broadcasts_off", BROADCASTS_OFF);
-                }
-                "broadcast" => Until::Broadcast,
-                "after" => match after_ms {
-                    Some(ms) => Until::After(ms),
-                    None => return self.error(
-                        id,
-                        req,
-                        400,
-                        "bad_after",
-                        "until=after needs after_ms: how many milliseconds to wait (--after MS)",
-                    ),
-                },
-                "change" => match field("since_gen").as_ref().and_then(as_u64) {
-                    Some(g) => Until::Change(g),
-                    None => Until::Change(self.gen),
-                },
-                other => {
-                    return self.error(
-                        id,
-                        req,
-                        400,
-                        "unknown_until",
-                        &format!(
-                            "unknown wait condition '{other}'; use settle, match, change, exit, broadcast, after or none"
-                        ),
-                    );
-                }
-            };
-            if !conds.contains(&cond) {
-                conds.push(cond);
             }
+        }
+        if wants_none {
+            if !conds.is_empty() {
+                return self.error(
+                    id,
+                    req,
+                    400,
+                    "bad_until",
+                    "until_none answers at once, so it cannot be combined with another wait condition",
+                );
+            }
+            conds.push(Until::None);
         }
         if conds.is_empty() {
             conds.push(default);
         }
-        if conds.len() > 1 && conds.contains(&Until::None) {
-            return self.error(
-                id,
-                req,
-                400,
-                "unknown_until",
-                "'none' answers at once, so it cannot be combined with another wait condition",
-            );
-        }
         let until = conds[0];
-        let from = match field("from") {
-            None | Some(Value::Null) => None,
-            Some(v) => match v.as_str().filter(|s| valid_name(s)) {
-                Some(s) => Some(s.to_string()),
-                None => return self.error(id, req, 400, "bad_name", NAME_RULE),
-            },
-        };
         let ansi = match field("style")
             .and_then(|v| v.as_str().map(|s| s.to_string()))
             .as_deref()
@@ -2579,11 +2707,10 @@ impl Host {
         };
         // A wait for a length of time is not cut short by the usual
         // deadline; one the request sets itself still applies.
-        let default_timeout =
-            match after_ms.filter(|_| conds.iter().any(|c| matches!(c, Until::After(_)))) {
-                Some(ms) => DEFAULT_TIMEOUT_MS.max(ms + 1000).min(MAX_TIMEOUT_MS + 1000),
-                None => DEFAULT_TIMEOUT_MS,
-            };
+        let default_timeout = match elapsed_ms {
+            Some(ms) => DEFAULT_TIMEOUT_MS.max(ms + 1000).min(MAX_TIMEOUT_MS + 1000),
+            None => DEFAULT_TIMEOUT_MS,
+        };
         let timeout_ms = match field("timeout_ms").or_else(|| field("timeout")) {
             None => default_timeout,
             Some(v) => match as_u64(&v) {
@@ -2599,34 +2726,6 @@ impl Host {
                 }
             },
         };
-        let mut pattern = None;
-        if conds.contains(&Until::Match) {
-            let Some(p) = field("pattern").and_then(|v| v.as_str().map(|s| s.to_string())) else {
-                return self.error(
-                    id,
-                    req,
-                    400,
-                    "missing_pattern",
-                    "until=match needs a pattern: a regular expression matched against one line of the screen (--pattern RE)",
-                );
-            };
-            match regex_lite::RegexBuilder::new(&p)
-                .size_limit(1 << 20)
-                .build()
-            {
-                Ok(re) => pattern = Some((re, p)),
-                Err(e) => {
-                    return self.error(
-                        id,
-                        req,
-                        400,
-                        "bad_pattern",
-                        &format!("the pattern is not a valid regular expression: {e}"),
-                    )
-                }
-            }
-        }
-
         let now = Instant::now();
         let sends_input = owner.is_some();
         let (req_id, hint) = match owner {
@@ -2647,8 +2746,7 @@ impl Host {
             keep_alive: req.keep_alive,
             interleaved: false,
             soft: false,
-            pattern,
-            known: Vec::new(),
+            patterns,
             hint,
             ansi,
             fg_before: None,
@@ -2680,9 +2778,10 @@ impl Host {
         // With input, text that is already on screen does not count: the
         // caller is waiting for what its input causes.
         if owner_has_input(&self.queue, req_id) {
-            if let Some((re, _)) = w.pattern.as_ref() {
-                w.known = self
-                    .matches_now(re, &self.visible_lines())
+            let lines = self.visible_lines();
+            for p in w.patterns.iter_mut() {
+                p.known = self
+                    .matches_now(&p.re, &lines)
                     .into_iter()
                     .map(|m| (m.line, m.text))
                     .collect();
@@ -3052,6 +3151,7 @@ fn line_match(re: &Regex, abs: u64, line: &str) -> Option<MatchInfo> {
     let caps = re.captures(&subject)?;
     let m = caps.get(0)?;
     Some(MatchInfo {
+        pattern: String::new(),
         text: m.as_str().to_string(),
         groups: (1..caps.len())
             .map(|i| {
