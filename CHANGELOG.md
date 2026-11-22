@@ -32,7 +32,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `waldo-term status`: what the session is, from the host's status
   endpoint. The 0.1.0 notes listed this command, but it did not exist.
 
+- `--until-match-new RE`: a pattern for which text already on screen never
+  counts, even on a request that types nothing. A plain wait for the next
+  line addressed to you would otherwise return at once on the last one.
+
 ### Changed
+
+- A client that names itself for the first time is given the last five
+  broadcasts, not all 32 that are kept.
 
 - **Wait conditions are spelled differently, in the command line and in
   the API.** Each is an option of its own that takes its own argument:

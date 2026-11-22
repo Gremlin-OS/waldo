@@ -195,6 +195,7 @@ same everywhere:
 |---|---|
 | `until_settle` | `true`: wait until the screen is settled (5.2) |
 | `until_match` | A regular expression, or a list of them: wait until one matches a line (5.3) |
+| `until_match_new` | The same, but a match that is on screen when the request arrives never counts, whether or not the request types anything |
 | `until_change` | `true`: wait until the screen changes. Or a number: until `gen` differs from it |
 | `until_exit` | `true`: wait until the program being typed into exits (5.1) |
 | `until_broadcast` | `true`: wait until another client says something. Or a name: until that sender does (section 4.10) |
@@ -576,7 +577,8 @@ its stream (section 7.2). Any other client:
   `broadcasts` list in its response (section 3.2): every broadcast kept
   that this name has not been given before, oldest first, leaving out the
   ones it sent under that name. Each is given to a name once. A name the
-  host has not seen before is given everything kept. A request without
+  host has not seen before is given the last five, enough to know what is
+  going on; `GET /v1/broadcasts` has the rest. A request without
   `as` gets none. The host remembers 64 names.
 - **By waiting.** `until_broadcast` returns, with reason `broadcast`, as
   soon as there is one to give. With `as`, that is one this name has not
@@ -610,7 +612,7 @@ and the host does not check it.
 
 | Parameter | Reason | Returns when |
 |---|---|---|
-| `until_match` | `match` | One of its patterns matches a line (5.3). `match.pattern` in the response says which |
+| `until_match`, `until_match_new` | `match` | One of the patterns matches a line (5.3). `match.pattern` in the response says which. For `until_match_new`, and for any pattern on a request that types, a match already on screen when the request arrived does not count |
 | `until_exit` | `exit` | The program that had the terminal's foreground when the request began has exited. That is the session's own program, or a program started inside it, such as an editor run from a shell |
 | `until_broadcast` | `broadcast` | Another client has said something this one has not been given (section 4.10) |
 | `until_change` | `change` | `gen` differs from what it was when the request arrived, or from the number given |
@@ -1061,7 +1063,7 @@ itself.
 - **File paths.** It makes relative `--text-file`, `--keys-file` and
   `--paste-file` paths absolute before sending, and reads `-` from stdin.
 - **Wait options.** One for each condition, named after it:
-  `--until-match RE` (repeatable), `--until-settle`, `--until-change`,
+  `--until-match RE` and `--until-match-new RE` (repeatable), `--until-settle`, `--until-change`,
   `--until-exit`, `--until-broadcast`, `--until-broadcast-from NAME`,
   `--until-elapsed MS` and `--until-none`.
 - **A name.** `--as NAME`, or else the environment variable `WALDO_AS`, is

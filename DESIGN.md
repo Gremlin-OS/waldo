@@ -841,11 +841,13 @@ The reference is PROTOCOL.md section 4.10.
   gives no name gets none, and nothing about its responses changes.
 - **Delivery rides on responses.** An agent has no open connection to push
   to; it has its next request. What others said arrives with whatever it
-  asked for, so an agent is steered without polling. `until: broadcast` is
+  asked for, so an agent is steered without polling. `until_broadcast` is
   for the agent that should stop and wait to be spoken to.
-- **A new name is given what is kept.** Someone who joins late sees the
-  recent conversation. The cost is that the first request under a new name
-  can carry up to 32 lines.
+- **A new name is given the last five.** Someone who joins late sees
+  enough of the recent conversation to know what is going on. It used to
+  be everything kept. Then a third agent joined a session where a person
+  and an agent had been talking for an hour, and its first response began
+  with thirty lines that had nothing to do with it.
 - **Where it is printed.** Above the status line. The screen is the
   program's to fill, and so is everything under it that looks like the
   screen; the lines before the status line are only ever waldo's.

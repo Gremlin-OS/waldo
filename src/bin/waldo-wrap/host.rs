@@ -62,6 +62,9 @@ const MAX_BROADCASTS: usize = 32;
 const MAX_BROADCAST_BYTES: usize = 1000;
 /// How many client names are remembered.
 const MAX_NAMES: usize = 64;
+/// How many of the kept broadcasts a name is given the first time the
+/// host hears from it.
+const NEWCOMER_BROADCASTS: u64 = 5;
 const BROADCASTS_OFF: &str = "broadcasts are off for this session: it was started with --no-broadcast. Its other clients cannot be reached through it.";
 const NAME_RULE: &str = "a name is 1 to 32 characters from a-z, A-Z, 0-9, _ and -";
 const DRAIN_QUIET: Duration = Duration::from_millis(100);
@@ -260,6 +263,9 @@ struct Pattern {
     /// Matches that were already there when the request began; they do not
     /// satisfy it.
     known: Vec<(u64, String)>,
+    /// Only a match that was not there when the request began counts, even
+    /// if the request types nothing (`until_match_new`).
+    new_only: bool,
 }
 
 impl Wait {
@@ -1324,13 +1330,15 @@ impl Host {
     /// those after the last it heard, leaving out its own; otherwise those
     /// made since the request began.
     fn unheard(&self, w: &Wait) -> Vec<Value> {
+        // A name heard from for the first time is given the last few, not
+        // everything kept: enough to know what is going on.
         let after = match w.name.as_ref() {
             Some(name) => self
                 .heard
                 .iter()
                 .find(|(n, _)| n == name)
                 .map(|h| h.1)
-                .unwrap_or(0),
+                .unwrap_or(self.last_broadcast.saturating_sub(NEWCOMER_BROADCASTS)),
             None => w.heard_at_start,
         };
         self.broadcasts
@@ -2485,8 +2493,9 @@ impl Host {
         // Each condition is a parameter of its own, `until_match` and so on,
         // looked for in the query, the wait object and the top of the body.
         // A request may give several, and returns when any one is met.
-        const CONDITIONS: [&str; 7] = [
+        const CONDITIONS: [&str; 8] = [
             "until_match",
+            "until_match_new",
             "until_exit",
             "until_broadcast",
             "until_change",
@@ -2548,7 +2557,7 @@ impl Host {
                 req,
                 400,
                 "bad_until",
-                &format!("'{k}' is not a wait condition; they are until_settle, until_match, until_change, until_exit, until_broadcast, until_elapsed and until_none"),
+                &format!("'{k}' is not a wait condition; they are until_settle, until_match, until_match_new, until_change, until_exit, until_broadcast, until_elapsed and until_none"),
             );
         }
         let mut wrong: Option<String> = None;
@@ -2572,7 +2581,12 @@ impl Host {
         // order is the reason given.
         let mut conds: Vec<Until> = Vec::new();
         let mut patterns: Vec<Pattern> = Vec::new();
-        for v in given("until_match") {
+        let wanted: Vec<(Value, bool)> = given("until_match")
+            .into_iter()
+            .map(|v| (v, false))
+            .chain(given("until_match_new").into_iter().map(|v| (v, true)))
+            .collect();
+        for (v, new_only) in wanted {
             let Some(source) = v.as_str().filter(|s| !s.is_empty()) else {
                 return self.error(
                     id,
@@ -2590,6 +2604,7 @@ impl Host {
                     re,
                     source: source.to_string(),
                     known: Vec::new(),
+                    new_only,
                 }),
                 Err(e) => {
                     return self.error(
@@ -2777,9 +2792,12 @@ impl Host {
         }
         // With input, text that is already on screen does not count: the
         // caller is waiting for what its input causes.
-        if owner_has_input(&self.queue, req_id) {
+        // The same goes for a pattern that asked for it, whatever the
+        // request does.
+        let typing = owner_has_input(&self.queue, req_id);
+        if typing || w.patterns.iter().any(|p| p.new_only) {
             let lines = self.visible_lines();
-            for p in w.patterns.iter_mut() {
+            for p in w.patterns.iter_mut().filter(|p| typing || p.new_only) {
                 p.known = self
                     .matches_now(&p.re, &lines)
                     .into_iter()

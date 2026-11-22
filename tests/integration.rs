@@ -4514,3 +4514,108 @@ fn every_command_the_help_lists_exists() {
     assert_eq!(r.code, 2);
     assert!(r.err.contains("unknown command 'frobnicate'"), "{}", r.err);
 }
+
+#[test]
+fn a_pattern_can_ask_for_new_matches_only() {
+    let t = T::new();
+    t.bash("nm");
+    assert_eq!(t.sh("nm", "echo '@claude first.'").code, 0);
+
+    // A wait that types nothing counts what is already on screen.
+    let (code, v) = t.json(&[
+        "wait",
+        "-s",
+        "nm",
+        "--until-match",
+        "^@claude .*[.]$",
+        "--timeout",
+        "2000",
+    ]);
+    assert_eq!(code, 0, "{v}");
+    assert_eq!(v["match"]["text"], "@claude first.");
+
+    // Asked for new matches only, it does not, and waits for the next one.
+    let r = t.term(&[
+        "wait",
+        "-s",
+        "nm",
+        "--until-match-new",
+        "^@claude .*[.]$",
+        "--timeout",
+        "400",
+    ]);
+    assert_eq!(r.code, 124, "{}", r.out);
+    let waiter = {
+        let mut c = t.command(TERM);
+        c.args([
+            "wait",
+            "--json",
+            "-s",
+            "nm",
+            "--until-match-new",
+            "^@claude .*[.]$",
+            "--timeout",
+            "8000",
+        ]);
+        std::thread::spawn(move || T::finish(c.output().unwrap()))
+    };
+    std::thread::sleep(Duration::from_millis(400));
+    assert_eq!(t.sh("nm", "echo '@claude second.'").code, 0);
+    let r = waiter.join().unwrap();
+    let v: Value =
+        serde_json::from_str(&r.out).unwrap_or_else(|e| panic!("{e}: {} / {}", r.out, r.err));
+    assert_eq!(v["reason"], "match", "{v}");
+    assert_eq!(v["match"]["text"], "@claude second.");
+    assert_eq!(v["match"]["pattern"], "^@claude .*[.]$");
+
+    // Both kinds in one request: the plain one still sees what is there.
+    let (_, v) = t.json(&[
+        "screen",
+        "-s",
+        "nm",
+        "--until-match-new",
+        "never",
+        "--until-match",
+        "^@claude first",
+    ]);
+    assert_eq!(v["reason"], "match", "{v}");
+    assert_eq!(v["match"]["pattern"], "^@claude first");
+}
+
+#[test]
+fn a_new_name_is_given_the_last_five_broadcasts() {
+    let t = T::new();
+    t.bash("lf");
+    for i in 1..=9 {
+        assert_eq!(
+            t.term(&["broadcast", "-s", "lf", "--as", "ann", &format!("line {i}")])
+                .code,
+            0
+        );
+    }
+    // The first request under a name: the last five, oldest first.
+    let (_, v) = t.json(&["screen", "-s", "lf", "--as", "bob"]);
+    let said: Vec<&str> = v["broadcasts"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|b| b["text"].as_str().unwrap())
+        .collect();
+    assert_eq!(said, ["line 5", "line 6", "line 7", "line 8", "line 9"]);
+    // After that, only what is new.
+    assert_eq!(
+        t.term(&["broadcast", "-s", "lf", "--as", "ann", "line 10"])
+            .code,
+        0
+    );
+    let (_, v) = t.json(&["screen", "-s", "lf", "--as", "bob"]);
+    assert_eq!(v["broadcasts"].as_array().unwrap().len(), 1, "{v}");
+    // The rest can still be asked for.
+    let sock = t.session_dir("lf").join("sock");
+    let resp = raw_http(
+        sock.to_str().unwrap(),
+        "GET /v1/broadcasts HTTP/1.1\r\nHost: waldo\r\nConnection: close\r\n\r\n",
+    );
+    let all: Value = serde_json::from_str(resp.split("\r\n\r\n").nth(1).unwrap()).unwrap();
+    assert_eq!(all["broadcasts"].as_array().unwrap().len(), 10);
+}
