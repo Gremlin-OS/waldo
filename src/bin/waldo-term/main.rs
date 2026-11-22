@@ -238,10 +238,22 @@ fn http(stream: &mut UnixStream, method: &str, path: &str, body: Option<&Value>)
         req.push_str(&format!("Content-Type: application/json\r\nContent-Length: {}\r\n", body_bytes.len()));
     }
     req.push_str("\r\n");
-    stream.write_all(req.as_bytes()).map_err(|e| format!("cannot send the request: {e}"))?;
-    stream.write_all(&body_bytes).map_err(|e| format!("cannot send the request: {e}"))?;
+    // A host that exits with this request unread resets the connection.
+    // That is the session ending, the same as a connection closed with no
+    // answer.
+    let hung_up = |e: &std::io::Error| matches!(e.kind(), std::io::ErrorKind::ConnectionReset | std::io::ErrorKind::BrokenPipe);
+    let sent = stream.write_all(req.as_bytes()).and_then(|_| stream.write_all(&body_bytes));
+    match sent {
+        Err(e) if hung_up(&e) => return Err("closed".into()),
+        Err(e) => return Err(format!("cannot send the request: {e}")),
+        Ok(()) => {}
+    }
     let mut raw = Vec::new();
-    stream.read_to_end(&mut raw).map_err(|e| format!("no response from the session: {e}"))?;
+    match stream.read_to_end(&mut raw) {
+        Err(e) if hung_up(&e) && raw.is_empty() => return Err("closed".into()),
+        Err(e) => return Err(format!("no response from the session: {e}")),
+        Ok(_) => {}
+    }
     if raw.is_empty() {
         return Err("closed".into());
     }

@@ -31,14 +31,16 @@ jobs:
     timeout-minutes: 60
     steps:
       - uses: actions/checkout@v4
-      - uses: cachix/install-nix-action@v31
+      # This installer leaves the Nix store writable by the runner, which
+      # the cache below needs in order to restore into it.
+      - uses: nixbuild/nix-quick-install-action@v30
       # Keeps the Nix store between runs, so the emulator library and the
       # Rust toolchain are not built or fetched again until the flake or
       # the vendored tarballs change.
-      - uses: nix-community/cache-nix-action@v6
+      - uses: nix-community/cache-nix-action@v7
         with:
-          primary-key: nix-${{ runner.os }}-${{ hashFiles('flake.nix', 'flake.lock', 'nix/**', 'vendor/libghostty-vt/SHA256SUMS') }}
-          restore-prefixes-first: nix-${{ runner.os }}-
+          primary-key: nix-store-${{ runner.os }}-${{ hashFiles('flake.nix', 'flake.lock', 'nix/**', 'vendor/libghostty-vt/SHA256SUMS') }}
+          restore-prefixes-first-match: nix-store-${{ runner.os }}-
           gc-max-store-size-linux: 2G
       # Builds the package, runs the unit and integration tests, and runs
       # clippy with warnings as errors. The same command works locally.
