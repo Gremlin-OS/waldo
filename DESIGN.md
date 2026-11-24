@@ -427,9 +427,27 @@ waldo-term send -s sh --text 'make test; echo "rc=$?"' --keys '<Enter>' \
 - The marker should be something the output will not contain, or the wait
   returns early.
 - `foreground` in every response (`fg=` in the text format) names the
-  program that owns the terminal: the shell at its prompt, the command while
+  job that has the terminal: the shell at its prompt, the command while
   one is running. A shell builtin, or a shell reached through ssh, does not
   show there; the marker does.
+- That name is one fact and no more. A shell with job control puts each
+  command line in a process group of its own and tells the kernel that
+  the group has the terminal (`tcsetpgrp`); the host reads that back
+  (`tcgetpgrp`) and names the group's leader. So it names a job, not the
+  program that reads the keys: `tail -f log | less` is `tail`. When the
+  leader has exited, as in `seq 1 100 | less`, the group still carries its
+  id and there is no process to name; the host then names the one process
+  left in the group, which is the only one that can have the terminal, and
+  names nothing when several are left, because nothing in the kernel says
+  which of them reads. A list of them was considered and dropped: it reads
+  like the command line, and it has neither its order nor the programs
+  that have exited. Naming the session's own program instead would be
+  worse than no name, since `fg=bash` reads as "at the prompt". Everything
+  the host does with the foreground uses the group, not its name, so a job
+  with no name still gets its signals, its `--until-exit` and its hint.
+- The host sees one terminal deep. With tmux, ssh or another waldo in the
+  session, the foreground is that program for as long as it runs, whatever
+  is running inside it.
 - `waldo-term help shell` teaches this.
 
 There was a `run` command that did this itself. It typed the command inside

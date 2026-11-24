@@ -289,9 +289,13 @@ with its exit status.
 - If the output is longer than the screen, 'waldo-term output --tail N'
   prints the last N lines of everything the session has printed.
 - Each newline in --text is Enter, so one send can carry several commands.
-- fg= in the status line names the program that has the terminal: the
-  shell at its prompt, the command while one is running. A shell builtin,
-  or a shell reached through ssh, does not show there; the marker does.
+- fg= in the status line names the job that has the terminal: the shell
+  at its prompt, the command while one is running. It is not always the
+  program that takes your keys. A pipeline is named after its first
+  program, or after the one program left in it; 'running' with no fg=
+  means a job waldo cannot name. Inside tmux or ssh it only ever says
+  tmux or ssh. A shell builtin does not show at all; the marker does.
+  The screen is what tells you where your keys go.
 - To stop a running command: waldo-term send --keys '<C-c>'
 
 examples:
