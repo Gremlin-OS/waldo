@@ -484,7 +484,7 @@ fn settle_during_a_silent_job_carries_a_hint() {
         r.out
     );
     assert!(
-        r.out.contains("hint: 'sleep' is still running; settle only means the screen went quiet. To wait for it to end, see 'waldo-term help shell'."),
+        r.out.contains("hint: 'sleep' is running in the foreground. If you do not expect to interact with it, wait for it to end: waldo-term wait --until-exit"),
         "{}",
         r.out
     );
@@ -514,6 +514,29 @@ fn settle_during_a_silent_job_carries_a_hint() {
     let r = t.term(&["wait", "-s", "h1", "--until-settle"]);
     assert!(!r.out.contains("hint:"), "{}", r.out);
     assert!(status_line(&r.out).contains("fg=bash"), "{}", r.out);
+}
+
+/// The hint names a command, and the command does what the hint says: with
+/// no input, a wait for exit is for the job that has the terminal.
+#[test]
+fn the_running_hints_own_advice_waits_for_the_job() {
+    let t = T::new();
+    t.bash("ha");
+    let r = t.term(&["send", "-s", "ha", "--text", "sleep 2", "--keys", "<Enter>"]);
+    assert!(
+        r.out
+            .contains("wait for it to end: waldo-term wait --until-exit"),
+        "{}",
+        r.out
+    );
+    let r = t.term(&["wait", "-s", "ha", "--until-exit"]);
+    assert_eq!(r.code, 0, "{}\n{}", r.out, r.err);
+    let line = status_line(&r.out);
+    assert!(
+        line.contains(" exit ") && line.contains("fg=bash"),
+        "{}",
+        r.out
+    );
 }
 
 // ---- matching -----------------------------------------------------------------------
@@ -2565,7 +2588,11 @@ fn a_program_that_leaves_the_foreground_is_named() {
     let t = T::new();
     t.bash("lf");
     let r = t.term(&["send", "-s", "lf", "--text", "cat", "--keys", "<Enter>"]);
-    assert!(r.out.contains("hint: 'cat' is still running"), "{}", r.out);
+    assert!(
+        r.out.contains("hint: 'cat' is running in the foreground."),
+        "{}",
+        r.out
+    );
     // Typing into it carries no hint.
     let r = t.term(&["send", "-s", "lf", "--text", "abc", "--keys", "<Enter>"]);
     assert!(!r.out.contains("hint:"), "{}", r.out);
@@ -2585,7 +2612,11 @@ fn a_program_that_leaves_the_foreground_is_named() {
     // A wait for text that runs out says the same, since the text may be
     // missing because the program that left took what was typed after.
     let r = t.term(&["send", "-s", "lf", "--text", "cat", "--keys", "<Enter>"]);
-    assert!(r.out.contains("hint: 'cat' is still running"), "{}", r.out);
+    assert!(
+        r.out.contains("hint: 'cat' is running in the foreground."),
+        "{}",
+        r.out
+    );
     let r = t.term(&[
         "send",
         "-s",
@@ -2624,7 +2655,8 @@ fn a_pipeline_whose_first_program_has_exited_is_still_named() {
     assert_eq!(r.code, 0, "{}", r.out);
     assert!(status_line(&r.out).contains("fg=sleep"), "{}", r.out);
     assert!(
-        r.out.contains("hint: 'sleep' is still running"),
+        r.out
+            .contains("hint: 'sleep' is running in the foreground."),
         "{}",
         r.out
     );
@@ -2647,7 +2679,7 @@ fn a_pipeline_whose_first_program_has_exited_is_still_named() {
         r.out
     );
     assert!(
-        r.out.contains("hint: a job with several programs is still running, and waldo cannot tell which of them takes your input; settle only means the screen went quiet. Look at the screen above before typing."),
+        r.out.contains("hint: a job with several programs is running in the foreground, and waldo cannot tell which of them takes your input. Look at the screen above before typing. If you do not expect to interact with it, wait for it to end: waldo-term wait --until-exit"),
         "{}",
         r.out
     );

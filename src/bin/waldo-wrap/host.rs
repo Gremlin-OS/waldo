@@ -1869,9 +1869,9 @@ impl Host {
                     {
                         hint = Some(match sys::job_name(pg) {
                             Some(name) => format!(
-                                "'{name}' is still running; settle only means the screen went quiet. To wait for it to end, see 'waldo-term help shell'."
+                                "'{name}' is running in the foreground. If you do not expect to interact with it, wait for it to end: waldo-term wait --until-exit"
                             ),
-                            None => "a job with several programs is still running, and waldo cannot tell which of them takes your input; settle only means the screen went quiet. Look at the screen above before typing.".into(),
+                            None => "a job with several programs is running in the foreground, and waldo cannot tell which of them takes your input. Look at the screen above before typing. If you do not expect to interact with it, wait for it to end: waldo-term wait --until-exit".into(),
                         });
                     } else if let Some((was, now)) = self.left_foreground(&w) {
                         // The mirror case: the program the input was meant

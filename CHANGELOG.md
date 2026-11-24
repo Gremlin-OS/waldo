@@ -24,6 +24,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - The hint for a program that left the foreground during a request now
   says that what was typed after the keys that ended it may have been
   lost, and a wait for a pattern that runs out in that state gives it too.
+- The hint for a settle while a command still has the terminal is
+  reworded: "'make' is running in the foreground. If you do not expect to
+  interact with it, wait for it to end: waldo-term wait --until-exit". It
+  used to give advice that was wrong for a pager or an editor, and pointed
+  at a help topic where it now names the command.
 - `waldo-term help tips` no longer advises a pause after Escape. Items 7
   and 8 say what does lose keys: a prompt that discards keys that are not
   its answers, and a program that is exiting.
