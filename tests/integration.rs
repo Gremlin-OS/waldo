@@ -2605,6 +2605,56 @@ fn a_program_that_leaves_the_foreground_is_named() {
     );
 }
 
+/// A pipeline is one job, led by its first program. When that has exited
+/// the job is named after the one program left in it, and not named at all
+/// when several are left: nothing says which of them reads the terminal.
+#[test]
+fn a_pipeline_whose_first_program_has_exited_is_still_named() {
+    let t = T::new();
+    t.bash("pl");
+    let r = t.term(&[
+        "send",
+        "-s",
+        "pl",
+        "--text",
+        "true | sleep 3",
+        "--keys",
+        "<Enter>",
+    ]);
+    assert_eq!(r.code, 0, "{}", r.out);
+    assert!(status_line(&r.out).contains("fg=sleep"), "{}", r.out);
+    assert!(
+        r.out.contains("hint: 'sleep' is still running"),
+        "{}",
+        r.out
+    );
+    let r = t.term(&["wait", "-s", "pl", "--until-match", r"^\$ $"]);
+    assert_eq!(r.code, 0, "{}", r.out);
+    let r = t.term(&[
+        "send",
+        "-s",
+        "pl",
+        "--text",
+        "true | sleep 3 | sleep 3",
+        "--keys",
+        "<Enter>",
+    ]);
+    assert_eq!(r.code, 0, "{}", r.out);
+    let line = status_line(&r.out);
+    assert!(
+        line.contains("running") && !line.contains("fg="),
+        "{}",
+        r.out
+    );
+    assert!(
+        r.out.contains("hint: a job with several programs is still running, and waldo cannot tell which of them takes your input; settle only means the screen went quiet. Look at the screen above before typing."),
+        "{}",
+        r.out
+    );
+    let (_, v) = t.json(&["screen", "-s", "pl"]);
+    assert!(v["child"]["foreground"].is_null(), "{v}");
+}
+
 /// A program that is busy when keys arrive reads them together however far
 /// apart they were written, and takes an Escape and the next key for an Alt
 /// chord. htop does at each refresh. So what follows an Escape is not

@@ -1744,7 +1744,7 @@ impl Host {
         if self.exit_status.is_some() {
             return json!({"state": "exited", "pid": self.child.pid});
         }
-        let fg = sys::foreground_pgrp(self.master).and_then(sys::process_name);
+        let fg = sys::foreground_pgrp(self.master).and_then(sys::job_name);
         json!({"state": "running", "pid": self.child.pid, "foreground": fg})
     }
 
@@ -1867,10 +1867,12 @@ impl Host {
                     if let Some(pg) =
                         fg.filter(|pg| *pg != self.child.pid && Some(*pg) != w.fg_before)
                     {
-                        let name = sys::process_name(pg).unwrap_or_else(|| "a command".into());
-                        hint = Some(format!(
-                            "'{name}' is still running; settle only means the screen went quiet. To wait for it to end, see 'waldo-term help shell'."
-                        ));
+                        hint = Some(match sys::job_name(pg) {
+                            Some(name) => format!(
+                                "'{name}' is still running; settle only means the screen went quiet. To wait for it to end, see 'waldo-term help shell'."
+                            ),
+                            None => "a job with several programs is still running, and waldo cannot tell which of them takes your input; settle only means the screen went quiet. Look at the screen above before typing.".into(),
+                        });
                     } else if let Some((was, now)) = self.left_foreground(&w) {
                         // The mirror case: the program the input was meant
                         // for has left the foreground during the request.
@@ -1903,7 +1905,7 @@ impl Host {
                     }
                     Until::Match => Some("the pattern did not appear; it is matched against one line at a time. Check the screen above for what is there.".into()),
                     Until::Exit => {
-                        let fg = sys::foreground_pgrp(self.master).and_then(sys::process_name).unwrap_or_else(|| "the program".into());
+                        let fg = sys::foreground_pgrp(self.master).and_then(sys::job_name).unwrap_or_else(|| "the program".into());
                         Some(match w.exit_of.as_ref() {
                             Some((_, name)) => format!("'{name}' has not exited. --until-exit waits for the program that had the foreground when the request began."),
                             None => format!(
@@ -2825,7 +2827,7 @@ impl Host {
                 .map(|pg| {
                     (
                         pg,
-                        sys::process_name(pg).unwrap_or_else(|| "the program".into()),
+                        sys::job_name(pg).unwrap_or_else(|| "the program".into()),
                     )
                 });
         }
@@ -2834,7 +2836,7 @@ impl Host {
             w.fg_name_before = w
                 .fg_before
                 .filter(|pg| *pg != self.child.pid)
-                .and_then(sys::process_name);
+                .and_then(sys::job_name);
         }
         // With input, text that is already on screen does not count: the
         // caller is waiting for what its input causes.

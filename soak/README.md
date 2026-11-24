@@ -87,8 +87,8 @@ Programs tried by hand and not given a brief:
 - `sl`: an animation that ignores Ctrl-C. `send` returns when the train
   has gone.
 - `less`: paging, search and quitting work. A shell command line typed into
-  it by mistake started a shell and tried to write a file. Look at `fg=`
-  before typing a command.
+  it by mistake started a shell and tried to write a file. Look at the
+  screen, and at `fg=`, before typing a command.
 - `fzf`: a query, a move and Enter in one call pick the right item; the
   styled screen shows the selected row.
 - `python3`: use `--paste` for a block. The REPL indents for you, so a

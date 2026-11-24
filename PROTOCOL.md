@@ -255,7 +255,7 @@ when the deadline passed:
 | `changed` | Only on a request that typed something: false if `gen` is the same as when its first input was written, so nothing on screen changed, not even the cursor |
 | `child.state` | `running` or `exited` |
 | `child.pid` | The program's process id |
-| `child.foreground` | While running: the name of the process that leads the terminal's foreground process group, or null if it cannot be read |
+| `child.foreground` | While running: a name for the job that has the terminal, which is its foreground process group. It is the name of the group's leader. When the leader has exited, as the first program of a pipeline often has, it is the name of the one process left in the group, and null when several are left. It says nothing about what runs inside a program that carries a terminal of its own, such as tmux or ssh |
 | `screen` | Section 3.3 |
 | `match` | Only when `reason` is `match` (below) |
 | `exit` | When `reason` is `exit` and it was the session's own program that exited (below) |

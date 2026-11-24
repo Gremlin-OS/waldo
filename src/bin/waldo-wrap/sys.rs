@@ -427,6 +427,45 @@ pub fn process_name(pid: libc::pid_t) -> Option<String> {
     }
 }
 
+/// The state letter and process group of a process, from /proc.
+fn state_and_group(pid: libc::pid_t) -> Option<(char, libc::pid_t)> {
+    let s = std::fs::read_to_string(format!("/proc/{pid}/stat")).ok()?;
+    // The name comes second, in brackets, and may itself hold brackets
+    // and spaces; the fields after its last bracket are plain.
+    let mut rest = s[s.rfind(')')? + 1..].split_whitespace();
+    let state = rest.next()?.chars().next()?;
+    let _parent = rest.next()?;
+    Some((state, rest.next()?.parse().ok()?))
+}
+
+/// A name for the job that is a process group: its leader's, as long as
+/// the leader is running. A pipeline's leader is its first program, which
+/// has often exited while the rest runs (`seq 1 100 | less`). Then the name
+/// is that of the one process left in the group, and there is none when
+/// several are left: nothing says which of them reads the terminal.
+pub fn job_name(pg: libc::pid_t) -> Option<String> {
+    if matches!(state_and_group(pg), Some((state, _)) if state != 'Z') {
+        return process_name(pg);
+    }
+    let mut only = None;
+    for entry in std::fs::read_dir("/proc").ok()?.flatten() {
+        let Some(pid) = entry
+            .file_name()
+            .to_str()
+            .and_then(|n| n.parse::<libc::pid_t>().ok())
+        else {
+            continue;
+        };
+        if matches!(state_and_group(pid), Some((state, group)) if group == pg && state != 'Z') {
+            if only.is_some() {
+                return None;
+            }
+            only = Some(pid);
+        }
+    }
+    only.and_then(process_name)
+}
+
 /// The uid of the process at the other end of a unix socket.
 pub fn peer_uid(fd: RawFd) -> Option<libc::uid_t> {
     let mut cred: libc::ucred = unsafe { std::mem::zeroed() };

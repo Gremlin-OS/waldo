@@ -14,6 +14,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   for an Alt chord. htop did this at each of its refreshes. What follows an
   Escape now waits until the program has read the Escape.
 
+- The status line had no `fg=` while a pipeline ran whose first program
+  had exited, such as `seq 1 100 | less`, and the hint called it 'a
+  command'. Such a job is now named after the one program left in it. When
+  several are left it has no name, and the hint says so.
+
 ### Changed
 
 - The hint for a program that left the foreground during a request now

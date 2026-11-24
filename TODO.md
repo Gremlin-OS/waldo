@@ -31,16 +31,12 @@ Found by driving real programs: by hand, and by the soak runs of
    Ubuntu, in the guide's own example, which now waits for text. The host
    knows a fact it does not use here: the foreground program changed
    during the request and has printed nothing yet.
-3. **A model cannot easily tell which column is which.** NetHack players
+4. **A model cannot easily tell which column is which.** NetHack players
    misjudged columns. One likely cause: frames drawn with box characters
    are three bytes each, so counting bytes, or cutting the screen with
    `sed` or `awk`, is off by two per frame edge. The guide does not say
    that columns count cells from 1. A screen format with rulers is the
    other idea; measure before building it.
-4. **The foreground name is missing when a pipeline's first program has
-   exited.** With `seq 1 100 | less` the status line shows `running` and no
-   `fg=`: waldo reads the name from the process group's leader, which is
-   gone. It could take the name of another process in the group.
 5. **`output` is empty while a full-screen program is up.** It leaves out
    the primary screen while the alternate screen is showing.
 6. **`signal --stop` returns before the program is gone**, so a `gc` right
