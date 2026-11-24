@@ -7,6 +7,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- A key sent right after `<Esc>` in one request could be lost when the
+  program was busy as the two arrived: it read them together and took them
+  for an Alt chord. htop did this at each of its refreshes. What follows an
+  Escape now waits until the program has read the Escape.
+
+### Changed
+
+- The hint for a program that left the foreground during a request now
+  says that what was typed after the keys that ended it may have been
+  lost, and a wait for a pattern that runs out in that state gives it too.
+- `waldo-term help tips` no longer advises a pause after Escape. Items 7
+  and 8 say what does lose keys: a prompt that discards keys that are not
+  its answers, and a program that is exiting.
+
 ## [0.2.0] - 2026-11-22
 
 Several clients on one session can now talk to each other, and a wait can

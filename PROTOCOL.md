@@ -709,9 +709,10 @@ anything about these, but they explain the delays:
 - **A key that follows text** in the same request waits until the program
   has reacted to the text: the screen has changed and then been still for
   30 ms. The wait is at least 40 ms and at most 300 ms.
-- **A lone Escape** is followed by a 30 ms pause, unless the program uses
-  the kitty keyboard protocol, so it is not read as the start of an Alt
-  chord.
+- **What follows a lone Escape** waits until the program has read the
+  Escape, for at most 1 s, and then 30 ms more, so the two are not read as
+  an Alt chord. A program that uses the kitty keyboard protocol has no such
+  doubt, and nothing waits.
 - **A signal or resize** that follows input waits for the program to react
   to that input in the same way, at most 300 ms.
 - **Delays the request asked for**: a `pause` item, and `key_delay_ms`
@@ -731,7 +732,9 @@ when it can see a likely mistake:
 
 - A settle returned while a command that this request started still has the
   foreground.
-- The program the input was typed into has left the foreground.
+- The program the input was typed into has left the foreground, on a
+  settle or when a wait for a pattern runs out. What was typed after the
+  keys that ended it may have been lost.
 - Text that looks like key notation was sent as `text`.
 - A timeout: the screen never went quiet; the program has not drawn
   anything; the pattern did not appear, or only matched what was already

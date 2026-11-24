@@ -2575,13 +2575,78 @@ fn a_program_that_leaves_the_foreground_is_named() {
     assert!(status_line(&r.out).contains("fg=bash"), "{}", r.out);
     assert!(
         r.out
-            .contains("hint: 'cat' is no longer in the foreground; input now goes to 'bash'."),
+            .contains("hint: 'cat' is no longer in the foreground; input now goes to 'bash'. Anything typed after the keys that ended 'cat' may have been lost."),
         "{}",
         r.out
     );
     // At the shell there is nothing to say.
     let r = t.term(&["send", "-s", "lf", "--text", "true", "--keys", "<Enter>"]);
     assert!(!r.out.contains("hint:"), "{}", r.out);
+    // A wait for text that runs out says the same, since the text may be
+    // missing because the program that left took what was typed after.
+    let r = t.term(&["send", "-s", "lf", "--text", "cat", "--keys", "<Enter>"]);
+    assert!(r.out.contains("hint: 'cat' is still running"), "{}", r.out);
+    let r = t.term(&[
+        "send",
+        "-s",
+        "lf",
+        "--keys",
+        "<C-d>",
+        "--until-match",
+        "^never$",
+        "--timeout",
+        "500",
+    ]);
+    assert_eq!(r.code, 124, "{}", r.out);
+    assert!(
+        r.out.contains("hint: the pattern did not appear. 'cat' left the foreground during this request and input now goes to 'bash'; anything typed after the keys that ended 'cat' may have been lost. Check the screen above before typing it again."),
+        "{}",
+        r.out
+    );
+}
+
+/// A program that is busy when keys arrive reads them together however far
+/// apart they were written, and takes an Escape and the next key for an Alt
+/// chord. htop does at each refresh. So what follows an Escape is not
+/// written until the program has read the Escape.
+#[test]
+fn what_follows_an_escape_waits_until_the_escape_is_read() {
+    let t = T::new();
+    t.bash("er");
+    // Reads nothing for a while, then one byte, and looks at once for a
+    // second, as a program does to tell Escape from Alt.
+    std::fs::write(
+        t.work.join("busy.sh"),
+        "stty raw -echo\nprintf 'ready\\r\\n'\nsleep 0.6\nIFS= read -rsn1 a\n\
+         if IFS= read -rsn1 -t 0.01 b; then how=together; else how=alone; IFS= read -rsn1 b; fi\n\
+         stty sane\necho \"how=$how second=$b\"\n",
+    )
+    .unwrap();
+    let r = t.term(&[
+        "send",
+        "-s",
+        "er",
+        "--text",
+        "bash busy.sh",
+        "--keys",
+        "<Enter>",
+        "--until-match",
+        "^ready",
+    ]);
+    assert_eq!(r.code, 0, "{}\n{}", r.out, r.err);
+    let r = t.term(&[
+        "send",
+        "-s",
+        "er",
+        "--keys",
+        "<Esc>q",
+        "--until-match",
+        "^how=",
+        "--timeout",
+        "5000",
+    ]);
+    assert_eq!(r.code, 0, "{}\n{}", r.out, r.err);
+    assert!(r.out.contains("how=alone second=q"), "{}", r.out);
 }
 
 // ---- several clients on one session --------------------------------------------------

@@ -39,7 +39,14 @@ const READ_BATCH: usize = 64 << 10;
 const DEFAULT_TIMEOUT_MS: u64 = 10_000;
 const MAX_TIMEOUT_MS: u64 = 600_000;
 const PROMPT_QUIET_MS: u64 = 40;
+/// What follows a lone Escape is held until the program has read the
+/// Escape, and for this long after that, so the program does not take the
+/// two for an Alt chord. A fixed gap between the writes is not enough: a
+/// program that is busy when they arrive reads them together however far
+/// apart they were written. htop does, at each of its refreshes.
 const ESC_PAUSE: Duration = Duration::from_millis(30);
+/// How long to go on waiting for the program to read an Escape.
+const ESC_READ_MAX: Duration = Duration::from_secs(1);
 /// A key that follows text in one request is held back until the program has
 /// shown that it took the text: the screen changed and went still again. A
 /// person types, sees the text appear, then presses Enter. Programs that take
@@ -98,6 +105,8 @@ pub struct Config {
     pub socket: PathBuf,
     pub argv: Vec<String>,
     pub cwd: String,
+    /// The path of the pty's slave side, to ask how much input is unread.
+    pub pty_name: std::ffi::CString,
     pub dest: Dest,
     pub dest_is_default: bool,
     pub output_cap: usize,
@@ -397,6 +406,9 @@ pub struct Host {
     replies: Vec<u8>,
     queue: VecDeque<QItem>,
     pause_until: Option<Instant>,
+    /// When a lone Escape was written that the program may not have read
+    /// yet. Nothing more is typed until it has.
+    esc_unread: Option<Instant>,
     last_input: Instant,
     /// `gen` when input was last written, to see the program react to it.
     gen_at_input: u64,
@@ -496,6 +508,7 @@ impl Host {
             replies: Vec::new(),
             queue: VecDeque::new(),
             pause_until: None,
+            esc_unread: None,
             last_input: now,
             gen_at_input: 0,
             master_out: false,
@@ -888,6 +901,7 @@ impl Host {
             self.queue.clear();
             self.replies.clear();
             self.pause_until = None;
+            self.esc_unread = None;
             return;
         }
         let mut blocked = false;
@@ -933,6 +947,16 @@ impl Host {
                     break;
                 }
                 self.pause_until = None;
+            }
+            if let Some(since) = self.esc_unread {
+                let unread = sys::unread_input(&self.cfg.pty_name).unwrap_or(0);
+                if unread > 0 && since.elapsed() < ESC_READ_MAX {
+                    self.pause_until = Some(Instant::now() + KEY_POLL);
+                    break;
+                }
+                self.esc_unread = None;
+                self.pause_until = Some(Instant::now() + ESC_PAUSE);
+                break;
             }
             let absorbed = self.input_absorbed();
             let Some(front) = self.queue.front_mut() else {
@@ -1027,7 +1051,11 @@ impl Host {
             if done {
                 if let Some(item) = self.queue.pop_front() {
                     if item.pause_after {
-                        self.pause_until = Some(Instant::now() + ESC_PAUSE);
+                        // The kernel hands what was written to the
+                        // terminal a moment later, so a count taken at
+                        // once can be 0 for an Escape nobody has read.
+                        self.esc_unread = Some(Instant::now());
+                        self.pause_until = Some(Instant::now() + KEY_POLL);
                     }
                 }
             }
@@ -1754,6 +1782,21 @@ impl Host {
         m
     }
 
+    /// For a request that sent input: the program it was typing into, if
+    /// that has left the foreground since and the session's own program
+    /// has it back, and the name of the program that input goes to now.
+    fn left_foreground(&self, w: &Wait) -> Option<(String, String)> {
+        let was = w.fg_name_before.as_ref()?;
+        if w.fg_before == Some(self.child.pid)
+            || sys::foreground_pgrp(self.master) != Some(self.child.pid)
+        {
+            return None;
+        }
+        let now =
+            sys::process_name(self.child.pid).unwrap_or_else(|| "the session's program".into());
+        Some((was.clone(), now))
+    }
+
     fn respond_wait(&mut self, w: Wait, reason: Reason) {
         let mut resp = Map::new();
         resp.insert("v".into(), 1.into());
@@ -1828,17 +1871,14 @@ impl Host {
                         hint = Some(format!(
                             "'{name}' is still running; settle only means the screen went quiet. To wait for it to end, see 'waldo-term help shell'."
                         ));
-                    } else if let Some(was) = w
-                        .fg_name_before
-                        .as_ref()
-                        .filter(|_| fg == Some(self.child.pid))
-                    {
+                    } else if let Some((was, now)) = self.left_foreground(&w) {
                         // The mirror case: the program the input was meant
                         // for has left the foreground during the request.
-                        let now = sys::process_name(self.child.pid)
-                            .unwrap_or_else(|| "the session's program".into());
+                        // It may have taken what was typed after the keys
+                        // that ended it: vim reads ahead and discards on
+                        // its way out.
                         hint = Some(format!(
-                            "'{was}' is no longer in the foreground; input now goes to '{now}'."
+                            "'{was}' is no longer in the foreground; input now goes to '{now}'. Anything typed after the keys that ended '{was}' may have been lost."
                         ));
                     }
                 }
@@ -1855,6 +1895,12 @@ impl Host {
                     Until::Match if w.patterns.iter().any(|p| !p.known.is_empty()) => Some(
                         "the pattern matches text that was on screen before the input was sent, and nothing new matched it; a request that sends input waits for a new match. To accept text that is already there, use 'waldo-term wait --until-match'.".into(),
                     ),
+                    Until::Match if self.left_foreground(&w).is_some() => {
+                        let (was, now) = self.left_foreground(&w).unwrap_or_default();
+                        Some(format!(
+                            "the pattern did not appear. '{was}' left the foreground during this request and input now goes to '{now}'; anything typed after the keys that ended '{was}' may have been lost. Check the screen above before typing it again."
+                        ))
+                    }
                     Until::Match => Some("the pattern did not appear; it is matched against one line at a time. Check the screen above for what is there.".into()),
                     Until::Exit => {
                         let fg = sys::foreground_pgrp(self.master).and_then(sys::process_name).unwrap_or_else(|| "the program".into());

@@ -251,9 +251,20 @@ either:
 **Timing.** The host does not write everything at once, because programs
 read meaning into timing:
 
-- A lone `<Esc>` is followed by a 30 ms pause before the next byte, unless
-  the program has enabled the kitty keyboard protocol, so the program does
-  not read `<Esc>` plus the next character as an Alt chord.
+- What follows a lone `<Esc>` is not written until the program has read the
+  Escape, and 30 ms more have passed, so the program does not read `<Esc>`
+  plus the next character as an Alt chord. A gap between the two writes is
+  not enough. A program that is busy when they arrive finds both waiting
+  and reads them together, however far apart they were written: htop did
+  at each of its refreshes, 6 times in 6, and ignored the `q` as Alt-q.
+  The host learns that the Escape was read by opening the pty's slave side
+  for a moment and asking how much input is unread (`FIONREAD`); the master
+  does not say. It asks every 10 ms, starting 10 ms after the write,
+  because the kernel hands a write to the terminal a moment later and a
+  count taken at once can be 0. It gives up after 1 s. A terminal in
+  canonical mode counts whole lines only, so there the wait is the 30 ms
+  alone. None of this applies when the program has enabled the kitty
+  keyboard protocol.
 - Within one request, a key that follows text is held until the program has
   reacted to the text: the screen has changed since the text was written
   and has been still for 30 ms. The wait is at least 40 ms, and if the
@@ -274,11 +285,34 @@ read meaning into timing:
   once by the terminal, and once by the shell when it draws its prompt.
 - Beyond those, the caller decides. A `pause` item puts a delay at one
   point, and `key_delay_ms` puts one between all the keys of a request.
-  Programs differ in how fast they take keys, and the host cannot know: in
-  the tests against tmux, htop missed a `q` sent right after an Escape, and
-  NetHack dropped keys sent in the same call as the one that opened its
-  travel prompt, under both tools. The host does not guess; it gives the
-  caller the control.
+  The host does not guess; it gives the caller the control.
+
+**Where typed keys go missing.** The host writes every byte, and none was
+lost on the way in any run traced. Three things in the programs lose them,
+found by tracing htop 3.5.3, NetHack 5.0.0, vim 9.2 and less on
+2026-11-23. None of the four flushed its input when it changed terminal
+modes.
+
+- *A busy program reads an Escape and the next key together.* The host
+  now prevents this, as described above.
+- *A prompt throws away keys that are not its answers.* NetHack's
+  `--More--`, its `>>` marker and its first-time tips discard everything
+  but their own keys. With no prompt up, the travel key and three more in
+  one request worked 6 times in 6, so timing is not involved and a pause
+  does not help. The host cannot know that a key will raise a prompt.
+  `unchanged` on the next request is the sign, and `help tips` says to
+  stop and look.
+- *A program that is exiting takes what was typed after the keys that end
+  it.* vim reads ahead, and what it has read goes with it; 100 ms after
+  giving the terminal back it flushes the terminal's input as well. A
+  shell command in the same request as `:q!<Enter>` vanished 2 times in 2.
+  less does neither. The host cannot know that a key ends a program, and
+  the kernel shows nothing in time: vim had read all 16 bytes within a
+  millisecond. The host says so afterwards, with the hint of section 2.6.
+
+A program that is still starting did not lose keys in these runs: vim read
+what was typed before it was up, though the terminal echoed it onto the
+screen first.
 
 ### 2.2 Waiting
 
@@ -436,7 +470,9 @@ These are requirements, not polish.
   - The mirror case: the program the input was sent to has left the
     foreground by the time the screen settles, and the session's own
     program has it again:
-    `hint: 'vim' is no longer in the foreground; input now goes to 'bash'.`
+    `hint: 'vim' is no longer in the foreground; input now goes to 'bash'. Anything typed after the keys that ended 'vim' may have been lost.`
+    A match wait that times out in that state says the same, in place of
+    "the pattern did not appear" alone.
   - A match wait with input that times out while the pattern matches text
     that was already there: the hint says that only a new match counts for
     a request that sends input, and to use `wait --until-match` instead.
