@@ -673,6 +673,7 @@ fn main() {
         socket,
         argv: args.program.clone(),
         cwd,
+        pty_name: pty.slave_path.clone(),
         dest,
         dest_is_default,
         output_cap: args.output_cap,

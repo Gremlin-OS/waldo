@@ -9,18 +9,25 @@ suggested priority. What was fixed is in the git history, not here.
 Found by driving real programs: by hand, and by the soak runs of
 `soak/README.md`.
 
-1. **Keys sent in one call can be lost when an earlier key opens a prompt.**
-   The program discards typed-ahead input: NetHack after `_`, htop after
-   Escape. The host does not slow down by itself. The caller does, with
-   `--pause` or `--key-delay`; agents adopt them from `help tips` and they
-   work. Why the keys are lost was never checked.
+1. **Keys typed past a prompt, or past the keys that end a program, are
+   lost**, and the host can only say so afterwards (DESIGN.md 2.1, "Where
+   typed keys go missing"). Two ideas, neither tried:
+   - The pty's packet mode reports when a program flushes the terminal's
+     input, as vim does on exit. That would turn "may have been lost" into
+     "was discarded" for part of the vim case.
+   - The NetHack soak runs should be read again for what the lost keys
+     followed. The tracing used NetHack 5.0.0; which version and interface
+     the soak runs used was not recorded.
 2. **`unchanged` is unproven.** It appeared on about 1 send in 50 in
    NetHack and no agent repeated its input after it, but that is too few
    cases to say it helps.
 3. **Settle can fire before a program that was just started has drawn.**
    On a slow machine `vim FILE` and Enter settled on the echoed command
    line; the next send was typed at the shell's terminal, vim read it as
-   typed-ahead, and what followed was lost. Found by the first CI run on
+   typed-ahead, and what followed was lost. This did not reproduce on a
+   fast machine with `sleep 1; vim FILE`: vim got every key, and they were
+   only echoed onto the screen first. What was lost on the slow one is
+   not known. Found by the first CI run on
    Ubuntu, in the guide's own example, which now waits for text. The host
    knows a fact it does not use here: the foreground program changed
    during the request and has printed nothing yet.

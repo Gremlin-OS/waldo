@@ -207,14 +207,14 @@ What agents who used waldo before you learned the slow way.
 6. A block of several lines for a REPL or an editor goes in as --paste,
    then --keys '<Enter>'. A REPL that indents for you mangles a block sent
    as --text.
-7. Some keys open a prompt or a menu, and the program throws away what
-   arrives while it is opening: Escape in many programs, a key that asks a
-   question, a program that is just starting or just exiting. Put a pause
-   after such a key, in the same send:
-     --keys '<Esc>' --pause 300 --keys 'q'
-   --key-delay 100 puts a gap between all the keys of a send.
-8. After a program exits back to the shell, send the next shell command in
-   a new send.
+7. A prompt takes the next key as its answer and throws away keys that
+   are not answers: a '--More--', a yes or no question, a tip shown the
+   first time you use a command. Do not send keys past a key that may
+   raise one. Send up to it, look at the screen, then go on.
+8. A program that is exiting throws away what is typed after the keys
+   that end it; vim does. Send what comes next in a new send. When a
+   program only needs time, --pause MS puts a delay at one point of a
+   send, and --key-delay MS one between all its keys.
 9. 'unchanged' in the status line means your keys changed nothing on
    screen. Do not repeat them. Look: a prompt or a 'more' marker is
    probably waiting for Enter or Escape.

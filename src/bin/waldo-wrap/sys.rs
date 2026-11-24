@@ -386,6 +386,30 @@ pub fn foreground_pgrp(master: RawFd) -> Option<libc::pid_t> {
     }
 }
 
+/// How many bytes of typed input the program has not read yet, or `None`
+/// when that cannot be learned. The pty master does not say (its
+/// `TIOCOUTQ` is always 0), so this opens the slave for a moment and asks
+/// it. A terminal in canonical mode counts whole lines only: text with no
+/// newline yet reads as 0.
+pub fn unread_input(slave_path: &CStr) -> Option<usize> {
+    unsafe {
+        let fd = libc::open(
+            slave_path.as_ptr(),
+            libc::O_RDONLY | libc::O_NOCTTY | libc::O_NONBLOCK | libc::O_CLOEXEC,
+        );
+        if fd < 0 {
+            return None;
+        }
+        let mut n: libc::c_int = 0;
+        let r = libc::ioctl(fd, libc::FIONREAD, &mut n);
+        libc::close(fd);
+        if r < 0 || n < 0 {
+            None
+        } else {
+            Some(n as usize)
+        }
+    }
+}
 /// Whether any process is left in a process group.
 pub fn group_exists(pg: libc::pid_t) -> bool {
     let r = unsafe { libc::kill(-pg, 0) };
