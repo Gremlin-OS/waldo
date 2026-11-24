@@ -482,7 +482,15 @@ These are requirements, not polish.
   - A settle that returns while the shell has a foreground job that this
     request's input started (the terminal's foreground process group is
     not the child's own, and not what it was before the input was sent):
-    `hint: 'make' is still running; settle only means the screen went quiet. To wait for it to end, see 'waldo-term help shell'.`
+    `hint: 'make' is running in the foreground. If you do not expect to interact with it, wait for it to end: waldo-term wait --until-exit`
+    It is the same quiet screen whether the program is still working
+    (`make`) or waiting for keys (`less`), and nothing the host can see
+    tells the two apart: the alternate screen and raw mode each mislead
+    for some ordinary program. So the hint states the fact and leaves the
+    judgement to the agent, which typed the command and knows which kind
+    it started. It used to say "still running" and point at `help shell`,
+    which was wrong for a pager and cost a call to read a page for one
+    instruction.
     Later requests to the same program carry no hint: by then it is the
     thing being driven.
   - The mirror case: the program the input was sent to has left the
