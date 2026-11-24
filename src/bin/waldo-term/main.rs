@@ -45,7 +45,6 @@ struct Opts {
     json: bool,
     items: Vec<Value>,
     tail: Option<u64>,
-    stop: bool,
     all: bool,
     older_than: Option<i64>,
     style: Option<String>,
@@ -103,6 +102,9 @@ fn parse_opts(cmd: &str, args: &[String], allowed: &[&str], positional: bool) ->
             }
             if arg == "--until" || arg == "--pattern" {
                 usage("each wait condition is an option of its own: --until-match RE, --until-settle, --until-change, --until-exit, --until-broadcast, --until-elapsed MS, --until-none");
+            }
+            if arg == "--stop" {
+                usage("to end a session, use: waldo-term kill ID. 'signal' sends a signal and nothing else");
             }
             let name = if arg == "-s" { "--session" } else { arg };
             if !allowed.contains(&name) {
@@ -169,7 +171,6 @@ fn parse_opts(cmd: &str, args: &[String], allowed: &[&str], positional: bool) ->
                     o.items.push(json!({"pause": ms}));
                 }
                 "--json" => o.json = true,
-                "--stop" => o.stop = true,
                 "--drive" => o.drive = true,
                 "--resize" => o.resize = true,
                 "--once" => o.once = true,
@@ -764,14 +765,11 @@ fn cmd_resize(args: &[String]) -> ! {
 }
 
 fn cmd_signal(args: &[String]) -> ! {
-    let o = parse_opts("signal", args, &["--session", "--stop", "--json"], true);
-    let body = if o.stop {
-        json!({"stop": true})
-    } else if let Some(name) = o.rest.first() {
-        json!({"signal": name})
-    } else {
-        usage("'signal' takes a signal name such as SIGINT, or --stop to end the session")
+    let o = parse_opts("signal", args, &["--session", "--json"], true);
+    let Some(name) = o.rest.first() else {
+        usage("'signal' takes a signal name such as SIGINT. To end the session, use: waldo-term kill ID")
     };
+    let body = json!({"signal": name});
     let (_, status, value) = call(
         o.session.as_deref(),
         "POST",

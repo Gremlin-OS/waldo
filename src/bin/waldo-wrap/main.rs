@@ -392,7 +392,7 @@ fn create_session_dir(name: Option<&str>) -> Result<SessionDir, String> {
         }
         let lock = try_lock(&dir).map_err(|e| {
             if e == "held" {
-                format!("a session named '{name}' is already running; pick another --name, or end it with: waldo-term signal -s {name} --stop")
+                format!("a session named '{name}' is already running; pick another --name, or end it with: waldo-term kill {name}")
             } else {
                 e
             }

@@ -963,8 +963,14 @@ fn a_screen_that_never_settles_times_out() {
 fn stop_kills_the_child_and_says_so() {
     let t = T::new();
     t.start("st", &["sleep", "60"]);
+    // `signal` sends signals and nothing else: there is one way to end a
+    // session, and it waits until the session has ended.
     let r = t.term(&["signal", "-s", "st", "--stop"]);
+    assert_eq!(r.code, 2, "{}", r.out);
+    assert!(r.err.contains("waldo-term kill ID"), "{}", r.err);
+    let r = t.term(&["kill", "st"]);
     assert_eq!(r.code, 0, "{}", r.err);
+    assert!(!waldo::session::lock_is_held(&t.session_dir("st")));
     let will = t.will("st");
     assert_eq!(will["killed_by_waldo"], true);
     assert_eq!(will["kill_reason"], "request");
@@ -2428,7 +2434,14 @@ fn an_exit_answer_means_the_lock_is_free() {
         let mut s = UnixStream::connect(dir.join("sock")).unwrap();
         let body = r#"{"wait":{"until_exit":true},"timeout_ms":10000}"#;
         write!(s, "POST /v1/wait HTTP/1.1\r\nHost: waldo\r\nContent-Type: application/json\r\nContent-Length: {}\r\n\r\n{body}", body.len()).unwrap();
-        assert_eq!(t.term(&["signal", "-s", &name, "--stop"]).code, 0);
+        // The stop request itself, which is answered at once. `kill` would
+        // wait for the lock, and the answer below would then prove nothing.
+        let stop = r#"{"stop":true}"#;
+        let answer = raw_http(
+            dir.join("sock").to_str().unwrap(),
+            &format!("POST /v1/signal HTTP/1.1\r\nHost: waldo\r\nConnection: close\r\nContent-Type: application/json\r\nContent-Length: {}\r\n\r\n{stop}", stop.len()),
+        );
+        assert!(answer.starts_with("HTTP/1.1 200"), "{answer}");
         // The first bytes of the answer, not the end of the connection: the
         // connection also closes when the host is gone.
         let mut buf = [0u8; 4096];
