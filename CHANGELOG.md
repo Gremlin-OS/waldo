@@ -13,7 +13,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   program was busy as the two arrived: it read them together and took them
   for an Alt chord. htop did this at each of its refreshes. What follows an
   Escape now waits until the program has read the Escape.
-
 - The status line had no `fg=` while a pipeline ran whose first program
   had exited, such as `seq 1 100 | less`, and the hint called it 'a
   command'. Such a job is now named after the one program left in it. When
@@ -32,6 +31,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `waldo-term help tips` no longer advises a pause after Escape. Items 7
   and 8 say what does lose keys: a prompt that discards keys that are not
   its answers, and a program that is exiting.
+
+### Removed
+
+- `waldo-term signal --stop`. `signal` sends a signal and nothing else.
+  `waldo-term kill` ends a session and waits until it has ended, which
+  `--stop` did not: a `gc`, or a new session of the same name, right after
+  it could find the old one still running. `--stop` was also one dash away
+  from `signal STOP`, which suspends the program. `waldo-term` says to use
+  `kill` if given `--stop`, and `waldo-wrap` names `kill` when a session
+  name is taken. The API's stop request is unchanged.
 
 ## [0.2.0] - 2026-11-22
 

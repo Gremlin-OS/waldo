@@ -39,24 +39,21 @@ Found by driving real programs: by hand, and by the soak runs of
    other idea; measure before building it.
 5. **`output` is empty while a full-screen program is up.** It leaves out
    the primary screen while the alternate screen is showing.
-6. **`signal --stop` returns before the program is gone**, so a `gc` right
-    after it finds the session still running, and says so. `kill` waits.
-    Whether `signal --stop` should wait too was not decided.
-7. **Triggers can only be added once the session is running**, so output
+6. **Triggers can only be added once the session is running**, so output
     before the first `match add` is missed unless it is still on screen. A
     `waldo-wrap --match ID=PATTERN` option would close that.
-8. **`settle` and `stream` are chosen at startup only** (`--on`).
-9. **Nested waldo**, left as it is: `hint:` lines printed by an inner
+7. **`settle` and `stream` are chosen at startup only** (`--on`).
+8. **Nested waldo**, left as it is: `hint:` lines printed by an inner
     `waldo-term` appear on the outer screen and read like the outer one's;
     `waldo-term` inside a session does not default to that session.
-10. **A trigger can lag a wait for the same text.** The visible screen is
+9. **A trigger can lag a wait for the same text.** The visible screen is
     checked for triggers at most every 25 ms, so a `send --until-match`
     can return before a trigger on the same line has fired. It fires at
     the next look or at settle.
-11. **Help does not say that a trailing newline in a paste is an Enter**
+10. **Help does not say that a trailing newline in a paste is an Enter**
     (it leaves an empty last line in vim).
-12. **The key-after-text explanation is only partly checked** (2.1).
-13. **Report the emulator bug upstream**: the no-SIMD static library exports
+11. **The key-after-text explanation is only partly checked** (2.1).
+12. **Report the emulator bug upstream**: the no-SIMD static library exports
     stub `calloc` and `free` that override a shared glibc's (9.2).
 
 ## From the comparison with tmux (2026-11-21)

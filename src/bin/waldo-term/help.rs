@@ -86,7 +86,7 @@ or a socket path); with exactly one live session it can be left out.
                             time a line matches PATTERN (help messages)
   match rm ID | match list  remove a trigger; list them
   kill [ID]                 end the session and wait until it has ended
-  signal NAME               send a signal to the program (--stop is what kill sends)
+  signal NAME               send a signal to the program, such as SIGINT
   gc [--all]                remove ended sessions (--all: regardless of age)
   help [TOPIC]              tips, keys, wait, shell, sharing, messages, exit-status,
                             commands
