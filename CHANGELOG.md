@@ -23,6 +23,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - The hint for a program that left the foreground during a request now
   says that what was typed after the keys that ended it may have been
   lost, and a wait for a pattern that runs out in that state gives it too.
+- The line for a session that has ended labels its time: `[ID exit code=0
+  ran=54.6s exited]`. After `waldo-term kill` the bare `54.6s` read as how
+  long the kill had taken.
 - The hint for a settle while a command still has the terminal is
   reworded: "'make' is running in the foreground. If you do not expect to
   interact with it, wait for it to end: waldo-term wait --until-exit". It
