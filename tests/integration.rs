@@ -1761,7 +1761,8 @@ fn kill_ends_a_session_and_waits() {
     let r = t.term(&["kill", "kl"]);
     assert_eq!(r.code, 0, "{}", r.err);
     assert!(
-        r.out.starts_with("[kl exit signal=SIGHUP killed_by_waldo "),
+        r.out
+            .starts_with("[kl exit signal=SIGHUP killed_by_waldo ran="),
         "{}",
         r.out
     );

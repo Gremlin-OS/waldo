@@ -111,7 +111,8 @@ pub fn will(will: &Value) -> String {
     if !w.is_empty() {
         words.push(w);
     }
-    words.push(seconds(n(will, "duration_ms")));
+    // Labelled: a bare time after `kill` read as how long the kill took.
+    words.push(format!("ran={}", seconds(n(will, "duration_ms"))));
     words.push("exited".into());
     let mut out = format!("[{}]\n", words.join(" "));
     let text = will.get("output").map(|o| s(o, "text")).unwrap_or("");
@@ -159,7 +160,7 @@ mod tests {
             "killed_by_waldo":false,"duration_ms":1250,"output":{"text":"boom"}});
         assert_eq!(
             will(&w),
-            "[a exit signal=SIGSEGV core_dumped 1.2s exited]\nboom\n"
+            "[a exit signal=SIGSEGV core_dumped ran=1.2s exited]\nboom\n"
         );
     }
 }

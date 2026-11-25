@@ -1076,8 +1076,9 @@ itself.
   **above** the status line. Nothing the program prints can appear there,
   so a program cannot pass its own output off as a broadcast.
 - **Text output.** It asks for JSON and prints the text format of section
-  3.5 itself. For a will it prints `[ID exit code=N 54.6s exited]` (or
-  `signal=NAME` and so on) and then the output.
+  3.5 itself. For a will it prints `[ID exit code=N ran=54.6s exited]` (or
+  `signal=NAME` and so on) and then the output. `ran=` is how long the
+  program ran, not how long the command that printed it took.
 - **Exit status.** 0 when the wait condition was met; 124 for reason
   `timeout`; 3 when the program exited and that was not what was waited for,
   or had already exited; 4 for no such session, or one that died without a
