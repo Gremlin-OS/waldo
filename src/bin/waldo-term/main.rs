@@ -28,6 +28,10 @@ fn die(code: i32, msg: &str) -> ! {
     std::process::exit(code);
 }
 
+/// The most a --text-file or --keys-file may hold. A request body is capped
+/// at 1 MiB by the host.
+const MAX_FILE: u64 = 1 << 20;
+
 fn usage(msg: &str) -> ! {
     die(EXIT_USAGE, &format!("{msg}\nRun 'waldo-term help' for a guide, or 'waldo-term help commands' for every option."));
 }
@@ -64,12 +68,40 @@ fn client_name(o: &Opts) -> Option<String> {
         .or_else(|| std::env::var("WALDO_AS").ok().filter(|s| !s.is_empty()))
 }
 
+/// What a file or stdin holds, as input: without its one final newline, LF
+/// or CRLF. That newline ends the last line; it is not something to type.
+/// Only one is taken, since a blank last line was put there on purpose.
+fn without_final_newline(mut s: String) -> String {
+    if s.ends_with('\n') {
+        s.pop();
+        if s.ends_with('\r') {
+            s.pop();
+        }
+    }
+    s
+}
+
 fn read_stdin() -> String {
     let mut s = String::new();
     if std::io::stdin().read_to_string(&mut s).is_err() {
         die(EXIT_OTHER, "cannot read stdin as UTF-8 text");
     }
-    s
+    without_final_newline(s)
+}
+
+/// The content of a --text-file or --keys-file. Nothing has been sent yet
+/// when this fails, so a file that cannot be read sends nothing.
+fn read_file(path: &str) -> String {
+    let fail = |why: &str| -> ! { usage(&format!("cannot read {path}: {why}")) };
+    let md = std::fs::metadata(path).unwrap_or_else(|e| fail(&e.to_string()));
+    if !md.is_file() {
+        fail("not a regular file");
+    }
+    if md.len() > MAX_FILE {
+        fail("larger than 1 MiB; send it in several requests");
+    }
+    let bytes = std::fs::read(path).unwrap_or_else(|e| fail(&e.to_string()));
+    without_final_newline(String::from_utf8(bytes).unwrap_or_else(|_| fail("not UTF-8 text")))
 }
 
 fn parse_ms(v: &str) -> Option<u64> {
@@ -205,17 +237,15 @@ fn parse_opts(cmd: &str, args: &[String], allowed: &[&str], positional: bool) ->
                     m.insert(name[2..].to_string(), v.into());
                     o.items.push(Value::Object(m));
                 }
-                "--text-file" | "--keys-file" | "--paste-file" => {
-                    let v = value();
-                    // The host reads the file, so it needs the full path.
-                    let abs = std::path::absolute(&v).unwrap_or_else(|_| PathBuf::from(&v));
+                "--text-file" | "--keys-file" => {
+                    let content = read_file(&value());
                     let mut m = Map::new();
-                    m.insert(
-                        name[2..].replace('-', "_"),
-                        abs.display().to_string().into(),
-                    );
+                    m.insert(name[2..name.len() - 5].to_string(), content.into());
                     o.items.push(Value::Object(m));
                 }
+                "--paste-file" => usage(
+                    "there is no --paste-file. Type the file with --text-file PATH, or paste it from stdin with --paste - < PATH",
+                ),
                 _ => usage(&format!("'{cmd}' does not take {arg}")),
             }
         } else if arg == "--" && o.rest.is_empty() {

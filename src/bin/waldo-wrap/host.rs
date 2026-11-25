@@ -18,7 +18,6 @@ use std::collections::{HashMap, VecDeque};
 use std::fs::File;
 use std::hash::Hasher;
 use std::io::Write;
-use std::os::unix::fs::MetadataExt;
 use std::os::unix::io::{AsRawFd, RawFd};
 use std::os::unix::net::UnixListener;
 use std::path::PathBuf;
@@ -77,7 +76,6 @@ const NAME_RULE: &str = "a name is 1 to 32 characters from a-z, A-Z, 0-9, _ and 
 const DRAIN_QUIET: Duration = Duration::from_millis(100);
 const DRAIN_CAP: Duration = Duration::from_secs(2);
 const KILL_STEP: Duration = Duration::from_secs(2);
-const MAX_FILE_ITEM: u64 = 1 << 20;
 /// The longest delay a request may ask for, between keys or as a pause.
 const MAX_DELAY_MS: u64 = 10_000;
 /// How often a wait for a program inside the session to exit looks again.
@@ -2983,8 +2981,7 @@ impl Host {
         }
     }
 
-    /// Turn one input item into what goes in the queue. Files are read here,
-    /// before anything is sent.
+    /// Turn one input item into what goes in the queue.
     fn read_item(
         &self,
         item: &Value,
@@ -2992,22 +2989,15 @@ impl Host {
     ) -> Result<(Vec<QKind>, Option<String>), ItemError> {
         let obj = item.as_object().filter(|o| o.len() == 1).ok_or((
             "bad_item",
-            "each item is an object with exactly one of: text, keys, paste, text_file, keys_file, paste_file, pause".to_string(),
+            "each item is an object with exactly one of: text, keys, paste, pause".to_string(),
         ))?;
         let (kind, value) = obj.iter().next().unwrap();
         let s = value.as_str().ok_or((
             "bad_item",
             format!("the value of '{kind}' must be a string"),
         ))?;
-        let content: String = if let Some(base) = kind.strip_suffix("_file") {
-            if !["text", "keys", "paste"].contains(&base) {
-                return Err(("bad_item", format!("unknown item kind '{kind}'; use text, keys, paste, text_file, keys_file or paste_file")));
-            }
-            read_file_item(s).map_err(|e| ("file_unreadable", e))?
-        } else {
-            s.to_string()
-        };
-        match kind.trim_end_matches("_file") {
+        let content = s.to_string();
+        match kind.as_str() {
             "text" => {
                 let hint = keys::looks_like_keys(&content)
                     .map(|k| format!("'{k}' was sent as literal text; use --keys (a 'keys' item) for key names."));
@@ -3015,7 +3005,7 @@ impl Host {
             }
             "keys" => Ok((parse_keys(&content, each_key).map_err(|e| ("unknown_key", e))?, None)),
             "paste" => Ok((vec![QKind::Paste(content.into_bytes())], None)),
-            other => Err(("bad_item", format!("unknown item kind '{other}'; use text, keys, paste, text_file, keys_file or paste_file"))),
+            other => Err(("bad_item", format!("unknown item kind '{other}'; use text, keys or paste. The host does not read files: send the content"))),
         }
     }
 
@@ -3189,25 +3179,6 @@ fn parse_keys(notation: &str, each_key: bool) -> Result<Vec<QKind>, String> {
         }
     }
     Ok(out)
-}
-
-fn read_file_item(path: &str) -> Result<String, String> {
-    if !path.starts_with('/') {
-        return Err(format!(
-            "{path}: the path must be absolute, because the host reads the file"
-        ));
-    }
-    let md = std::fs::metadata(path).map_err(|e| format!("{path}: {e}"))?;
-    if !md.is_file() {
-        return Err(format!("{path}: not a regular file"));
-    }
-    if md.size() > MAX_FILE_ITEM {
-        return Err(format!(
-            "{path}: larger than 1 MiB; split it into several requests"
-        ));
-    }
-    let bytes = std::fs::read(path).map_err(|e| format!("{path}: {e}"))?;
-    String::from_utf8(bytes).map_err(|_| format!("{path}: not UTF-8 text"))
 }
 
 /// The fields every message to the destination starts with (section 4).

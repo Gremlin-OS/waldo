@@ -16,7 +16,7 @@ results by running `cat -A FILE` in the shell after each `:wq`.
    special characters (`$HOME "quotes" 'single' \backslash`), an empty
    line, and non-ASCII text (`naïve café — 日本語 ✓`). Did indentation
    "staircase"? Was anything altered?
-3. c.txt: 40 lines by `--paste-file`. Then `20G`, `5dd`, undo, redo,
+3. c.txt: 40 lines by `--text-file`. Then `20G`, `5dd`, undo, redo,
    `:%s/foo/bar/g`, yank a line and put it at the end.
 4. Visual block: `<C-v>jjjI# <Esc>` on a 6-line file; exactly 4 lines get
    the prefix.

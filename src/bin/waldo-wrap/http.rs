@@ -140,7 +140,7 @@ pub fn parse(buf: &[u8], continue_sent: bool) -> Parsed {
         return Parsed::Bad(
             413,
             "body_too_large",
-            "request body is larger than 1 MiB; for long input, write it to a file and send a text_file, keys_file or paste_file item".into(),
+            "request body is larger than 1 MiB; send long input in several requests".into(),
         );
     }
     if buf.len() < head_len + body_len {

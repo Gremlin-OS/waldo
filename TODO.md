@@ -50,10 +50,8 @@ Found by driving real programs: by hand, and by the soak runs of
     checked for triggers at most every 25 ms, so a `send --until-match`
     can return before a trigger on the same line has fired. It fires at
     the next look or at settle.
-10. **Help does not say that a trailing newline in a paste is an Enter**
-    (it leaves an empty last line in vim).
-11. **The key-after-text explanation is only partly checked** (2.1).
-12. **Report the emulator bug upstream**: the no-SIMD static library exports
+10. **The key-after-text explanation is only partly checked** (2.1).
+11. **Report the emulator bug upstream**: the no-SIMD static library exports
     stub `calloc` and `free` that override a shared glibc's (9.2).
 
 ## From the comparison with tmux (2026-11-21)

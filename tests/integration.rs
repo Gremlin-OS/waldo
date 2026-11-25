@@ -620,9 +620,20 @@ fn prompt_with_echo_off_and_no_newline() {
     assert_eq!(r.code, 0, "{}\n{}", r.out, r.err);
     assert!(status_line(&r.out).contains("cursor=2,11"), "{}", r.out);
     // The secret comes from stdin, not the command line, and is not echoed.
+    // The newline that ends it on stdin is not typed, so the Enter is sent.
     let mut child = t
         .command(TERM)
-        .args(["send", "-s", "pw", "--text", "-", "--until-match", "^got="])
+        .args([
+            "send",
+            "-s",
+            "pw",
+            "--text",
+            "-",
+            "--keys",
+            "<Enter>",
+            "--until-match",
+            "^got=",
+        ])
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .spawn()
@@ -691,13 +702,17 @@ fn file_items() {
     t.bash("fi");
     let script = t.work.join("cmd.txt");
     std::fs::write(&script, "echo from-file <<< x\n").unwrap();
-    // A relative path is made absolute by waldo-term; the final newline is Enter.
+    // waldo-term reads the file, so a relative path is its own. The file's
+    // final newline is not typed: the command waits for an Enter.
+    let r = t.term(&["send", "-s", "fi", "--text-file", "cmd.txt"]);
+    assert_eq!(r.code, 0, "{}\n{}", r.out, r.err);
+    assert!(!r.out.lines().any(|l| l == "from-file"), "{}", r.out);
     let r = t.term(&[
         "send",
         "-s",
         "fi",
-        "--text-file",
-        "cmd.txt",
+        "--keys",
+        "<Enter>",
         "--until-match",
         "^from-file$",
     ]);
@@ -728,7 +743,12 @@ fn file_items() {
         "/no/such/file",
     ]);
     assert_eq!(r.code, 2);
-    assert!(r.err.contains("file_unreadable"), "{}", r.err);
+    assert!(r.err.contains("cannot read /no/such/file"), "{}", r.err);
+
+    // There is no paste from a file.
+    let r = t.term(&["send", "-s", "fi", "--paste-file", "cmd.txt"]);
+    assert_eq!(r.code, 2);
+    assert!(r.err.contains("there is no --paste-file"), "{}", r.err);
     std::thread::sleep(Duration::from_millis(300));
     assert_eq!(before.out, t.term(&["screen", "-s", "fi"]).out);
 }
@@ -763,6 +783,52 @@ fn paste_is_one_piece() {
     ]);
     assert_eq!(r.code, 0, "{}\n{}", r.out, r.err);
     assert_eq!(std::fs::read_to_string(&file).unwrap(), format!("{body}\n"));
+}
+
+#[test]
+fn a_files_final_newline_is_not_typed() {
+    let t = T::new();
+    // What is typed, how, and what vim then writes. vim ends every line
+    // with a newline, so typing the file's last one too would leave an
+    // empty line after it.
+    let cases = [
+        ("f1", "--text-file", "one\ntwo\n", "one\ntwo\n"),
+        ("f2", "--text-file", "one\ntwo\r\n", "one\ntwo\n"),
+        ("f3", "--text-file", "one\ntwo", "one\ntwo\n"),
+        // Only one is taken: a blank last line is part of the text.
+        ("f4", "--text-file", "one\ntwo\n\n", "one\ntwo\n\n"),
+        // Text given on the command line is sent as written.
+        ("f5", "--text", "one\ntwo\n", "one\ntwo\n\n"),
+    ];
+    for (id, how, body, want) in cases {
+        let out = t.work.join(format!("{id}.out"));
+        let src = t.work.join(format!("{id}.src"));
+        std::fs::write(&src, body).unwrap();
+        t.start(id, &["vim", "--clean", "-i", "NONE", out.to_str().unwrap()]);
+        assert_eq!(
+            t.term(&["wait", "-s", id, "--until-match", r"\.out"]).code,
+            0
+        );
+        let what = if how == "--text" {
+            body
+        } else {
+            src.to_str().unwrap()
+        };
+        let r = t.term(&[
+            "send",
+            "-s",
+            id,
+            "--keys",
+            "i",
+            how,
+            what,
+            "--keys",
+            "<Esc>:wq<Enter>",
+            "--until-exit",
+        ]);
+        assert_eq!(r.code, 0, "{id}: {}\n{}", r.out, r.err);
+        assert_eq!(std::fs::read_to_string(&out).unwrap(), want, "{id}");
+    }
 }
 
 // ---- the will ----------------------------------------------------------------------------
@@ -3177,14 +3243,10 @@ fn protocol_lists_every_error_the_host_can_send() {
     let documented = documented_errors();
     assert!(documented.len() >= 20, "{documented:?}");
     // Every code the sources send: the third argument after `self.error(`,
-    // the second of `Parsed::Bad(`, and the three an input item can fail with.
+    // the second of `Parsed::Bad(`, and the two an input item can fail with.
     let host = include_str!("../src/bin/waldo-wrap/host.rs");
     let http = include_str!("../src/bin/waldo-wrap/http.rs");
-    let mut sent: Vec<String> = vec![
-        "bad_item".into(),
-        "unknown_key".into(),
-        "file_unreadable".into(),
-    ];
+    let mut sent: Vec<String> = vec!["bad_item".into(), "unknown_key".into()];
     for (source, call) in [(host, "self.error("), (http, "Parsed::Bad(")] {
         for piece in source.split(call).skip(1) {
             let head: String = piece.chars().take(400).collect();
@@ -3424,14 +3486,6 @@ fn every_documented_error_can_be_provoked() {
             post(
                 "/v1/input",
                 r#"{"input": [{"text": "typed?"}, {"keys": "<Entr>"}]}"#,
-            ),
-        ),
-        (
-            "file_unreadable",
-            &sock,
-            post(
-                "/v1/input",
-                r#"{"input": [{"text": "typed?"}, {"text_file": "not/absolute"}]}"#,
             ),
         ),
         (

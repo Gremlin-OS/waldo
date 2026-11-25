@@ -28,6 +28,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   interact with it, wait for it to end: waldo-term wait --until-exit". It
   used to give advice that was wrong for a pager or an editor, and pointed
   at a help topic where it now names the command.
+- The one final newline of a `--text-file`, a `--keys-file` or of stdin
+  (`--text -`) is no longer sent. It used to run the last line of a text
+  file at a shell prompt, and leave an empty last line in an editor. Send
+  the Enter with `--keys '<Enter>'` when it is wanted.
+- `waldo-term` reads `--text-file` and `--keys-file` itself, so a relative
+  path no longer has to be one the host can reach, and a file that cannot
+  be read is a usage error.
 - `waldo-term help tips` no longer advises a pause after Escape. Items 7
   and 8 say what does lose keys: a prompt that discards keys that are not
   its answers, and a program that is exiting.
@@ -41,6 +48,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   from `signal STOP`, which suspends the program. `waldo-term` says to use
   `kill` if given `--stop`, and `waldo-wrap` names `kill` when a session
   name is taken. The API's stop request is unchanged.
+- `waldo-term send --paste-file`. A paste depends on the program it goes
+  to; typing does not, so a file is typed. `--paste S` is unchanged, and
+  `--paste - < FILE` still pastes a file.
+- The `text_file`, `keys_file` and `paste_file` input items, and the
+  `file_unreadable` error. The host no longer reads files: a client reads
+  the file and sends its content. Behind a bridge, file items let anyone
+  who could reach the port read any file the host could.
 
 ## [0.2.0] - 2026-11-22
 
