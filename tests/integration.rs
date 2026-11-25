@@ -3688,6 +3688,20 @@ fn a_response_says_when_typing_changed_nothing() {
     // A request that types nothing does not carry the field.
     let (_, v) = t.json(&["screen", "-s", "ch"]);
     assert!(v.get("changed").is_none(), "{v}");
+
+    // Nor does one that types and does not wait: it is answered before the
+    // program can have reacted, so the host has not looked. This holds
+    // even where the keys go nowhere.
+    for id in ["un", "ch"] {
+        for _ in 0..20 {
+            let r = t.term(&["send", "-s", id, "--keys", "a", "--until-none"]);
+            assert_eq!(r.code, 0, "{}", r.err);
+            assert!(!status_line(&r.out).contains("unchanged"), "{}", r.out);
+            let (_, v) = t.json(&["send", "-s", id, "--keys", "a", "--until-none"]);
+            assert_eq!(v["reason"], "none", "{v}");
+            assert!(v.get("changed").is_none(), "{v}");
+        }
+    }
     let (_, v) = t.json(&["wait", "-s", "ch", "--until-settle"]);
     assert!(v.get("changed").is_none(), "{v}");
 }

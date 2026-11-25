@@ -252,7 +252,7 @@ when the deadline passed:
 | `reason` | Why the request returned: `settle`, `match`, `change`, `exit`, `broadcast`, `elapsed`, `none` or `timeout`. With several conditions, the one that was met |
 | `waited_ms` | How long the request waited |
 | `interleaved` | True if someone else's input, signal or resize took effect during this request |
-| `changed` | Only on a request that typed something: false if `gen` is the same as when its first input was written, so nothing on screen changed, not even the cursor |
+| `changed` | Only on a request that typed something and waited: false if `gen` is the same as when its first input was written, so nothing on screen changed, not even the cursor. Absent when the reason is `none`: such a request is answered before the program can have reacted |
 | `child.state` | `running` or `exited` |
 | `child.pid` | The program's process id |
 | `child.foreground` | While running: a name for the job that has the terminal, which is its foreground process group. It is the name of the group's leader. When the leader has exited, as the first program of a pipeline often has, it is the name of the one process left in the group, and null when several are left. It says nothing about what runs inside a program that carries a terminal of its own, such as tmux or ssh |

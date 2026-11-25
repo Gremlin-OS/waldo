@@ -1804,9 +1804,11 @@ impl Host {
         resp.insert("reason".into(), reason.as_str().into());
         resp.insert("waited_ms".into(), ms_since(w.started).into());
         resp.insert("interleaved".into(), w.interleaved.into());
-        if let Some(before) = w.gen_at_typing {
-            // Only for a request that typed: did anything on screen change
-            // since its first input was written?
+        // Only for a request that typed and then waited: did anything on
+        // screen change since its first input was written? A request that
+        // did not wait is answered before the program can have reacted, so
+        // it says nothing.
+        if let (Some(before), false) = (w.gen_at_typing, matches!(reason, Reason::None)) {
             resp.insert("changed".into(), (self.gen != before).into());
         }
         resp.insert("child".into(), self.child_json());
