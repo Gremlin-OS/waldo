@@ -9,6 +9,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- A `send` with `--until-none` could say `unchanged`: it is answered
+  before the program can have reacted. A request that does not wait no
+  longer carries `changed`, so its status line says neither.
 - A key sent right after `<Esc>` in one request could be lost when the
   program was busy as the two arrived: it read them together and took them
   for an Alt chord. htop did this at each of its refreshes. What follows an
