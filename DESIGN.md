@@ -221,11 +221,10 @@ request is bad.
   enabled them corrupt its input. Vim started with `-u NONE` turns the mode
   on but does not recognise the markers, so a paste into it is mangled;
   `vim --clean` is fine.
-- Each kind can take its content from a file. That is the intended route
-  for anything long, such as a source file to paste into an editor. The
-  host reads the file, which gives the caller read access to whatever the
-  host can read. That is no more than a caller with the host's uid already
-  has; see section 2.7 for what it means behind a bridge.
+- The host sends what it is given and does not read files. It used to,
+  through `_file` items, which let a caller have it read any file it could;
+  that mattered behind a bridge (section 2.7). What a file means as input
+  is the client's business (section 2.4).
 
 **One queue.** Items are written to the pty in order and contiguously: input
 from other clients is never interleaved inside one request. Signals and
@@ -399,6 +398,24 @@ The choices worth recording:
   case for an agent.
 - `--text -`, `--keys -` and `--paste -` read from stdin, which keeps
   secrets out of `argv`.
+- `--text-file` and `--keys-file` are read by `waldo-term` and sent as
+  ordinary items. There is no `--paste-file`. A paste is the program-
+  specific way in: whether it is bracketed, and what the program does with
+  it, depend on the program. Typing is the same everywhere, so that is
+  what a file gets. A file can still be pasted, from stdin: `--paste - <
+  FILE`. Help does not suggest having the program read the file itself,
+  though agents took to that at once when it did: the session may one day
+  be on another machine, where the program cannot see the caller's files.
+  `--paste S` stays because, typed as
+  text, a function is mis-indented by Python's prompt and a C file by vim,
+  and vim saves the result without complaint.
+- The one final newline of a file or of stdin is not sent. It ends the
+  last line; it is not something to type. Sent, it ran the last line of a
+  text file at a shell prompt whether that was meant or not, and left an
+  empty last line in vim. The rule is fixed and does not look at the
+  program: one newline, LF or CRLF, always; a second one is a blank line
+  someone wrote and is kept. We first tried only describing the newline in
+  help: agents on Haiku read the warning and saved the extra line anyway.
 - The exit status tells the caller's shell what happened without parsing:
   0 if the wait condition was met, 124 on the deadline, 3 if the program
   exited first, 4 if there is no such session.
@@ -525,8 +542,8 @@ ssh -L 7333:/run/user/1000/waldo/k3f9q2/sock host     # from another machine
 
 A bridge removes the socket's protection. The file mode and the peer-uid check
 only see the bridge process, so whoever can reach the port can type into the
-program, and file items let them read any file the host can. That is the
-operator's decision to make when they start the bridge.
+program. That is the operator's decision to make when they start the
+bridge.
 
 If bridged use becomes common, the fix is a `--token-file` option that makes
 the host require an `Authorization` header on every request, including over
@@ -978,9 +995,8 @@ Security notes:
   print text that looks like instructions to an agent. Waldo cannot prevent
   that; consumers should treat screens as data.
 - Key payloads are not logged.
-- The host follows symlinks. Against the callers it admits that changes
-  nothing: a caller with the host's uid can name any file the host can read.
-  Where it matters is a predictable name in a directory other users can
+- The host follows symlinks. It reads no file a caller names. Where
+  symlinks matter is a predictable name in a directory other users can
   write to. The session base directory is checked for that (section 1.4),
   and everything waldo creates itself lives inside it. A `--dest file:` or
   `unix:` path, or a `--record` file, is opened where the operator points

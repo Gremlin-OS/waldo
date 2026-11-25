@@ -57,7 +57,7 @@ or a socket path); with exactly one live session it can be left out.
   list                      sessions and their state
   send                      type input, wait, print the screen
       --text S | --keys S | --paste S           (repeatable, sent in order)
-      --text-file P | --keys-file P | --paste-file P
+      --text-file P | --keys-file P
       [--pause MS] [--key-delay MS]             (help keys)
       [--until-...] [--timeout MS] [--as NAME]
   screen                    print the screen  [--until-...] [--timeout MS]
@@ -107,6 +107,7 @@ Input is a list of items, sent in order:
   --text S    literal characters. Nothing in S is special. A newline is Enter.
   --keys S    key names in <...>, with literal characters between them.
   --paste S   a paste: sent in one piece, bracketed if the program supports it.
+              For a block of several lines into an editor or a REPL.
 
 Key names (case does not matter):
   <Esc> <Enter> <Tab> <BS> <Del> <Space> <Insert>
@@ -127,9 +128,13 @@ In --keys, an unknown name such as <Entr> is an error and nothing is sent.
 Text with '<' in it (code, HTML, redirects) belongs in --text.
 
 For long input, write it to a file and name the file:
-  --text-file PATH, --keys-file PATH, --paste-file PATH
-The content is used exactly as is, so a final newline in a text file is Enter.
-'-' reads from stdin: --text - keeps a secret out of the command line.
+  --text-file PATH, --keys-file PATH
+'-' in place of S reads from stdin: --text - keeps a secret out of the
+command line.
+The final newline of a file or of stdin is not sent, for --text, --keys
+and --paste alike. It only ends the last line, and an editor writes it
+back when it saves. Add --keys '<Enter>' when you want Enter pressed, as
+at a prompt.
 
 examples:
   $ waldo-wrap --detach --name keys-demo -- bash
@@ -204,9 +209,11 @@ What agents who used waldo before you learned the slow way.
 5. --until-exit waits for the program you are typing into. After :wq in vim
    it returns when vim is gone. Typed at a shell prompt, it waits for the
    shell to exit, which is the end of the session.
-6. A block of several lines for a REPL or an editor goes in as --paste,
-   then --keys '<Enter>'. A REPL that indents for you mangles a block sent
-   as --text.
+6. A block of several lines for a REPL or an editor goes in as --paste;
+   when it is in a file, --paste - < FILE. At a REPL follow it with
+   --keys '<Enter>', and a second <Enter> to close an indented block. A
+   program that indents for you mangles a block sent as --text or
+   --text-file.
 7. A prompt takes the next key as its answer and throws away keys that
    are not answers: a '--More--', a yes or no question, a tip shown the
    first time you use a command. Do not send keys past a key that may

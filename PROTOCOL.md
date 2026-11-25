@@ -417,7 +417,6 @@ exactly one of these keys, whose value is a string (a number for `pause`):
 | `text` | Literal characters. Nothing is special. A newline is sent as Enter (carriage return) |
 | `keys` | Key notation (section 4.5) |
 | `paste` | A paste: bracketed if the program has turned bracketed paste on, as plain text otherwise. The content is sanitised so it cannot end the bracket early |
-| `text_file`, `keys_file`, `paste_file` | The same, with the content read from the named file |
 | `pause` | Nothing is typed. The value is a number of milliseconds, at most 10000: what follows is typed no sooner than that long after what came before |
 
 `key_delay_ms`, at the top level of the body or in the query string, is a
@@ -427,11 +426,10 @@ that gap between them. `text` and `paste` items are still typed in one
 piece. Use it, or a `pause`, for a program that discards keys which arrive
 while it is opening a prompt or a menu.
 
-For the `_file` kinds the host reads the file, so the path must be absolute
-and readable by the host. It must be a regular UTF-8 file of at most 1 MiB,
-and is used exactly as it is: a final newline in a `text_file` is an Enter.
+Every item is sent exactly as given. The host does not read files: a client
+that takes input from a file reads it and sends the content.
 
-All items are checked, and all files read, before anything is typed. If any
+All items are checked before anything is typed. If any
 item is bad the request is refused and nothing is sent.
 
 The wait parameters apply after the input; the default is `until_settle`.
@@ -1025,7 +1023,6 @@ that says what to do next; its wording may change.
 | 400 | `bad_item` | An input item is not an object with exactly one known kind and a string value, or a `pause` that is not a number of milliseconds up to 10000 |
 | 400 | `bad_delay` | `key_delay_ms` is not a whole number of milliseconds up to 10000 |
 | 400 | `unknown_key` | A name in key notation that is not a key |
-| 400 | `file_unreadable` | A `_file` item's path is not absolute, not a regular file, over 1 MiB, not UTF-8, or cannot be read |
 | 400 | `bad_until` | A parameter whose name starts with `until` and is not a wait condition; one with a value of the wrong kind; `until_elapsed` over 600000; or `until_none` together with another |
 | 400 | `unknown_style` | `style` is not `plain` or `ansi` |
 | 400 | `bad_timeout` | `timeout_ms` is not a whole number |
@@ -1063,8 +1060,11 @@ itself.
   answering, it reads the will (section 1.4) and prints it. When a
   connection fails or closes without an answer, it waits up to 3 s for the
   lock to be released before deciding the session has ended.
-- **File paths.** It makes relative `--text-file`, `--keys-file` and
-  `--paste-file` paths absolute before sending, and reads `-` from stdin.
+- **Files and stdin.** It reads a `--text-file` or `--keys-file` itself, and
+  `-` from stdin, and sends the content as a `text`, `keys` or `paste`
+  item, without its one final newline (LF or CRLF). A file must be regular,
+  UTF-8 and at most 1 MiB; one that is not is a usage error and nothing is
+  sent.
 - **Wait options.** One for each condition, named after it:
   `--until-match RE` and `--until-match-new RE` (repeatable), `--until-settle`, `--until-change`,
   `--until-exit`, `--until-broadcast`, `--until-broadcast-from NAME`,
