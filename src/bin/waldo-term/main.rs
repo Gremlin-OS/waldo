@@ -1179,7 +1179,7 @@ fn cmd_gc(args: &[String]) -> ! {
 
 fn cmd_help(args: &[String]) -> ! {
     match args.first().map(|s| s.as_str()) {
-        None => print!("{}", help::GUIDE),
+        None => print!("{}", help::all()),
         Some(t) => match help::topic(t) {
             Some(text) => print!("{text}"),
             None => usage(&format!("no help topic '{t}'; topics: tips, keys, wait, shell, sharing, messages, exit-status, commands")),
@@ -1191,7 +1191,7 @@ fn cmd_help(args: &[String]) -> ! {
 fn main() {
     let args: Vec<String> = std::env::args().skip(1).collect();
     let Some(cmd) = args.first() else {
-        print!("{}", help::GUIDE);
+        print!("{}", help::all());
         std::process::exit(EXIT_USAGE);
     };
     let rest = &args[1..];

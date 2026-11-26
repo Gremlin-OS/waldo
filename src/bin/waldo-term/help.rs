@@ -45,10 +45,35 @@ something else. 'interleaved' means someone else typed during your request.
 
 Exit status: 0 ok, 124 timed out, 3 the program exited, 4 no such session,
 2 bad usage.
-
-Before a long job, read: waldo-term help tips
-More: waldo-term help keys | wait | shell | sharing | messages | exit-status | commands
 ";
+
+/// The sections of the page after the guide, most needed first. Each is also
+/// a topic of its own.
+const SECTIONS: [(&str, &str); 8] = [
+    ("tips", TIPS),
+    ("keys", KEYS),
+    ("wait", WAIT),
+    ("shell", SHELL),
+    ("commands", COMMANDS),
+    ("sharing", SHARING),
+    ("messages", MESSAGES),
+    ("exit-status", EXIT_STATUS),
+];
+
+/// All of help on one page: the guide, then every topic. An agent reads
+/// what it is given and seldom goes for a second page, so there is none it
+/// has to go for.
+pub fn all() -> String {
+    let mut page = GUIDE.to_string();
+    page.push_str(
+        "\nThe rest of this page, in order: tips, keys, wait, shell, commands, sharing,\n\
+         messages, exit-status. To print one alone: waldo-term help NAME\n",
+    );
+    for (name, text) in SECTIONS {
+        page.push_str(&format!("\n==== {name} ====\n\n{text}"));
+    }
+    page
+}
 
 pub const COMMANDS: &str = "\
 waldo-term commands. -s ID picks the session (an id, a unique prefix of one,
@@ -88,8 +113,9 @@ or a socket path); with exactly one live session it can be left out.
   kill [ID]                 end the session and wait until it has ended
   signal NAME               send a signal to the program, such as SIGINT
   gc [--all]                remove ended sessions (--all: regardless of age)
-  help [TOPIC]              tips, keys, wait, shell, sharing, messages, exit-status,
-                            commands
+  help [TOPIC]              all of help on one page, or one section of it: tips,
+                            keys, wait, shell, commands, sharing, messages,
+                            exit-status
 
 Any command that prints a screen takes --json for the full response, and
 --style ansi to keep colour codes in the screen text. Programs often mark the
