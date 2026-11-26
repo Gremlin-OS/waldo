@@ -1250,24 +1250,31 @@ fn every_help_example_runs_as_written() {
         std::env::var("PATH").unwrap_or_default()
     );
     let mut ran = 0;
+    // `help` alone is the whole of help on one page: the guide, then every
+    // topic as `help TOPIC` prints it. So running the page's examples runs
+    // every topic's.
+    let help = t.term(&["help"]);
+    assert_eq!(help.code, 0, "{}", help.err);
+    let mut at = 0;
     for topic in [
-        "",
         "tips",
         "keys",
         "wait",
         "shell",
+        "commands",
         "sharing",
         "messages",
-        "commands",
         "exit-status",
     ] {
-        let args: Vec<&str> = if topic.is_empty() {
-            vec!["help"]
-        } else {
-            vec!["help", topic]
-        };
-        let help = t.term(&args);
-        assert_eq!(help.code, 0, "help {topic}: {}", help.err);
+        let one = t.term(&["help", topic]);
+        assert_eq!(one.code, 0, "help {topic}: {}", one.err);
+        let section = format!("==== {topic} ====\n\n{}", one.out);
+        at += help.out[at..]
+            .find(&section)
+            .unwrap_or_else(|| panic!("'help' does not carry 'help {topic}' whole and in order"));
+    }
+    {
+        let topic = "";
         for line in help.out.lines() {
             let Some(cmd) = line.strip_prefix("  $ ") else {
                 continue;
@@ -1295,8 +1302,9 @@ fn every_help_example_runs_as_written() {
         "#include <stdio.h>\n"
     );
     let _ = std::fs::remove_file("/tmp/waldo-demo.c");
-    // The guide is short enough to read in one go.
-    assert!(t.term(&["help"]).out.lines().count() <= 45);
+    // The guide comes first and is short; the tips follow it directly.
+    let tips = help.out.find("==== tips ====").unwrap();
+    assert!(help.out[..tips].lines().count() <= 50);
 }
 
 #[test]

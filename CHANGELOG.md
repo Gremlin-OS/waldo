@@ -23,6 +23,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- `waldo-term help` prints all of help on one page: the guide, then tips,
+  keys, wait, shell, commands, sharing, messages and exit-status. It used to
+  print the guide and name the topics, and agents seldom read a second
+  page. `waldo-term help TOPIC` still prints one section alone.
 - The hint for a program that left the foreground during a request now
   says that what was typed after the keys that ended it may have been
   lost, and a wait for a pattern that runs out in that state gives it too.

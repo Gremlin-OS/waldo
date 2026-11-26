@@ -32,9 +32,11 @@ hello
 $
 ```
 
-`waldo-term help` is the guide, written for an agent that has never seen
-waldo. Every example in it is run by the test suite. `waldo-term help
-commands` lists every option, and `waldo-wrap --help` covers the host.
+`waldo-term help` is all of help on one page, written for an agent that has
+never seen waldo: a short guide, then tips, keys, waiting, the shell, every
+command, sharing, messages and exit status. Every example in it is run by the
+test suite. `waldo-term help TOPIC` prints one section alone, and
+`waldo-wrap --help` covers the host.
 
 ## What it does
 

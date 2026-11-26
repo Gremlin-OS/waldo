@@ -486,11 +486,21 @@ was removed on 2026-11-21:
 An agent arrives knowing nothing about waldo, so the tool has to teach itself.
 These are requirements, not polish.
 
-- `waldo-term help` prints a guide of about forty lines: start a session, run
-  a command, send keys, wait for a pattern, read the will. Every example is a
-  complete command that works as written.
-- `waldo-term help TOPIC` covers `keys` (the notation and every key name),
-  `wait`, `shell`, `messages` and `exit-status`. `waldo-wrap --help` and each
+- `waldo-term help` prints all of help on one page. First a guide of about
+  forty lines: start a session, run a command, send keys, wait for a pattern,
+  read the will. Then every topic, most needed first: `tips`, `keys` (the
+  notation and every key name), `wait`, `shell`, `commands`, `sharing`,
+  `messages` and `exit-status`. Every example is a complete command that
+  works as written.
+- It used to print the guide alone and name the topics. Agents on Haiku
+  then read four or five pages each, not always the same ones and some of
+  them in the middle of the task; none read them all, and two of four
+  skipped `tips`. Told to read three named pages, one of eight found
+  `waldo-term wait` in a fourth. With one page each read help once, to the end, and
+  did the same task in about a third fewer commands. The page is some 370
+  lines, which costs an agent about 5,000 tokens once.
+- `waldo-term help TOPIC` prints one section alone, for looking a thing up
+  again. `waldo-wrap --help` and each
   subcommand's `--help` end with two or three examples.
 - Every error's `text` says what to do next, as the `unknown_key` message
   does.
