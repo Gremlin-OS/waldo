@@ -878,7 +878,7 @@ sends SIGWINCH through the pty, reflows the primary screen, counts as a screen
 change, and restarts any settle window. The response waits for the screen to
 settle, so it shows what the program redrew, but for at most 1 s: after that
 it answers with reason `none` and the screen as it is. A `wait` object in
-the request replaces that, and `{"until_none": true}` answers at once.
+the request replaces that, and `{"until_elapsed": 0}` answers at once.
 
 ### 7.3 Human and agent input
 

@@ -90,7 +90,7 @@ or a socket path); with exactly one live session it can be left out.
                             one of which ends the wait (help wait):
       --until-settle | --until-match RE | --until-match-new RE
       --until-change | --until-exit
-      --until-broadcast | --until-elapsed MS | --until-none    [--timeout MS]
+      --until-broadcast | --until-elapsed MS    [--timeout MS]
   broadcast [--as NAME] TEXT
                             say a line to the other clients of the session; it is
                             not typed into the program (help sharing)
@@ -98,7 +98,7 @@ or a socket path); with exactly one live session it can be left out.
   status                    what the session is: its program, directory, socket,
                             destination, and whether broadcasts are on
   resize COLSxROWS          change the terminal size, then print the screen once the
-                            program has redrawn (--until-none: at once)
+                            program has redrawn (--until-elapsed 0: at once)
   attach [--drive] [--resize] [--as NAME]
                             watch the session live in your own terminal. View only
                             unless --drive. Ctrl-] switches between viewing and
@@ -165,7 +165,7 @@ at a prompt.
 examples:
   $ waldo-wrap --detach --name keys-demo -- bash
   $ waldo-term send -s keys-demo --text 'echo \"a <b> c\"' --keys '<Enter>'
-  $ waldo-term send -s keys-demo --text 'sleep 30' --keys '<Enter>' --until-none
+  $ waldo-term send -s keys-demo --text 'sleep 30' --keys '<Enter>' --until-elapsed 0
   $ waldo-term send -s keys-demo --keys '<C-c>'
   $ waldo-term kill keys-demo
 ";
@@ -194,8 +194,11 @@ Commands that print the screen wait first. These say for what:
            (waldo-term help sharing). --until-broadcast-from NAME: only
            that sender.
   --until-elapsed MS  that long has passed. Not a failure, unlike the
-           deadline: use it to look again after a while.
-  --until-none       (default for screen) do not wait
+           deadline: use it to look again after a while. With 0 there is
+           no wait: send answers when the last of its input has gone in,
+           before the program has reacted to it.
+
+screen does not wait unless one of these is given.
 
 Give more than one to wait for whichever comes first; the status line says
 which it was. --until-match may be given several times:
@@ -228,7 +231,7 @@ What agents who used waldo before you learned the slow way.
    appear, and anchor it with ^: an unanchored pattern can match the echo
    of the command you just typed.
 3. A screen that never goes still (an animation, a clock) makes the default
-   wait run to its timeout. Use --until-none, --until-match, or --until-elapsed MS
+   wait run to its timeout. Use --until-match, or --until-elapsed MS
    to look again after a while.
 4. To know that a shell command finished, and how, put a marker after it
    and wait for the marker: waldo-term help shell

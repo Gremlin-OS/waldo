@@ -1805,8 +1805,13 @@ impl Host {
         // Only for a request that typed and then waited: did anything on
         // screen change since its first input was written? A request that
         // did not wait is answered before the program can have reacted, so
-        // it says nothing.
-        if let (Some(before), false) = (w.gen_at_typing, matches!(reason, Reason::None)) {
+        // it says nothing. A wait of no time at all is such a request.
+        let waited = match reason {
+            Reason::None => false,
+            Reason::Elapsed => !w.conditions().contains(&Until::Elapsed(0)),
+            _ => true,
+        };
+        if let (Some(before), true) = (w.gen_at_typing, waited) {
             resp.insert("changed".into(), (self.gen != before).into());
         }
         resp.insert("child".into(), self.child_json());
@@ -2541,7 +2546,7 @@ impl Host {
         // Each condition is a parameter of its own, `until_match` and so on,
         // looked for in the query, the wait object and the top of the body.
         // A request may give several, and returns when any one is met.
-        const CONDITIONS: [&str; 8] = [
+        const CONDITIONS: [&str; 7] = [
             "until_match",
             "until_match_new",
             "until_exit",
@@ -2549,7 +2554,6 @@ impl Host {
             "until_change",
             "until_settle",
             "until_elapsed",
-            "until_none",
         ];
         let given = |name: &str| -> Vec<Value> {
             let in_query: Vec<Value> = req
@@ -2599,13 +2603,22 @@ impl Host {
             )
             .find(|k| k.starts_with("until") && !CONDITIONS.contains(k))
             .map(|k| k.to_string());
+        if stray.as_deref() == Some("until_none") {
+            return self.error(
+                id,
+                req,
+                400,
+                "bad_until",
+                "until_none is gone; to be answered without a wait, give until_elapsed 0",
+            );
+        }
         if let Some(k) = stray {
             return self.error(
                 id,
                 req,
                 400,
                 "bad_until",
-                &format!("'{k}' is not a wait condition; they are until_settle, until_match, until_match_new, until_change, until_exit, until_broadcast, until_elapsed and until_none"),
+                &format!("'{k}' is not a wait condition; they are until_settle, until_match, until_match_new, until_change, until_exit, until_broadcast and until_elapsed"),
             );
         }
         let mut wrong: Option<String> = None;
@@ -2619,8 +2632,7 @@ impl Host {
                 }
             }
         };
-        let (wants_exit, wants_settle, wants_none) =
-            (flag("until_exit"), flag("until_settle"), flag("until_none"));
+        let (wants_exit, wants_settle) = (flag("until_exit"), flag("until_settle"));
         if let Some(text) = wrong {
             return self.error(id, req, 400, "bad_until", &text);
         }
@@ -2728,18 +2740,6 @@ impl Host {
                     )
                 }
             }
-        }
-        if wants_none {
-            if !conds.is_empty() {
-                return self.error(
-                    id,
-                    req,
-                    400,
-                    "bad_until",
-                    "until_none answers at once, so it cannot be combined with another wait condition",
-                );
-            }
-            conds.push(Until::None);
         }
         if conds.is_empty() {
             conds.push(default);

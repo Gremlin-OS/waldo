@@ -199,8 +199,7 @@ same everywhere:
 | `until_change` | `true`: wait until the screen changes. Or a number: until `gen` differs from it |
 | `until_exit` | `true`: wait until the program being typed into exits (5.1) |
 | `until_broadcast` | `true`: wait until another client says something. Or a name: until that sender does (section 4.10) |
-| `until_elapsed` | A number of milliseconds, at most 600000: wait that long |
-| `until_none` | `true`: do not wait |
+| `until_elapsed` | A number of milliseconds, at most 600000: wait that long. `0`: do not wait |
 | `style` | `plain` (default) or `ansi` (section 3.3) |
 | `timeout_ms` | The deadline. Default 10000, or one second more than `until_elapsed` if that is longer; values above 600000 are lowered to it. `timeout` is accepted as another name |
 | `as` | The client's name, for broadcasts (section 4.10): 1 to 32 characters from letters, digits, `_` and `-`. Optional |
@@ -252,7 +251,7 @@ when the deadline passed:
 | `reason` | Why the request returned: `settle`, `match`, `change`, `exit`, `broadcast`, `elapsed`, `none` or `timeout`. With several conditions, the one that was met |
 | `waited_ms` | How long the request waited |
 | `interleaved` | True if someone else's input, signal or resize took effect during this request |
-| `changed` | Only on a request that typed something and waited: false if `gen` is the same as when its first input was written, so nothing on screen changed, not even the cursor. Absent when the reason is `none`: such a request is answered before the program can have reacted |
+| `changed` | Only on a request that typed something and waited: false if `gen` is the same as when its first input was written, so nothing on screen changed, not even the cursor. Absent when the request did not wait (the reason is `none`, or `until_elapsed` was 0): it is answered before the program can have reacted |
 | `child.state` | `running` or `exited` |
 | `child.pid` | The program's process id |
 | `child.foreground` | While running: a name for the job that has the terminal, which is its foreground process group. It is the name of the group's leader. When the leader has exited, as the first program of a pipeline often has, it is the name of the one process left in the group, and null when several are left. It says nothing about what runs inside a program that carries a terminal of its own, such as tmux or ssh |
@@ -386,8 +385,9 @@ endpoints in its text.
 
 ### 4.2 GET /v1/screen
 
-Takes the wait parameters in the query string. The default is
-`until_none`, so it returns at once. Answers with the response of section 3.2.
+Takes the wait parameters in the query string. With none of them it does
+not wait: it returns at once, with reason `none`. Answers with the response
+of section 3.2.
 
 ### 4.3 POST /v1/wait
 
@@ -484,7 +484,8 @@ Sizes are 2x1 to 500x200. The program gets SIGWINCH. The answer is the
 response of section 3.2. By default it waits for the program to redraw: it
 returns `settle` when the screen has gone still, or `none` with the screen
 as it is after 1 s. A `wait` object in the body replaces that default;
-`{"wait": {"until_none": true}}` answers as soon as the size has changed.
+`{"wait": {"until_elapsed": 0}}` answers as soon as the size has changed.
+`reason` is then `elapsed`.
 
 ### 4.8 POST /v1/signal
 
@@ -615,8 +616,8 @@ and the host does not check it.
 | `until_broadcast` | `broadcast` | Another client has said something this one has not been given (section 4.10) |
 | `until_change` | `change` | `gen` differs from what it was when the request arrived, or from the number given |
 | `until_settle` | `settle` | The screen is settled (5.2) |
-| `until_elapsed` | `elapsed` | That many milliseconds have passed since the request began. Unlike the deadline, this is a condition that was met: the reason is `elapsed`, not `timeout` |
-| `until_none` | `none` | At once |
+| `until_elapsed` | `elapsed` | That many milliseconds have passed since the request began, and all of its input has been written. Unlike the deadline, this is a condition that was met: the reason is `elapsed`, not `timeout`. With `0` the request does not wait: it is answered when the last of its input has been written, before the program can have reacted, and carries no `changed` |
+| (none given, where a request does not wait by default: 4.2, 4.8) | `none` | At once |
 
 A request may give several:
 
@@ -627,7 +628,7 @@ POST /v1/wait?until_match=ready&until_match=failed&until_elapsed=5000
 
 It returns as soon as any one of them is met, and `reason` says which. If
 more than one is met at the same moment, the one higher in the table is
-given. `until_none` cannot be combined with another.
+given.
 
 Whatever the condition:
 
@@ -1023,7 +1024,7 @@ that says what to do next; its wording may change.
 | 400 | `bad_item` | An input item is not an object with exactly one known kind and a string value, or a `pause` that is not a number of milliseconds up to 10000 |
 | 400 | `bad_delay` | `key_delay_ms` is not a whole number of milliseconds up to 10000 |
 | 400 | `unknown_key` | A name in key notation that is not a key |
-| 400 | `bad_until` | A parameter whose name starts with `until` and is not a wait condition; one with a value of the wrong kind; `until_elapsed` over 600000; or `until_none` together with another |
+| 400 | `bad_until` | A parameter whose name starts with `until` and is not a wait condition; one with a value of the wrong kind; `until_elapsed` over 600000; or `until_none`, which was removed (`until_elapsed` 0 does not wait) |
 | 400 | `unknown_style` | `style` is not `plain` or `ansi` |
 | 400 | `bad_timeout` | `timeout_ms` is not a whole number |
 | 400 | `missing_pattern` | A new trigger without a pattern |
@@ -1067,8 +1068,8 @@ itself.
   sent.
 - **Wait options.** One for each condition, named after it:
   `--until-match RE` and `--until-match-new RE` (repeatable), `--until-settle`, `--until-change`,
-  `--until-exit`, `--until-broadcast`, `--until-broadcast-from NAME`,
-  `--until-elapsed MS` and `--until-none`.
+  `--until-exit`, `--until-broadcast`, `--until-broadcast-from NAME`
+  and `--until-elapsed MS`.
 - **A name.** `--as NAME`, or else the environment variable `WALDO_AS`, is
   sent as `as` by `send`, `screen`, `wait` and `broadcast`.
 - **Broadcasts in text output.** Each is printed as `broadcast from NAME:

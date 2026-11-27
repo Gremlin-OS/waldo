@@ -127,13 +127,20 @@ fn parse_opts(cmd: &str, args: &[String], allowed: &[&str], positional: bool) ->
     while i < args.len() {
         let arg = args[i].as_str();
         i += 1;
-        if o.rest.is_empty() && arg.starts_with('-') && arg != "-" && arg != "--" {
+        // An option may come after a bare word, as in `resize 100x30
+        // --until-elapsed 0`. Not for broadcast: what follows its first
+        // word is the rest of what is said.
+        let may_be_option = o.rest.is_empty() || cmd != "broadcast";
+        if may_be_option && arg.starts_with('-') && arg != "-" && arg != "--" {
             if arg == "-h" || arg == "--help" {
                 print!("{}", help::COMMANDS);
                 std::process::exit(0);
             }
             if arg == "--until" || arg == "--pattern" {
-                usage("each wait condition is an option of its own: --until-match RE, --until-settle, --until-change, --until-exit, --until-broadcast, --until-elapsed MS, --until-none");
+                usage("each wait condition is an option of its own: --until-match RE, --until-settle, --until-change, --until-exit, --until-broadcast, --until-elapsed MS");
+            }
+            if arg == "--until-none" {
+                usage("--until-none is gone; to not wait, use: --until-elapsed 0");
             }
             if arg == "--stop" {
                 usage("to end a session, use: waldo-term kill ID. 'signal' sends a signal and nothing else");
@@ -164,7 +171,7 @@ fn parse_opts(cmd: &str, args: &[String], allowed: &[&str], positional: bool) ->
                         _ => unreachable!(),
                     }
                 }
-                "--until-settle" | "--until-change" | "--until-exit" | "--until-none" => {
+                "--until-settle" | "--until-change" | "--until-exit" => {
                     o.conds.insert(name[2..].replace('-', "_"), true.into());
                 }
                 "--until-broadcast" => {
@@ -264,6 +271,17 @@ fn parse_opts(cmd: &str, args: &[String], allowed: &[&str], positional: bool) ->
         }
     }
     o
+}
+
+/// For a command that takes one bare word: a second is refused, where it
+/// used to be dropped without a word.
+fn at_most_one(cmd: &str, rest: &[String]) {
+    if let Some(extra) = rest.get(1) {
+        usage(&format!(
+            "'{cmd}' takes one argument, '{}'; it does not take '{extra}' as well",
+            rest[0]
+        ));
+    }
 }
 
 // ---- finding the session -----------------------------------------------------
@@ -533,7 +551,7 @@ fn encode(s: &str) -> String {
 
 // ---- commands ------------------------------------------------------------------
 
-const WAIT_OPTS: [&str; 14] = [
+const WAIT_OPTS: [&str; 13] = [
     "--session",
     "--as",
     "--until-match",
@@ -544,7 +562,6 @@ const WAIT_OPTS: [&str; 14] = [
     "--until-broadcast",
     "--until-broadcast-from",
     "--until-elapsed",
-    "--until-none",
     "--timeout",
     "--json",
     "--style",
@@ -564,7 +581,7 @@ fn cmd_send(args: &[String]) -> ! {
     ]);
     let o = parse_opts("send", args, &allowed, false);
     if o.items.is_empty() {
-        usage("'send' needs something to send: --text S, --keys S, --paste S, or a --*-file PATH");
+        usage("'send' needs something to send: --text S, --keys S, --paste S, or a --*-file PATH.");
     }
     let mut body = json!({"input": o.items, "wait": wait_object(&o)});
     if let Some(t) = o.timeout_ms {
@@ -770,6 +787,7 @@ fn cmd_resize(args: &[String]) -> ! {
     let mut allowed = WAIT_OPTS.to_vec();
     allowed.retain(|a| a.starts_with("--until-") || *a == "--session" || *a == "--json");
     let o = parse_opts("resize", args, &allowed, true);
+    at_most_one("resize", &o.rest);
     let size = o
         .rest
         .first()
@@ -796,6 +814,7 @@ fn cmd_resize(args: &[String]) -> ! {
 
 fn cmd_signal(args: &[String]) -> ! {
     let o = parse_opts("signal", args, &["--session", "--json"], true);
+    at_most_one("signal", &o.rest);
     let Some(name) = o.rest.first() else {
         usage("'signal' takes a signal name such as SIGINT. To end the session, use: waldo-term kill ID")
     };
@@ -824,6 +843,7 @@ fn cmd_match(args: &[String]) -> ! {
                 &["--session", "--id", "--once", "--json"],
                 true,
             );
+            at_most_one("match add", &o.rest);
             let Some(pattern) = o.rest.first() else {
                 usage("'match add' takes a pattern: a regular expression matched against one line")
             };
@@ -836,6 +856,7 @@ fn cmd_match(args: &[String]) -> ! {
         }
         "rm" | "remove" => {
             let o = parse_opts("match rm", rest, &["--session", "--json"], true);
+            at_most_one("match rm", &o.rest);
             let Some(id) = o.rest.first() else {
                 usage("'match rm' takes the id of a trigger; 'waldo-term match list' shows them")
             };
@@ -1011,6 +1032,7 @@ fn cmd_attach(args: &[String]) -> ! {
 /// then kill), wait until it has, and say how it ended.
 fn cmd_kill(args: &[String]) -> ! {
     let o = parse_opts("kill", args, &["--session"], true);
+    at_most_one("kill", &o.rest);
     let sel = o.session.clone().or_else(|| o.rest.first().cloned());
     let (id, socket, dir) = match target(sel.as_deref()) {
         Target::Live { id, socket, dir } => (id, socket, dir),

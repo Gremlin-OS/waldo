@@ -12,8 +12,8 @@ Setup. Your wrapper script is:
 Call it W. `W ARGS...` runs `waldo-term ARGS...`; `W wrap ARGS...` runs
 `waldo-wrap ARGS...`. From your own shell use only W: never call waldo-term,
 waldo-wrap or the program under test directly, and do not read or edit files
-under the arena directory by other means. Read `W help` first, all of it. Options go before positional
-arguments (`W resize -s NAME --until-none 100x30`).
+under the arena directory by other means. Read `W help` first, all of it.
+
 
 Where a brief says to run a command "in the shell", put a marker after it
 and wait for the marker, as `W help shell` explains:
