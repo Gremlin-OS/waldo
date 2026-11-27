@@ -33,7 +33,7 @@
         system: pkgs:
         pkgs.rustPlatform.buildRustPackage {
           pname = "waldo";
-          version = "0.2.0";
+          version = "0.3.0";
           src = pkgs.lib.fileset.toSource {
             root = ./.;
             fileset = pkgs.lib.fileset.unions [
