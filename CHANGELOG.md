@@ -7,6 +7,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.3.0] - 2026-11-27
+
+Waldo says less that is not so, and there is less of it. Several things a
+response or a hint said were wrong or misleading and are corrected, help
+is one page, and four ways of doing something that had a better one are
+removed. The removals are not compatible with 0.2.0, in the command line
+or in the API.
+
 ### Fixed
 
 - An option written after the size on `waldo-term resize`, as in `resize
@@ -16,9 +24,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   the first word is the rest of what is said. A second bare word on
   `resize`, `signal`, `kill`, `match add` or `match rm` is refused; it
   used to be dropped too.
-- A `send` with `--until-none` could say `unchanged`: it is answered
-  before the program can have reacted. A request that does not wait no
-  longer carries `changed`, so its status line says neither.
 - A key sent right after `<Esc>` in one request could be lost when the
   program was busy as the two arrived: it read them together and took them
   for an Alt chord. htop did this at each of its refreshes. What follows an
@@ -185,6 +190,7 @@ The first release.
   `cargo build`). Release tarballs for x86_64 and aarch64 Linux.
 - Licensed under MIT or Apache 2.0, at your option.
 
-[Unreleased]: https://github.com/Gremlin-OS/waldo/compare/v0.2.0...HEAD
+[Unreleased]: https://github.com/Gremlin-OS/waldo/compare/v0.3.0...HEAD
+[0.3.0]: https://github.com/Gremlin-OS/waldo/compare/v0.2.0...v0.3.0
 [0.2.0]: https://github.com/Gremlin-OS/waldo/compare/v0.1.0...v0.2.0
 [0.1.0]: https://github.com/Gremlin-OS/waldo/releases/tag/v0.1.0
