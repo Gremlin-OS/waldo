@@ -685,6 +685,10 @@ fn bad_pattern_is_a_usage_error() {
     let r = t.term(&["wait", "-s", "bp", "--until", "match"]);
     assert_eq!(r.code, 2);
     assert!(r.err.contains("--until-match RE"), "{}", r.err);
+    // So does the wait that was removed.
+    let r = t.term(&["send", "-s", "bp", "--keys", "a", "--until-none"]);
+    assert_eq!(r.code, 2);
+    assert!(r.err.contains("--until-elapsed 0"), "{}", r.err);
     let r = t.term(&["wait", "-s", "bp", "--until-sometime"]);
     assert_eq!(r.code, 2);
     assert!(
@@ -1130,7 +1134,14 @@ fn resize_during_output_soak() {
     let end = Instant::now() + Duration::from_secs(60);
     loop {
         // Without waiting for a redraw: the point is many resizes mid-output.
-        let r = t.term(&["resize", "-s", "so", "--until-none", sizes[n % sizes.len()]]);
+        let r = t.term(&[
+            "resize",
+            "-s",
+            "so",
+            "--until-elapsed",
+            "0",
+            sizes[n % sizes.len()],
+        ]);
         assert_eq!(r.code, 0, "resize {n} failed: {}\n{}", r.out, r.err);
         n += 1;
         if r.out.contains("soak-done") && sizes[(n - 1) % sizes.len()] == "80x24" {
@@ -2960,9 +2971,14 @@ fn a_signal_does_not_wait_for_a_program_that_is_not_reading() {
         "nr",
         "--text-file",
         big.to_str().unwrap(),
-        "--until-none",
+        "--until-elapsed",
+        "0",
+        "--timeout",
+        "300",
     ]);
-    assert_eq!(r.code, 0, "{}", r.err);
+    // A request is not answered while its input is still to be written,
+    // so this one runs into its deadline. What it queued stays queued.
+    assert_eq!(r.code, 124, "{}\n{}", r.out, r.err);
     std::thread::sleep(Duration::from_millis(300));
     let began = Instant::now();
     assert_eq!(t.term(&["signal", "-s", "nr", "SIGTERM"]).code, 0);
@@ -3757,11 +3773,11 @@ fn a_response_says_when_typing_changed_nothing() {
     // even where the keys go nowhere.
     for id in ["un", "ch"] {
         for _ in 0..20 {
-            let r = t.term(&["send", "-s", id, "--keys", "a", "--until-none"]);
+            let r = t.term(&["send", "-s", id, "--keys", "a", "--until-elapsed", "0"]);
             assert_eq!(r.code, 0, "{}", r.err);
             assert!(!status_line(&r.out).contains("unchanged"), "{}", r.out);
-            let (_, v) = t.json(&["send", "-s", id, "--keys", "a", "--until-none"]);
-            assert_eq!(v["reason"], "none", "{v}");
+            let (_, v) = t.json(&["send", "-s", id, "--keys", "a", "--until-elapsed", "0"]);
+            assert_eq!(v["reason"], "elapsed", "{v}");
             assert!(v.get("changed").is_none(), "{v}");
         }
     }
@@ -4534,7 +4550,9 @@ fn a_wait_can_name_several_conditions() {
     );
     let refused = post(r#"{"until_none": true, "until_settle": true}"#);
     assert!(
-        refused.starts_with("HTTP/1.1 400 ") && refused.contains("bad_until"),
+        refused.starts_with("HTTP/1.1 400 ")
+            && refused.contains("bad_until")
+            && refused.contains("until_elapsed 0"),
         "{refused}"
     );
 
@@ -4855,4 +4873,26 @@ fn a_new_name_is_given_the_last_five_broadcasts() {
     );
     let all: Value = serde_json::from_str(resp.split("\r\n\r\n").nth(1).unwrap()).unwrap();
     assert_eq!(all["broadcasts"].as_array().unwrap().len(), 10);
+}
+
+#[test]
+fn an_option_after_a_bare_word_is_taken_and_a_second_bare_word_refused() {
+    let t = T::new();
+    t.start("ow", &["sh", "-c", "echo ready; sleep 60"]);
+    assert_eq!(
+        t.term(&["wait", "-s", "ow", "--until-match", "^ready"])
+            .code,
+        0
+    );
+    // It used to be dropped: the resize then waited its full second for a
+    // redraw whatever the request had said.
+    let (_, v) = t.json(&["resize", "-s", "ow", "100x30", "--until-elapsed", "0"]);
+    assert_eq!(v["reason"], "elapsed", "{v}");
+    assert_eq!(v["screen"]["cols"], 100, "{v}");
+    let r = t.term(&["resize", "-s", "ow", "90x30", "80x24"]);
+    assert_eq!(r.code, 2);
+    assert!(r.err.contains("does not take '80x24'"), "{}", r.err);
+    // What follows the first word of a broadcast is the rest of it.
+    let r = t.term(&["broadcast", "-s", "ow", "use", "--until-exit", "here"]);
+    assert_eq!(r.code, 0, "{}", r.err);
 }

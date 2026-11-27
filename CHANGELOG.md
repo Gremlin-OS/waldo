@@ -9,6 +9,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- An option written after the size on `waldo-term resize`, as in `resize
+  100x30 --until-elapsed 0`, was dropped without a word, and the resize
+  waited its full second for a redraw. Options are now taken after a bare
+  word as well as before it, except on `broadcast`, where what follows
+  the first word is the rest of what is said. A second bare word on
+  `resize`, `signal`, `kill`, `match add` or `match rm` is refused; it
+  used to be dropped too.
 - A `send` with `--until-none` could say `unchanged`: it is answered
   before the program can have reacted. A request that does not wait no
   longer carries `changed`, so its status line says neither.
@@ -51,6 +58,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Removed
 
+- `--until-none`, and `until_none` in the API. To not wait, give
+  `--until-elapsed 0`. It differs in one way: the answer comes when the
+  last of the request's input has been written, where `--until-none`
+  answered before any of it was. Like a request that did not wait, it
+  carries no `changed`. `screen` still does not wait unless told to, and
+  its reason is still `none`. `waldo-term` and the host say what to use if
+  given the old one.
 - `waldo-term signal --stop`. `signal` sends a signal and nothing else.
   `waldo-term kill` ends a session and waits until it has ended, which
   `--stop` did not: a `gc`, or a new session of the same name, right after
